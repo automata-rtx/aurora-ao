@@ -174,9 +174,9 @@ private:
 namespace aurora::gfx {
 inline constexpr bool UseTextureBuffer = true;
 inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
-inline constexpr uint64_t VertexBufferSize = 5242880;    // 5mb
-inline constexpr uint64_t IndexBufferSize = 1048576;     // 1mb
-inline constexpr uint64_t StorageBufferSize = 8388608;   // 8mb
+inline constexpr uint64_t VertexBufferSize = 16777216;   // 16mb
+inline constexpr uint64_t IndexBufferSize = 4194304;     // 4mb
+inline constexpr uint64_t StorageBufferSize = 16777216;  // 16mb
 inline constexpr uint64_t TextureUploadSize = 25165824;  // 24mb
 
 extern AuroraStats g_stats;
