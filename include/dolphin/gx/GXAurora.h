@@ -24,6 +24,12 @@ extern "C" {
 #define GX_AURORA_LOAD_SCISSOR_RENDER 0x0002
 
 /**
+ * Loads a full 4x4 projection matrix, bypassing GXSetProjection's 6-parameter
+ * hardware encoding. Must be followed by sixteen f32 values in row-major order.
+ */
+#define GX_AURORA_LOAD_PROJECTION_FULL 0x0003
+
+/**
  * Aurora equivalent of CP_REG_ARRAYBASE_ID: sets the base address and size of a vertex array.
  * This command must be followed by a 64-bit memory address, 32-bit size, and 1-byte little-endian flag.
  * The index of the vertex array is given by the lowest 4 bits of the command ID,
@@ -60,6 +66,18 @@ extern "C" {
 #define GX_AURORA_DESTROY_TLUT 0x0033
 
 #define GX_AURORA_DESTROY_COPY_TEX 0x0034
+
+#define GX_AURORA_LOAD_COPY_SRC 0x0035
+
+#define GX_AURORA_LOAD_COPY_DST 0x0036
+
+#define GX_AURORA_LOAD_COPY_DEST 0x0037
+
+#define GX_AURORA_REQUEST_DEPTH_SNAPSHOT 0x0038
+
+#define GX_AURORA_BEGIN_OFFSCREEN 0x0039
+
+#define GX_AURORA_END_OFFSCREEN 0x003A
 
 /**
  * Draw primitives with the vertex count derived from a byte length, as written by
@@ -131,6 +149,11 @@ void GXSetViewportRender(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz)
 void GXSetScissorRender(u32 left, u32 top, u32 wd, u32 ht);
 
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp);
+
+/**
+ * Load an arbitrary 4x4 projection matrix, avoiding the 6-parameter hardware encoding.
+ */
+void GXSetProjectionFull(const void* mtx);
 
 /**
  * Create an offscreen framebuffer and switch rendering to it.

@@ -66,6 +66,14 @@ void GXSetScissorRender(u32 left, u32 top, u32 wd, u32 ht) {
   GX_WRITE_U32(ht);
 }
 
+void GXSetProjectionFull(const void* mtx) {
+  const f32* values = reinterpret_cast<const f32*>(mtx);
+  GX_WRITE_AURORA(GX_AURORA_LOAD_PROJECTION_FULL);
+  for (int i = 0; i < 16; ++i) {
+    GX_WRITE_F32(values[i]);
+  }
+}
+
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {
   GX_WRITE_AURORA(GX2_SET_POLYGON_OFFSET);
   GX_WRITE_F32(mFrontOffset);
@@ -76,11 +84,11 @@ void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32
 }
 
 void GXCreateFrameBuffer(u32 width, u32 height) {
-  aurora::gx::fifo::drain();
-  aurora::gfx::begin_offscreen(width, height);
+  GX_WRITE_AURORA(GX_AURORA_BEGIN_OFFSCREEN);
+  GX_WRITE_U32(width);
+  GX_WRITE_U32(height);
 }
 
 void GXRestoreFrameBuffer() {
-  aurora::gx::fifo::drain();
-  aurora::gfx::end_offscreen();
+  GX_WRITE_AURORA(GX_AURORA_END_OFFSCREEN);
 }

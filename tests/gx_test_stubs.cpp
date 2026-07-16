@@ -180,8 +180,8 @@ void write_texture(TextureRef& ref, ArrayRef<uint8_t> data) noexcept {}
 void queue_texture_upload(TextureUpload upload) {}
 void queue_texture_upload_data(const uint8_t* data, size_t length, uint32_t bytesPerRow, uint32_t rowsPerImage,
                                wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size) {}
-void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
-                  Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {}
+void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
+                       Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat) {}
 void queue_palette_conv(tex_palette_conv::ConvRequest req) {}
 void begin_offscreen(uint32_t width, uint32_t height) {}
 void end_offscreen() {}
@@ -240,9 +240,9 @@ void queue(ConvRequest req) {}
 
 namespace aurora::gfx::texture_replacement {
 u32 compute_texture_upload_size(const GXTexObj_& obj) noexcept { return 0; }
-void register_tlut(const GXTlutObj*, const void*, GXTlutFmt, u16) noexcept {}
-void load_tlut(const GXTlutObj*, u32) noexcept {}
 std::optional<TextureHandle> find_replacement(const GXTexObj_&) noexcept { return std::nullopt; }
+bool has_replacement(const GXTexObj_&) noexcept { return false; }
+bool has_replacement(const GXTexObj_&, const GXTlutObj_&) noexcept { return false; }
 } // namespace aurora::gfx::texture_replacement
 
 // --- Window stub ---
