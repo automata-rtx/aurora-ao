@@ -834,6 +834,49 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
                      alpha ? "a"sv : ""sv);
 }
 
+// GPU skinning: blend the vertex position/normal by its bone influences.
+// Palette (mat3x4 per bone) and per-position (bone, weight) records are read from the shared
+// storage buffer (abuf) at offsets carried in the uniform. Influence count and stride are baked
+// from the config. Produces skin_pos / skin_nrm in the shape's model space, matching the CPU
+// linear-blend result of J3DSkinDeform's fast path (normals use the position matrix rotation).
+static std::string skin_vtx_transform(const ShaderConfig& config, std::string_view vidx) {
+  const auto& posMap = config.attrs[GX_VA_POS];
+  const auto posSrc = vtx_attr(config, GX_VA_POS);
+  const auto nrmSrc = vtx_attr(config, GX_VA_NRM);
+  std::string idxExpr;
+  if (posMap.attrType == GX_INDEX16) {
+    idxExpr = fmt::format("raw_fetch_u16_1(&vbuf, ubuf.vtx_start + {} * {}u + {}u, false)", vidx, config.vtxStride,
+                          posMap.offset);
+  } else if (posMap.attrType == GX_INDEX8) {
+    idxExpr = fmt::format("raw_fetch_u8_1(&vbuf, ubuf.vtx_start + {} * {}u + {}u)", vidx, config.vtxStride,
+                          posMap.offset);
+  } else {
+    // Non-indexed positions can't key the influence table; pass geometry through unskinned.
+    return fmt::format("\n    let skin_pos = {};\n    let skin_nrm = {};", posSrc, nrmSrc);
+  }
+  const u32 count = config.skinInfluences;
+  return fmt::format(FMT_STRING(R"""(
+    let skin_pos_idx = {0};
+    let skin_ent_base = ubuf.skin_influence_start + skin_pos_idx * {1}u;
+    var skin_pos = vec3f(0.0);
+    var skin_nrm = vec3f(0.0);
+    for (var skin_k = 0u; skin_k < {2}u; skin_k = skin_k + 1u) {{
+      let skin_ent = skin_ent_base + skin_k * 8u;
+      let skin_bone = load_u32(&abuf, skin_ent + 0u, true);
+      let skin_wgt = load_f32(&abuf, skin_ent + 4u, true);
+      let skin_m = ubuf.skin_palette_start + skin_bone * 48u;
+      let skin_bm = mat3x4f(
+        vec4f(load_f32(&abuf, skin_m + 0u, true), load_f32(&abuf, skin_m + 4u, true), load_f32(&abuf, skin_m + 8u, true), load_f32(&abuf, skin_m + 12u, true)),
+        vec4f(load_f32(&abuf, skin_m + 16u, true), load_f32(&abuf, skin_m + 20u, true), load_f32(&abuf, skin_m + 24u, true), load_f32(&abuf, skin_m + 28u, true)),
+        vec4f(load_f32(&abuf, skin_m + 32u, true), load_f32(&abuf, skin_m + 36u, true), load_f32(&abuf, skin_m + 40u, true), load_f32(&abuf, skin_m + 44u, true)),
+      );
+      skin_pos = skin_pos + skin_wgt * (vec4f({3}, 1.0) * skin_bm);
+      skin_nrm = skin_nrm + skin_wgt * (vec4f({4}, 0.0) * skin_bm);
+    }}
+)""",
+                     idxExpr, count * 8, count, posSrc, nrmSrc);
+}
+
 std::string build_shader_source(const ShaderConfig& config) noexcept {
   ZoneScoped;
   const auto hash = xxh3_hash(config);
@@ -987,10 +1030,13 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   }
 
   if (config.lineMode == 0) {
+    if (config.skinned) {
+      vtxXfrAttrsPre += skin_vtx_transform(config, vidxAttr);
+    }
     vtxXfrAttrsPre += fmt::format(
         "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
         "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
-        vtx_attr(config, GX_VA_POS));
+        config.skinned ? "skin_pos"s : vtx_attr(config, GX_VA_POS));
   } else if (config.lineMode == 3) {
     // GX_POINTS: expand single vertex to axis-aligned screen-space square
     vtxXfrAttrsPre +=
@@ -1022,7 +1068,7 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   vtxXfrAttrsPre += fmt::format(
       "\n    let nrm_tmp = vec4f({}, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
       "\n    let mv_nrm = select(nrm_tmp, normalize(nrm_tmp), dot(nrm_tmp, nrm_tmp) > 1e-10);",
-      vtx_attr(config, GX_VA_NRM));
+      config.skinned ? "skin_nrm"s : vtx_attr(config, GX_VA_NRM));
   if constexpr (EnableNormalVisualization) {
     vtxOutAttrs += fmt::format("\n    @location({}) nrm: vec3f,", vtxOutIdx++);
     vtxXfrAttrsPre += "\n    out.nrm = mv_nrm;";
@@ -1524,6 +1570,11 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "@group(2) @binding({2})\n"
         "var tex{0}_samp: sampler;",
         i, i * 2, i * 2 + 1);
+  }
+  if (config.skinned) {
+    // Byte offsets into the storage buffer (abuf) for the bone palette and influence records.
+    uniBufAttrs += "\n    skin_palette_start: u32,";
+    uniBufAttrs += "\n    skin_influence_start: u32,";
   }
   fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
   if (config.alphaCompare) {

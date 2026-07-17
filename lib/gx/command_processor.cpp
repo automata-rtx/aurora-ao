@@ -1570,8 +1570,10 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, const u8* da
     UNLIKELY { handle_draw_overrun(totalVtxBytes, data, pos, size); }
 
   auto* lastDraw = !g_gxState.stateDirty ? gfx::get_last_draw_command<DrawData>() : nullptr;
+  // Skinned draws carry a per-shape palette and key influences by position index, so they must
+  // stay individually addressable (also required for RTX Remix mesh identity) - never merge them.
   const bool canMerge = lastDraw != nullptr && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS &&
-                        lastDraw->instanceCount == 1;
+                        lastDraw->instanceCount == 1 && !g_gxState.skinningActive;
 
   // Push raw vertex data to buffer. Merged draws must remain byte-contiguous with the previous range.
   gfx::Range vertRange = gfx::push_verts(data + pos, totalVtxBytes, canMerge ? 0 : 4);
@@ -1664,6 +1666,10 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
 
   PipelineConfig config{};
   populate_pipeline_config(config, prim, fmt);
+  if (g_gxState.skinningActive) {
+    config.shaderConfig.skinned = 1;
+    config.shaderConfig.skinInfluences = g_gxState.skinInfluences;
+  }
   const auto info = build_shader_info(config.shaderConfig);
   resolve_sampled_textures(info);
   const auto bindGroups = build_bind_groups(info);
@@ -1938,6 +1944,29 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
   } else if (subCmd == GX_AURORA_DEBUG_MARKER_INSERT) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::insert_debug_marker(std::move(label));
+  } else if (subCmd == GX_AURORA_SET_SKINNING) {
+    CHECK(pos + 28 <= size, "GX_AURORA_SET_SKINNING read overrun");
+    const u64 paletteAddr = read_u64(data + pos, bigEndian);
+    pos += 8;
+    const u32 jointCount = read_u32(data + pos, bigEndian);
+    pos += 4;
+    const u64 influenceAddr = read_u64(data + pos, bigEndian);
+    pos += 8;
+    const u32 vtxCount = read_u32(data + pos, bigEndian);
+    pos += 4;
+    const u32 influenceCount = read_u32(data + pos, bigEndian);
+    pos += 4;
+    // Palette (mat3x4 per bone) and influence records ({u32 bone, f32 weight}) are host-endian,
+    // built at runtime by the game. Upload both to the shared storage buffer for this frame.
+    const auto* palette = reinterpret_cast<const uint8_t*>(paletteAddr);
+    const auto* influences = reinterpret_cast<const uint8_t*>(influenceAddr);
+    g_gxState.skinPaletteRange = gfx::push_storage(palette, static_cast<size_t>(jointCount) * 48);
+    g_gxState.skinInfluenceRange =
+        gfx::push_storage(influences, static_cast<size_t>(vtxCount) * influenceCount * 8);
+    g_gxState.skinInfluences = static_cast<u8>(influenceCount);
+    g_gxState.skinningActive = true;
+  } else if (subCmd == GX_AURORA_CLEAR_SKINNING) {
+    g_gxState.skinningActive = false;
   }
 
   else {

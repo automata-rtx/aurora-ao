@@ -96,6 +96,20 @@ extern "C" {
  */
 #define GX_AURORA_DRAW_INDEXED 0x0041
 
+/**
+ * Enables GPU vertex skinning for subsequent draws. Must be followed by a 64-bit bone palette
+ * address (jointCount mat3x4 matrices, row-major), a u32 joint count, a 64-bit influence table
+ * address (vtxCount * influenceCount records of {u32 bone index, f32 weight}, keyed by position
+ * index), a u32 vertex count, and a u32 influence count (1-4). The palette and influence buffers
+ * must remain valid until the frame is rendered.
+ */
+#define GX_AURORA_SET_SKINNING 0x0050
+
+/**
+ * Disables GPU vertex skinning for subsequent draws. Followed by nothing.
+ */
+#define GX_AURORA_CLEAR_SKINNING 0x0051
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -154,6 +168,22 @@ void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32
  * Load an arbitrary 4x4 projection matrix, avoiding the 6-parameter hardware encoding.
  */
 void GXSetProjectionFull(const void* mtx);
+
+/**
+ * Enable GPU vertex skinning for subsequent draws. The vertex position/normal are blended by
+ * their bone influences in the shader, matching the CPU linear-blend result. palette points to
+ * jointCount mat3x4 bone matrices (model space); influences points to vtxCount * influenceCount
+ * records of {u32 bone index, f32 weight}, indexed by vertex position index. influenceCount is
+ * clamped to GX_AURORA_MAX_SKIN_INFLUENCES. Both buffers must stay valid until the frame renders.
+ */
+void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, u32 vtxCount, u32 influenceCount);
+
+/**
+ * Disable GPU vertex skinning for subsequent draws.
+ */
+void GXClearSkinning(void);
+
+#define GX_AURORA_MAX_SKIN_INFLUENCES 4
 
 /**
  * Create an offscreen framebuffer and switch rendering to it.

@@ -74,6 +74,20 @@ void GXSetProjectionFull(const void* mtx) {
   }
 }
 
+void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, u32 vtxCount, u32 influenceCount) {
+  if (influenceCount > GX_AURORA_MAX_SKIN_INFLUENCES) {
+    influenceCount = GX_AURORA_MAX_SKIN_INFLUENCES;
+  }
+  GX_WRITE_AURORA(GX_AURORA_SET_SKINNING);
+  GX_WRITE_U64(reinterpret_cast<u64>(palette));
+  GX_WRITE_U32(jointCount);
+  GX_WRITE_U64(reinterpret_cast<u64>(influences));
+  GX_WRITE_U32(vtxCount);
+  GX_WRITE_U32(influenceCount);
+}
+
+void GXClearSkinning(void) { GX_WRITE_AURORA(GX_AURORA_CLEAR_SKINNING); }
+
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {
   GX_WRITE_AURORA(GX2_SET_POLYGON_OFFSET);
   GX_WRITE_F32(mFrontOffset);

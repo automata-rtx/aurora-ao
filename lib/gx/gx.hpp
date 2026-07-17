@@ -66,6 +66,7 @@ constexpr u32 MaxIndTexMtxs = 3;
 constexpr u32 MaxVtxFmt = GX_MAX_VTXFMT;
 constexpr u32 MaxPnMtx = (GX_PNMTX9 / 3) + 1;
 constexpr u32 MaxIndexAttr = 12; // VA_POS -> VA_TEX7
+constexpr u32 MaxSkinInfluences = 4; // GPU skinning: max bone influences per vertex
 constexpr u32 MaxUniformSize = 3840;
 
 extern wgpu::BindGroup g_emptyTextureBindGroup;
@@ -389,6 +390,12 @@ struct GXState {
   f32 backScale = 0.0f;
   f32 clamp = 0.0f;
 
+  // GPU skinning (aurora extension, see GXSetSkinning)
+  gfx::Range skinPaletteRange;   // bone matrices (mat3x4) in the shared storage buffer
+  gfx::Range skinInfluenceRange; // per-position (bone index, weight) records
+  u8 skinInfluences = 0;         // influences per vertex (1-4)
+  bool skinningActive = false;
+
   void clearVtxSizeCache() { lastVtxFmt = GX_MAX_VTXFMT; }
 };
 extern GXState g_gxState;
@@ -449,8 +456,10 @@ struct AttrConfig {
 struct ShaderConfig {
   u8 fogType = GX_FOG_NONE;
   u8 vtxStride = 0;
-  u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
-  u8 pad1 : 6 = 0;
+  u8 lineMode : 2 = 0;      // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
+  u8 skinned : 1 = 0;       // GPU skinning enabled for this draw
+  u8 skinInfluences : 3 = 0; // bone influences per vertex (1-4) when skinned
+  u8 pad1 : 2 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;
@@ -487,6 +496,7 @@ struct ShaderInfo {
   u32 uniformSize = 0;
   bool usesFog : 1 = false;
   bool lightingEnabled : 1 = false;
+  bool usesSkinning : 1 = false;
   u8 lineMode : 2 = 0;
 };
 struct BindGroupRanges {

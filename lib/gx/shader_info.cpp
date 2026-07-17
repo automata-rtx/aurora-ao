@@ -323,6 +323,10 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
     info.uniformSize += MaxIndTexMtxs * sizeof(Mat2x4<float>);
   }
   info.uniformSize += info.sampledTextures.count() * sizeof(Vec4<float>);
+  if (config.skinned) {
+    info.usesSkinning = true;
+    info.uniformSize += 8; // skin_palette_start, skin_influence_start
+  }
   info.uniformSize = gfx::align_uniform(info.uniformSize);
   if (info.uniformSize > MaxUniformSize) {
     Log.fatal("Uniform size exceeds maximum: {} > {}", info.uniformSize, MaxUniformSize);
@@ -486,6 +490,10 @@ gfx::Range build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGroupRa
     const auto& tex = get_texture(static_cast<GXTexMapID>(i));
     // CHECK(tex, "unbound texture {}", i);
     buf.append(texture_size_bias(tex));
+  }
+  if (info.usesSkinning) {
+    buf.append<u32>(g_gxState.skinPaletteRange.offset);
+    buf.append<u32>(g_gxState.skinInfluenceRange.offset);
   }
   g_gxState.stateDirty = false;
   return gfx::push_uniform(buf.data(), buf.size());

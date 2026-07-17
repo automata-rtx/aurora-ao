@@ -3278,3 +3278,54 @@ TEST_F(GXFifoTest, Composite_TevSetup) {
   EXPECT_EQ(g_gxState.tevStages[0].colorPass.d, GX_CC_TEXC);
   EXPECT_EQ(g_gxState.tevStages[0].alphaPass.d, GX_CA_TEXA);
 }
+
+// ============================================================================
+// GPU skinning (GXSetSkinning / GXClearSkinning)
+// ============================================================================
+
+namespace {
+struct SkinInfluence {
+  u32 bone;
+  f32 weight;
+};
+} // namespace
+
+TEST_F(GXFifoTest, Skinning_SetSkinning_RoundTrip) {
+  // 2 bones, 3 vertices, 2 influences each.
+  const std::array<f32, 2 * 12> palette{};
+  const std::array<SkinInfluence, 3 * 2> influences{};
+  GXSetSkinning(palette.data(), 2, influences.data(), 3, 2);
+  auto bytes = capture_fifo();
+
+  EXPECT_TRUE(has_aurora_cmd(bytes, GX_AURORA_SET_SKINNING));
+
+  reset_gx_state();
+  decode_fifo(bytes);
+
+  EXPECT_TRUE(g_gxState.skinningActive);
+  EXPECT_EQ(g_gxState.skinInfluences, 2u);
+}
+
+TEST_F(GXFifoTest, Skinning_ClearSkinning_RoundTrip) {
+  GXClearSkinning();
+  auto bytes = capture_fifo();
+
+  EXPECT_TRUE(has_aurora_cmd(bytes, GX_AURORA_CLEAR_SKINNING));
+
+  reset_gx_state();
+  g_gxState.skinningActive = true;
+  decode_fifo(bytes);
+
+  EXPECT_FALSE(g_gxState.skinningActive);
+}
+
+TEST_F(GXFifoTest, Skinning_InfluenceCountClamped) {
+  const std::array<f32, 12> palette{};
+  const std::array<SkinInfluence, 4> influences{};
+  GXSetSkinning(palette.data(), 1, influences.data(), 1, 9); // 9 exceeds the max of 4
+
+  reset_gx_state();
+  decode_fifo(capture_fifo());
+
+  EXPECT_EQ(g_gxState.skinInfluences, GX_AURORA_MAX_SKIN_INFLUENCES);
+}
