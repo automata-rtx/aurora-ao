@@ -3294,7 +3294,8 @@ TEST_F(GXFifoTest, Skinning_SetSkinning_RoundTrip) {
   // 2 bones, 3 vertices, 2 influences each.
   const std::array<f32, 2 * 12> palette{};
   const std::array<SkinInfluence, 3 * 2> influences{};
-  GXSetSkinning(palette.data(), 2, influences.data(), 3, 2);
+  const std::array<f32, 12> baseMtx{};
+  GXSetSkinning(palette.data(), 2, influences.data(), 3, 2, baseMtx.data());
   auto bytes = capture_fifo();
 
   EXPECT_TRUE(has_aurora_cmd(bytes, GX_AURORA_SET_SKINNING));
@@ -3322,7 +3323,8 @@ TEST_F(GXFifoTest, Skinning_ClearSkinning_RoundTrip) {
 TEST_F(GXFifoTest, Skinning_InfluenceCountClamped) {
   const std::array<f32, 12> palette{};
   const std::array<SkinInfluence, 4> influences{};
-  GXSetSkinning(palette.data(), 1, influences.data(), 1, 9); // 9 exceeds the max of 4
+  const std::array<f32, 12> baseMtx{};
+  GXSetSkinning(palette.data(), 1, influences.data(), 1, 9, baseMtx.data()); // 9 exceeds the max of 4
 
   reset_gx_state();
   decode_fifo(capture_fifo());

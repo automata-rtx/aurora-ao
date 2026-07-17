@@ -391,9 +391,10 @@ struct GXState {
   f32 clamp = 0.0f;
 
   // GPU skinning (aurora extension, see GXSetSkinning)
-  gfx::Range skinPaletteRange;   // bone matrices (mat3x4) in the shared storage buffer
-  gfx::Range skinInfluenceRange; // per-position (bone index, weight) records
-  u8 skinInfluences = 0;         // influences per vertex (1-4)
+  gfx::Range skinPaletteRange;      // bone matrices (mat3x4) in the shared storage buffer
+  gfx::Range skinInfluenceRange;    // per-position (bone index, weight) records
+  std::array<f32, 12> skinBaseMtx{}; // model->view matrix applied after the blend (mat3x4)
+  u8 skinInfluences = 0;            // influences per vertex (1-4)
   bool skinningActive = false;
 
   void clearVtxSizeCache() { lastVtxFmt = GX_MAX_VTXFMT; }

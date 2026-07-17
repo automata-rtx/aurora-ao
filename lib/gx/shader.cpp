@@ -1031,12 +1031,17 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
 
   if (config.lineMode == 0) {
     if (config.skinned) {
+      // Blend to model space, then apply the model->view base matrix uniformly (the per-vertex
+      // pnmtxidx is meaningless for skinned geometry - rigid parts would point at a joint matrix).
       vtxXfrAttrsPre += skin_vtx_transform(config, vidxAttr);
+      vtxXfrAttrsPre += "\n    let mv_pos = vec4f(skin_pos, 1.0) * ubuf.skin_base_mtx;"
+                        "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;";
+    } else {
+      vtxXfrAttrsPre += fmt::format(
+          "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
+          "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
+          vtx_attr(config, GX_VA_POS));
     }
-    vtxXfrAttrsPre += fmt::format(
-        "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
-        "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
-        config.skinned ? "skin_pos"s : vtx_attr(config, GX_VA_POS));
   } else if (config.lineMode == 3) {
     // GX_POINTS: expand single vertex to axis-aligned screen-space square
     vtxXfrAttrsPre +=
@@ -1065,10 +1070,15 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         "\n    let clip_base = select(clip_a, clip_b, use_b);"
         "\n    out.pos = vec4f(clip_base.xy + offset_ndc * clip_base.w, clip_base.zw);";
   }
-  vtxXfrAttrsPre += fmt::format(
-      "\n    let nrm_tmp = vec4f({}, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
-      "\n    let mv_nrm = select(nrm_tmp, normalize(nrm_tmp), dot(nrm_tmp, nrm_tmp) > 1e-10);",
-      config.skinned ? "skin_nrm"s : vtx_attr(config, GX_VA_NRM));
+  if (config.skinned) {
+    vtxXfrAttrsPre += "\n    let nrm_tmp = vec4f(skin_nrm, 0.0) * ubuf.skin_base_mtx;"
+                      "\n    let mv_nrm = select(nrm_tmp, normalize(nrm_tmp), dot(nrm_tmp, nrm_tmp) > 1e-10);";
+  } else {
+    vtxXfrAttrsPre += fmt::format(
+        "\n    let nrm_tmp = vec4f({}, 0.0) * ubuf.nrm_mtx[in_pnmtxidx];"
+        "\n    let mv_nrm = select(nrm_tmp, normalize(nrm_tmp), dot(nrm_tmp, nrm_tmp) > 1e-10);",
+        vtx_attr(config, GX_VA_NRM));
+  }
   if constexpr (EnableNormalVisualization) {
     vtxOutAttrs += fmt::format("\n    @location({}) nrm: vec3f,", vtxOutIdx++);
     vtxXfrAttrsPre += "\n    out.nrm = mv_nrm;";
@@ -1572,7 +1582,9 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
         i, i * 2, i * 2 + 1);
   }
   if (config.skinned) {
-    // Byte offsets into the storage buffer (abuf) for the bone palette and influence records.
+    // model->view base matrix, then byte offsets into the storage buffer (abuf) for the bone
+    // palette and per-position influence records.
+    uniBufAttrs += "\n    skin_base_mtx: mat3x4f,";
     uniBufAttrs += "\n    skin_palette_start: u32,";
     uniBufAttrs += "\n    skin_influence_start: u32,";
   }

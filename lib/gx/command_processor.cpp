@@ -1945,7 +1945,7 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::insert_debug_marker(std::move(label));
   } else if (subCmd == GX_AURORA_SET_SKINNING) {
-    CHECK(pos + 28 <= size, "GX_AURORA_SET_SKINNING read overrun");
+    CHECK(pos + 76 <= size, "GX_AURORA_SET_SKINNING read overrun");
     const u64 paletteAddr = read_u64(data + pos, bigEndian);
     pos += 8;
     const u32 jointCount = read_u32(data + pos, bigEndian);
@@ -1956,6 +1956,10 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     pos += 4;
     const u32 influenceCount = read_u32(data + pos, bigEndian);
     pos += 4;
+    for (f32& v : g_gxState.skinBaseMtx) {
+      v = read_f32(data + pos, bigEndian);
+      pos += 4;
+    }
     // Palette (mat3x4 per bone) and influence records ({u32 bone, f32 weight}) are host-endian,
     // built at runtime by the game. Upload both to the shared storage buffer for this frame.
     const auto* palette = reinterpret_cast<const uint8_t*>(paletteAddr);

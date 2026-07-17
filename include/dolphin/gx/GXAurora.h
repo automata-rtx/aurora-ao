@@ -172,11 +172,14 @@ void GXSetProjectionFull(const void* mtx);
 /**
  * Enable GPU vertex skinning for subsequent draws. The vertex position/normal are blended by
  * their bone influences in the shader, matching the CPU linear-blend result. palette points to
- * jointCount mat3x4 bone matrices (model space); influences points to vtxCount * influenceCount
- * records of {u32 bone index, f32 weight}, indexed by vertex position index. influenceCount is
- * clamped to GX_AURORA_MAX_SKIN_INFLUENCES. Both buffers must stay valid until the frame renders.
+ * jointCount mat3x4 bone matrices; influences points to vtxCount * influenceCount records of
+ * {u32 bone index, f32 weight}, indexed by vertex position index. baseMtx is the model->view
+ * matrix (a 3x4 / 12 f32) applied after the blend, in place of the per-vertex position matrix.
+ * influenceCount is clamped to GX_AURORA_MAX_SKIN_INFLUENCES. The palette and influence buffers
+ * must stay valid until the frame renders.
  */
-void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, u32 vtxCount, u32 influenceCount);
+void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, u32 vtxCount, u32 influenceCount,
+                   const void* baseMtx);
 
 /**
  * Disable GPU vertex skinning for subsequent draws.
