@@ -393,7 +393,6 @@ struct GXState {
   // GPU skinning (aurora extension, see GXSetSkinning)
   gfx::Range skinPaletteRange;       // bone matrices (mat3x4) in the shared storage buffer
   gfx::Range skinInfluenceRange;     // per-position (bone index, weight) records
-  gfx::Range skinPrevPaletteRange;   // previous-frame palette (motion-vector debug view only)
   std::array<f32, 12> skinBaseMtx{}; // model->view matrix applied after the blend (mat3x4)
   u8 skinInfluences = 0;             // influences per vertex (1-4)
   bool skinningActive = false;
@@ -401,9 +400,10 @@ struct GXState {
   void clearVtxSizeCache() { lastVtxFmt = GX_MAX_VTXFMT; }
 };
 extern GXState g_gxState;
-// When set, GPU-skinned draws render a screen-space motion-vector debug view instead of their
-// normal shading. Toggled from the game UI; read by the draw path (mirrors enableLodBias).
-extern bool skinMotionVectors;
+// When set, matrix-palette-skinned draws (those with a per-vertex PNMTXIDX attribute) render a
+// bone-index debug colour instead of their normal shading, so GPU skinning is visible. Toggled
+// from the game UI; read by the draw path (mirrors enableLodBias).
+extern bool skinDebugView;
 struct ShaderInfo;
 
 void initialize() noexcept;
@@ -464,7 +464,7 @@ struct ShaderConfig {
   u8 lineMode : 2 = 0;       // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
   u8 skinned : 1 = 0;        // GPU skinning enabled for this draw
   u8 skinInfluences : 3 = 0; // bone influences per vertex (1-4) when skinned
-  u8 skinDebug : 1 = 0;      // skinned draw renders a motion-vector debug view
+  u8 skinDebug : 1 = 0;      // draw renders the bone-index skinning debug colour
   u8 pad1 : 1 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
@@ -503,7 +503,6 @@ struct ShaderInfo {
   bool usesFog : 1 = false;
   bool lightingEnabled : 1 = false;
   bool usesSkinning : 1 = false;
-  bool usesSkinningDebug : 1 = false;
   u8 lineMode : 2 = 0;
 };
 struct BindGroupRanges {

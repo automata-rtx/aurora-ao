@@ -1669,7 +1669,11 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
   if (g_gxState.skinningActive) {
     config.shaderConfig.skinned = 1;
     config.shaderConfig.skinInfluences = g_gxState.skinInfluences;
-    config.shaderConfig.skinDebug = skinMotionVectors ? 1 : 0;
+  }
+  // Debug view: colour matrix-palette-skinned draws (those with a per-vertex PNMTXIDX attribute,
+  // i.e. characters) by bone index, so GPU matrix-palette skinning is visible.
+  if (skinDebugView && config.shaderConfig.attrs[GX_VA_PNMTXIDX].attrType != GX_NONE) {
+    config.shaderConfig.skinDebug = 1;
   }
   const auto info = build_shader_info(config.shaderConfig);
   resolve_sampled_textures(info);
@@ -1946,7 +1950,7 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     auto label = read_string(data, pos, size, bigEndian);
     gfx::insert_debug_marker(std::move(label));
   } else if (subCmd == GX_AURORA_SET_SKINNING) {
-    CHECK(pos + 84 <= size, "GX_AURORA_SET_SKINNING read overrun");
+    CHECK(pos + 76 <= size, "GX_AURORA_SET_SKINNING read overrun");
     const u64 paletteAddr = read_u64(data + pos, bigEndian);
     pos += 8;
     const u32 jointCount = read_u32(data + pos, bigEndian);
@@ -1961,8 +1965,6 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       v = read_f32(data + pos, bigEndian);
       pos += 4;
     }
-    const u64 prevPaletteAddr = read_u64(data + pos, bigEndian);
-    pos += 8;
     // Palette (mat3x4 per bone) and influence records ({u32 bone, f32 weight}) are host-endian,
     // built at runtime by the game. Upload both to the shared storage buffer for this frame.
     const auto* palette = reinterpret_cast<const uint8_t*>(paletteAddr);
@@ -1970,10 +1972,6 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     g_gxState.skinPaletteRange = gfx::push_storage(palette, static_cast<size_t>(jointCount) * 48);
     g_gxState.skinInfluenceRange =
         gfx::push_storage(influences, static_cast<size_t>(vtxCount) * influenceCount * 8);
-    if (skinMotionVectors && prevPaletteAddr != 0) {
-      g_gxState.skinPrevPaletteRange =
-          gfx::push_storage(reinterpret_cast<const uint8_t*>(prevPaletteAddr), static_cast<size_t>(jointCount) * 48);
-    }
     g_gxState.skinInfluences = static_cast<u8>(influenceCount);
     g_gxState.skinningActive = true;
   } else if (subCmd == GX_AURORA_CLEAR_SKINNING) {

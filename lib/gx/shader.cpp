@@ -834,11 +834,7 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8 
                      alpha ? "a"sv : ""sv);
 }
 
-// GPU skinning: blend the vertex position/normal by its bone influences.
-// Palette (mat3x4 per bone) and per-position (bone, weight) records are read from the shared
-// storage buffer (abuf) at offsets carried in the uniform. Influence count and stride are baked
-// from the config. Produces skin_pos / skin_nrm in the shape's model space, matching the CPU
-// linear-blend result of J3DSkinDeform's fast path (normals use the position matrix rotation).
+// Reads bone matrix `boneVar` (a mat3x4) from the palette at storage offset `startField`.
 static std::string skin_bone_mtx(std::string_view startField, std::string_view boneVar) {
   const std::string base = fmt::format("(ubuf.{} + {} * 48u)", startField, boneVar);
   return fmt::format(
@@ -849,6 +845,11 @@ static std::string skin_bone_mtx(std::string_view startField, std::string_view b
       base);
 }
 
+// GPU skinning: blend the vertex position/normal by its bone influences (linear-blend skinning).
+// Palette (mat3x4 per bone) and per-position (bone, weight) records are read from the shared
+// storage buffer (abuf) at offsets carried in the uniform. Influence count and stride are baked
+// from the config. Produces skin_pos / skin_nrm in the shape's model space, matching the CPU
+// result of J3DSkinDeform's fast path (normals use the position matrix rotation).
 static std::string skin_vtx_transform(const ShaderConfig& config, std::string_view vidx) {
   const auto& posMap = config.attrs[GX_VA_POS];
   const auto posSrc = vtx_attr(config, GX_VA_POS);
@@ -862,35 +863,24 @@ static std::string skin_vtx_transform(const ShaderConfig& config, std::string_vi
                           posMap.offset);
   } else {
     // Non-indexed positions can't key the influence table; pass geometry through unskinned.
-    std::string out = fmt::format("\n    let skin_pos = {};\n    let skin_nrm = {};", posSrc, nrmSrc);
-    if (config.skinDebug) {
-      out += "\n    let skin_prev_pos = skin_pos;";
-    }
-    return out;
+    return fmt::format("\n    let skin_pos = {};\n    let skin_nrm = {};", posSrc, nrmSrc);
   }
   const u32 count = config.skinInfluences;
-  // Debug view also blends the previous-frame palette to derive per-vertex motion.
-  std::string prevDecl = config.skinDebug ? "\n    var skin_prev_pos = vec3f(0.0);" : "";
-  std::string prevAccum =
-      config.skinDebug ? fmt::format("\n      skin_prev_pos = skin_prev_pos + skin_wgt * (vec4f({}, 1.0) * {});",
-                                     posSrc, skin_bone_mtx("skin_prev_palette_start", "skin_bone"))
-                       : "";
   return fmt::format(FMT_STRING(R"""(
     let skin_pos_idx = {0};
     let skin_ent_base = ubuf.skin_influence_start + skin_pos_idx * {1}u;
     var skin_pos = vec3f(0.0);
-    var skin_nrm = vec3f(0.0);{5}
+    var skin_nrm = vec3f(0.0);
     for (var skin_k = 0u; skin_k < {2}u; skin_k = skin_k + 1u) {{
       let skin_ent = skin_ent_base + skin_k * 8u;
       let skin_bone = load_u32(&abuf, skin_ent + 0u, true);
       let skin_wgt = load_f32(&abuf, skin_ent + 4u, true);
-      let skin_bm = {6};
+      let skin_bm = {5};
       skin_pos = skin_pos + skin_wgt * (vec4f({3}, 1.0) * skin_bm);
-      skin_nrm = skin_nrm + skin_wgt * (vec4f({4}, 0.0) * skin_bm);{7}
+      skin_nrm = skin_nrm + skin_wgt * (vec4f({4}, 0.0) * skin_bm);
     }}
 )"""),
-                     idxExpr, count * 8, count, posSrc, nrmSrc, prevDecl,
-                     skin_bone_mtx("skin_palette_start", "skin_bone"), prevAccum);
+                     idxExpr, count * 8, count, posSrc, nrmSrc, skin_bone_mtx("skin_palette_start", "skin_bone"));
 }
 
 std::string build_shader_source(const ShaderConfig& config) noexcept {
@@ -1052,14 +1042,6 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
       vtxXfrAttrsPre += skin_vtx_transform(config, vidxAttr);
       vtxXfrAttrsPre += "\n    let mv_pos = vec4f(skin_pos, 1.0) * ubuf.skin_base_mtx;"
                         "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;";
-      if (config.skinDebug) {
-        // Screen-space motion from the previous-frame pose, using the current camera so only the
-        // skinning deformation (not camera or root motion) contributes.
-        vtxOutAttrs += fmt::format("\n    @location({}) skin_motion: vec2f,", vtxOutIdx++);
-        vtxXfrAttrsPre += "\n    let skin_prev_view = vec4f(skin_prev_pos, 1.0) * ubuf.skin_base_mtx;"
-                          "\n    let skin_prev_clip = vec4f(skin_prev_view, 1.0) * ubuf.proj;"
-                          "\n    out.skin_motion = out.pos.xy / out.pos.w - skin_prev_clip.xy / skin_prev_clip.w;";
-      }
     } else {
       vtxXfrAttrsPre += fmt::format(
           "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
@@ -1106,6 +1088,15 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
   if constexpr (EnableNormalVisualization) {
     vtxOutAttrs += fmt::format("\n    @location({}) nrm: vec3f,", vtxOutIdx++);
     vtxXfrAttrsPre += "\n    out.nrm = mv_nrm;";
+  }
+  if (config.skinDebug) {
+    // Debug view: colour geometry by its per-vertex matrix-palette index, so GPU matrix-palette
+    // skinning is visible - each bone gets a distinct hue and the regions deform as the model
+    // animates, which only happens because the GPU is applying the per-vertex bone matrices.
+    vtxOutAttrs += fmt::format("\n    @location({}) dbg_skin_color: vec3f,", vtxOutIdx++);
+    vtxXfrAttrsPre +=
+        "\n    let dbg_hue = f32(in_pnmtxidx) * 0.618034;"
+        "\n    out.dbg_skin_color = clamp(abs(fract(vec3f(dbg_hue) + vec3f(0.0, 0.33333, 0.66667)) * 6.0 - 3.0) - 1.0, vec3f(0.0), vec3f(1.0));";
   }
 
   uniBufAttrs += "\n    proj: mat4x4f,";
@@ -1611,9 +1602,6 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     uniBufAttrs += "\n    skin_base_mtx: mat3x4f,";
     uniBufAttrs += "\n    skin_palette_start: u32,";
     uniBufAttrs += "\n    skin_influence_start: u32,";
-    if (config.skinDebug) {
-      uniBufAttrs += "\n    skin_prev_palette_start: u32,";
-    }
   }
   fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
   if (config.alphaCompare) {
@@ -1649,10 +1637,8 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
   }
   if (config.skinDebug) {
-    // Motion-vector debug view: static skinned pixels read dark blue; screen motion from the
-    // skinning deformation lights up red (horizontal) and green (vertical).
-    fragmentFn += "\n    let skin_mv = in.skin_motion * 30.0;"
-                  "\n    prev = vec4f(clamp(abs(skin_mv.x), 0.0, 1.0), clamp(abs(skin_mv.y), 0.0, 1.0), 0.15, 1.0);";
+    // Debug view: replace shading with the per-vertex matrix-palette index colour.
+    fragmentFn += "\n    prev = vec4f(in.dbg_skin_color, 1.0);";
   }
 
   const auto shaderSource = fmt::format(R"""(

@@ -8,8 +8,8 @@ namespace aurora::gx {
 // TODO: remove, just for testing
 bool enableLodBias = true;
 
-// Motion-vector debug view for GPU-skinned draws (toggled from the game UI).
-bool skinMotionVectors = false;
+// Debug view that colours matrix-palette-skinned draws by bone index (toggled from the game UI).
+bool skinDebugView = false;
 
 namespace {
 Module Log("aurora::gx");
@@ -329,10 +329,6 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
   if (config.skinned) {
     info.usesSkinning = true;
     info.uniformSize += 48 + 8; // skin_base_mtx (mat3x4) + skin_palette_start + skin_influence_start
-    if (config.skinDebug) {
-      info.usesSkinningDebug = true;
-      info.uniformSize += 4; // skin_prev_palette_start
-    }
   }
   info.uniformSize = gfx::align_uniform(info.uniformSize);
   if (info.uniformSize > MaxUniformSize) {
@@ -504,9 +500,6 @@ gfx::Range build_uniform(const ShaderInfo& info, u32 vtxStart, const BindGroupRa
     }
     buf.append<u32>(g_gxState.skinPaletteRange.offset);
     buf.append<u32>(g_gxState.skinInfluenceRange.offset);
-    if (info.usesSkinningDebug) {
-      buf.append<u32>(g_gxState.skinPrevPaletteRange.offset);
-    }
   }
   g_gxState.stateDirty = false;
   return gfx::push_uniform(buf.data(), buf.size());
