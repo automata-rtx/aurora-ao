@@ -1671,8 +1671,12 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
     config.shaderConfig.skinInfluences = g_gxState.skinInfluences;
   }
   // Debug view: colour matrix-palette-skinned draws (those with a per-vertex PNMTXIDX attribute,
-  // i.e. characters) by bone index, so GPU matrix-palette skinning is visible.
-  if (skinDebugView && config.shaderConfig.attrs[GX_VA_PNMTXIDX].attrType != GX_NONE) {
+  // i.e. characters) by bone index, so GPU matrix-palette skinning is visible. Restricted to the
+  // main pass: offscreen passes re-draw the same skinned models for other purposes (e.g. the game's
+  // real-shadow silhouette, which packs four casters into the R/G/B/A channels of one texture), and
+  // replacing their fragment output with a debug colour would corrupt those buffers.
+  if (skinDebugView && !gfx::is_offscreen() &&
+      config.shaderConfig.attrs[GX_VA_PNMTXIDX].attrType != GX_NONE) {
     config.shaderConfig.skinDebug = 1;
   }
   const auto info = build_shader_info(config.shaderConfig);
