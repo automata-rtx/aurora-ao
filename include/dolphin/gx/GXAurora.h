@@ -175,16 +175,25 @@ void GXSetProjectionFull(const void* mtx);
  * jointCount mat3x4 bone matrices; influences points to vtxCount * influenceCount records of
  * {u32 bone index, f32 weight}, indexed by vertex position index. baseMtx is the model->view
  * matrix (a 3x4 / 12 f32) applied after the blend, in place of the per-vertex position matrix.
- * influenceCount is clamped to GX_AURORA_MAX_SKIN_INFLUENCES. The palette and influence buffers
- * must stay valid until the frame renders.
+ * influenceCount is clamped to GX_AURORA_MAX_SKIN_INFLUENCES. prevPalette is the previous frame's
+ * palette (same layout as palette); it is only consumed when the motion-vector debug view is
+ * active and may be null otherwise. The palette and influence buffers must stay valid until the
+ * frame renders.
  */
 void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, u32 vtxCount, u32 influenceCount,
-                   const void* baseMtx);
+                   const void* baseMtx, const void* prevPalette);
 
 /**
  * Disable GPU vertex skinning for subsequent draws.
  */
 void GXClearSkinning(void);
+
+/**
+ * Enable or disable the GPU-skinning motion-vector debug view. When enabled, GPU-skinned draws
+ * render a screen-space motion visualization (derived from the previous-frame pose) instead of
+ * their normal shading - a way to confirm skinning is running on the GPU.
+ */
+void GXSetSkinningDebugView(bool enable);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 
