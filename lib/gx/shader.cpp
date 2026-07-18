@@ -873,7 +873,7 @@ static std::string skin_vtx_transform(const ShaderConfig& config, std::string_vi
       skin_pos = skin_pos + skin_wgt * (vec4f({3}, 1.0) * skin_bm);
       skin_nrm = skin_nrm + skin_wgt * (vec4f({4}, 0.0) * skin_bm);
     }}
-)""",
+)"""),
                      idxExpr, count * 8, count, posSrc, nrmSrc);
 }
 
