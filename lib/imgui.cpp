@@ -261,6 +261,13 @@ static void enqueue_texture_upload(wgpu::Buffer buffer, wgpu::TexelCopyTextureIn
 }
 
 ImTextureID add_texture(uint32_t width, uint32_t height, const uint8_t* data) noexcept {
+  // D3D9 mode: no ImGui renderer backend, and Dawn is uninitialized. ImGui
+  // draw data is discarded, so a null texture id is safe for callers. Checked
+  // via dx9::active() (not g_headless) because the game's imGuiInitCallback
+  // registers textures before imgui::initialize() runs.
+  if (g_headless || dx9::active()) {
+    return ImTextureID{};
+  }
   if (SDL_Renderer* renderer = window::get_sdl_renderer()) {
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, width, height);
     SDL_UpdateTexture(texture, nullptr, data, width * 4);

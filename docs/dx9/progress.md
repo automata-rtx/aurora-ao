@@ -21,6 +21,49 @@
 
 ---
 
+## Checkpoint 2 — first Windows run: startup crash fixed (2026-07-22)
+
+**Symptom:** with `--backend d3d9` the window appeared then the process died,
+`EXCEPTION_ACCESS_VIOLATION` at fault address 0x0 **inside webgpu_dawn.dll**,
+immediately after the "Using framebuffer size" log line. The D3D9 device
+itself initialized fine (`dx9: device created 1216x896 (maxBlendMtxIdx=8,
+perStageConstants=true)` — also confirms per-stage TSS constants and blend
+palette caps on real hardware).
+
+**Root cause(s):** code paths that call Dawn unconditionally even when the
+D3D9 backend owns rendering (Dawn objects are null → null `this` calls into
+webgpu_dawn.dll):
+
+1. **The actual crash:** Dusklight's `imGuiInitCallback`
+   (`aurora_imgui_init_callback` → `ImGuiEngine_AddTextures` →
+   `aurora_imgui_add_texture`) runs right after the framebuffer-size log and
+   creates ImGui icon textures. `imgui::add_texture` fell through to
+   `webgpu::g_device.CreateTexture`. Fixed: returns a null `ImTextureID` when
+   `dx9::active()` (checked via dx9, not the headless flag, because the
+   callback runs *before* `imgui::initialize()`).
+2. **The next crash in line:** `window.cpp resize_swapchain()` calls
+   `webgpu::resize_swapchain` on `SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED` /
+   `DISPLAY_SCALE_CHANGED` / `FutureResize` — guaranteed to fire at startup on
+   a 150% display-scale system. Fixed with a `dx9::active()` guard (the D3D9
+   backend detects resizes itself in `dx9::begin_frame` via backbuffer-size
+   compare + `Reset`). Same guard added to the `RefreshSurface` custom event
+   (vsync changes).
+
+**Audit performed** (all other Dawn-touching paths reachable in d3d9 mode):
+`webgpu::set_resampler` (enum store — safe), `vi::configured_fb_size` (VI
+state — safe), `AuroraGetRenderSize` (window size — safe), debug groups
+(vector ops; marker push drops with warn — safe), `depth_peek::read_latest`
+(returns false on empty snapshot — safe; note GXPeekZ yields z=0 in d3d9
+mode, so peek-based visibility checks like sun flares misbehave — cosmetic),
+mods `gfx_get_device_info` (inline null handle, no Dawn call — mod's
+problem), `gx::initialize` (pure wgpu, correctly skipped; `fifo::init` runs
+from GXInit independently). rmlui paths unreachable (never initialized).
+
+**Expectation for next run:** boots past init; next likely issue class is in
+the first real draws (vertex decode / TEV apply / first textures). Get a new
+log + crash trace if it dies; if it renders, screenshot the first thing
+visible (Nintendo logo / title) and grep the log for `dx9` warnings.
+
 ## Checkpoint 1 — research + branches + docs + scaffold (2026-07-22)
 
 **Done:**

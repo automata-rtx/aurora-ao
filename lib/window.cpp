@@ -4,6 +4,7 @@
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
 #endif
+#include "dx9/dx9.hpp"
 #include "input.hpp"
 #include "internal.hpp"
 
@@ -98,7 +99,11 @@ void resize_swapchain() noexcept {
     SDL_SetRenderScale(g_renderer, size.scale, size.scale);
   }
 #ifdef AURORA_ENABLE_GX
-  webgpu::resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height);
+  // The D3D9 backend detects size changes itself in dx9::begin_frame (device
+  // Reset); Dawn is never initialized in that mode and must not be touched.
+  if (!dx9::active()) {
+    webgpu::resize_swapchain(size.fb_width, size.fb_height, size.native_fb_width, size.native_fb_height);
+  }
 #endif
 }
 
@@ -209,7 +214,9 @@ void process_event(SDL_Event& event) {
     } else if (event.type == g_sdlCustomEventsStart + CustomEvent::RefreshSurface) {
       // Refresh surface (vsync changed)
 #ifdef AURORA_ENABLE_GX
-      webgpu::refresh_surface(false);
+      if (!dx9::active()) {
+        webgpu::refresh_surface(false);
+      }
 #endif
     }
     break;
