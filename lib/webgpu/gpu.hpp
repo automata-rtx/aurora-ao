@@ -11,11 +11,19 @@
 struct SDL_Window;
 
 namespace aurora::webgpu {
+// Optional "thin g-buffer" normal target: a screen-space view-space normal
+// buffer written alongside EFB color, so screen-space effects can consume the
+// game's authored (interpolated) vertex normals instead of reconstructing them
+// from depth. RGBA8Unorm stores normalize(mv_nrm) * 0.5 + 0.5 in RGB and a
+// validity mask in A (0 where a draw had no authored normal).
+inline constexpr wgpu::TextureFormat NormalBufferFormat = wgpu::TextureFormat::RGBA8Unorm;
+
 struct GraphicsConfig {
   wgpu::SurfaceConfiguration surfaceConfiguration;
   wgpu::TextureFormat depthFormat;
   uint32_t msaaSamples;
   uint16_t textureAnisotropy;
+  bool normalBuffer = false;
 };
 struct TextureWithSampler {
   wgpu::Texture texture;
@@ -47,6 +55,8 @@ extern GraphicsConfig g_graphicsConfig;
 extern TextureWithSampler g_frameBuffer;
 extern TextureWithSampler g_frameBufferResolved;
 extern TextureWithSampler g_depthBuffer;
+extern TextureWithSampler g_normalBuffer;         // only valid when g_graphicsConfig.normalBuffer
+extern TextureWithSampler g_normalBufferResolved; // MSAA resolve target; unused when msaaSamples == 1
 extern wgpu::RenderPipeline g_CopyPipeline;
 extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
 extern wgpu::BindGroup g_CopyBindGroup;
@@ -62,7 +72,9 @@ void shutdown();
 void release_surface() noexcept;
 bool refresh_surface(bool recreate = true);
 void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uint32_t nativeHeight, bool force = false);
-TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+// format defaults to the surface format when Undefined.
+TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled,
+                                         wgpu::TextureFormat format = wgpu::TextureFormat::Undefined);
 const TextureWithSampler& present_source() noexcept;
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
 void set_resampler(AuroraSampler sampler) noexcept;

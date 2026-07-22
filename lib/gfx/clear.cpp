@@ -71,16 +71,26 @@ fn fs_main() -> @location(0) vec4<f32> {
               .dstFactor = wgpu::BlendFactor::Zero,
           },
   };
-  const wgpu::ColorTargetState colorTarget{
-      .format = g_graphicsConfig.surfaceConfiguration.format,
-      .blend = &blendState,
-      .writeMask = clear_write_mask(config.clearColor, config.clearAlpha),
+  // When the pass carries the thin-g-buffer normal attachment, declare a second (masked)
+  // target so the clear pipeline's attachment count matches the render pass. The clear
+  // fragment shader only writes @location(0); the normal target is left untouched.
+  const std::array colorTargets{
+      wgpu::ColorTargetState{
+          .format = g_graphicsConfig.surfaceConfiguration.format,
+          .blend = &blendState,
+          .writeMask = clear_write_mask(config.clearColor, config.clearAlpha),
+      },
+      wgpu::ColorTargetState{
+          .format = webgpu::NormalBufferFormat,
+          .blend = nullptr,
+          .writeMask = wgpu::ColorWriteMask::None,
+      },
   };
   const wgpu::FragmentState fragmentState{
       .module = module,
       .entryPoint = "fs_main",
-      .targetCount = 1,
-      .targets = &colorTarget,
+      .targetCount = config.normalTarget ? 2u : 1u,
+      .targets = colorTargets.data(),
   };
   const wgpu::DepthStencilState depthStencil{
       .format = g_graphicsConfig.depthFormat,

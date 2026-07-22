@@ -648,15 +648,27 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu:
   };
   const auto blendState =
       to_blend_state(config.blendMode, config.blendFacSrc, config.blendFacDst, config.blendOp, config.dstAlpha);
-  const std::array colorTargets{wgpu::ColorTargetState{
-      .format = g_graphicsConfig.surfaceConfiguration.format,
-      .blend = &blendState,
-      .writeMask = to_write_mask(config.colorUpdate, config.alphaUpdate),
-  }};
+  // Thin g-buffer normal target (location 1). No blending; write only for frontmost opaque
+  // surfaces so the buffer holds the opaque surface normal (matching the depth buffer).
+  const bool normalTarget = config.shaderConfig.normalTarget;
+  const bool writeNormal =
+      normalTarget && config.depthCompare && config.depthUpdate && config.blendMode == GX_BM_NONE;
+  const std::array colorTargets{
+      wgpu::ColorTargetState{
+          .format = g_graphicsConfig.surfaceConfiguration.format,
+          .blend = &blendState,
+          .writeMask = to_write_mask(config.colorUpdate, config.alphaUpdate),
+      },
+      wgpu::ColorTargetState{
+          .format = webgpu::NormalBufferFormat,
+          .blend = nullptr,
+          .writeMask = writeNormal ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None,
+      },
+  };
   const wgpu::FragmentState fragmentState{
       .module = shader,
       .entryPoint = "fs_main",
-      .targetCount = colorTargets.size(),
+      .targetCount = normalTarget ? 2u : 1u,
       .targets = colorTargets.data(),
   };
   const wgpu::RenderPipelineDescriptor descriptor{
@@ -764,6 +776,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
   }
   const auto cullMode = config.shaderConfig.lineMode == 0 ? g_gxState.cullMode : GX_CULL_NONE;
   const auto [polygonOffset, polygonOffsetScale] = polygon_offset_for_cull_mode(cullMode);
+  config.shaderConfig.normalTarget = gfx::pass_has_normal_target();
   config = {
       .msaaSamples = gfx::get_sample_count(),
       .shaderConfig = config.shaderConfig,

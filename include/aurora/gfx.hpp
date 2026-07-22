@@ -30,6 +30,11 @@ struct DrawContext {
   wgpu::Buffer storageBuffer;
   wgpu::TextureFormat colorFormat;
   wgpu::TextureFormat depthFormat;
+  // When not Undefined, the pass carries a second (thin g-buffer normal) color attachment of
+  // this format. A custom draw recorded into such a pass MUST declare a matching second color
+  // target (write mask off if it does not write normals) so its pipeline's attachment count
+  // matches the render pass.
+  wgpu::TextureFormat normalFormat = wgpu::TextureFormat::Undefined;
   uint32_t sampleCount = 1;
   uint32_t targetWidth = 0;
   uint32_t targetHeight = 0;
@@ -55,6 +60,12 @@ wgpu::TextureFormat color_format() noexcept;
 wgpu::TextureFormat depth_format() noexcept;
 uint32_t sample_count() noexcept;
 bool uses_reversed_z() noexcept;
+/// True when the optional screen-space normal buffer is enabled
+/// (AuroraConfig::enableNormalBuffer); resolve_pass can then produce
+/// ResolvedTargets::normal.
+bool has_normal_buffer() noexcept;
+/// Format of the normal buffer / its snapshot, or Undefined when disabled.
+wgpu::TextureFormat normal_format() noexcept;
 
 DrawTypeId register_draw_type(const DrawTypeDescriptor& desc);
 void unregister_draw_type(DrawTypeId type) noexcept;
@@ -111,12 +122,15 @@ Range push_storage(const uint8_t* data, size_t length);
 struct ResolveDesc {
   bool color = true;
   bool depth = false;
+  bool normal = false;  // requires the normal buffer to be enabled (AuroraConfig::enableNormalBuffer)
 };
 
 struct ResolvedTargets {
-  wgpu::TextureView color;  // single-sample snapshot; null if not requested
-  wgpu::TextureView depth;  // single-sample R32Float depth snapshot; null if not requested
+  wgpu::TextureView color;   // single-sample snapshot; null if not requested
+  wgpu::TextureView depth;   // single-sample R32Float depth snapshot; null if not requested
+  wgpu::TextureView normal;  // single-sample view-space normal snapshot; null if not requested/enabled
   wgpu::TextureFormat colorFormat = wgpu::TextureFormat::Undefined;
+  wgpu::TextureFormat normalFormat = wgpu::TextureFormat::Undefined;
   uint32_t width = 0;
   uint32_t height = 0;
 };

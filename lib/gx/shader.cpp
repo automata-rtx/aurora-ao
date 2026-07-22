@@ -1027,6 +1027,11 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     vtxOutAttrs += fmt::format("\n    @location({}) nrm: vec3f,", vtxOutIdx++);
     vtxXfrAttrsPre += "\n    out.nrm = mv_nrm;";
   }
+  // Thin g-buffer: carry the authored (interpolated) view-space normal to the fragment stage.
+  if (config.normalTarget) {
+    vtxOutAttrs += fmt::format("\n    @location({}) gbuf_nrm: vec3f,", vtxOutIdx++);
+    vtxXfrAttrsPre += "\n    out.gbuf_nrm = mv_nrm;";
+  }
 
   uniBufAttrs += "\n    proj: mat4x4f,";
   uniBufAttrs += fmt::format("\n    postex_mtx: array<mat3x4f, {}>,", MaxPnMtx + MaxTexMtx);
@@ -1559,6 +1564,30 @@ std::string build_shader_source(const ShaderConfig& config) noexcept {
     fragmentFn += "\n    prev = vec4f(in.nrm, prev.a);";
   }
 
+  // Fragment output. Single color target by default; a second location(1) normal
+  // target (thin g-buffer) when enabled. Validity (alpha) is 1.0 only when this
+  // draw has an authored normal attribute, else 0.0 so consumers can skip it.
+  std::string fragmentOutputStruct;
+  std::string fragmentReturnType = "@location(0) vec4f";
+  std::string fragmentReturn = "return prev;";
+  if (config.normalTarget) {
+    const bool hasAuthoredNormal = config.attrs[GX_VA_NRM].attrType != GX_NONE;
+    fragmentOutputStruct =
+        "\nstruct FragmentOutput {\n"
+        "    @location(0) color: vec4f,\n"
+        "    @location(1) normal: vec4f,\n"
+        "};\n";
+    fragmentReturnType = "FragmentOutput";
+    fragmentReturn = fmt::format(
+        "var fragOut: FragmentOutput;"
+        "\n    fragOut.color = prev;"
+        "\n    let gbn = in.gbuf_nrm;"
+        "\n    let gbnn = select(vec3f(0.0, 0.0, 1.0), normalize(gbn), dot(gbn, gbn) > 1e-10);"
+        "\n    fragOut.normal = vec4f(gbnn * 0.5 + 0.5, {});"
+        "\n    return fragOut;",
+        hasAuthoredNormal ? "1.0" : "0.0");
+  }
+
   const auto shaderSource = fmt::format(R"""(
 fn bswap32(v: u32, le: bool) -> u32 {{
   if (le) {{
@@ -1906,7 +1935,7 @@ var<uniform> ubuf: Uniform;{1}
 struct VertexOutput {{
     @builtin(position) pos: vec4f,{2}
 }};
-
+{9}
 @vertex
 fn vs_main(
     @builtin(vertex_index) vidx: u32{3}
@@ -1916,12 +1945,13 @@ fn vs_main(
 }}
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {{{6}{5}
-    return prev;
+fn fs_main(in: VertexOutput) -> {10} {{{6}{5}
+    {11}
 }}
 )""",
                                         uniBufAttrs, texBindings, vtxOutAttrs, vtxInAttrs, vtxXfrAttrs, fragmentFn,
-                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre);
+                                        fragmentFnPre, vtxXfrAttrsPre, uniformPre, fragmentOutputStruct,
+                                        fragmentReturnType, fragmentReturn);
   if (EnableDebugPrints) {
     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
   }

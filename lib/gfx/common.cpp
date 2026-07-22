@@ -222,9 +222,12 @@ struct RenderPass {
   wgpu::TextureView colorView;
   wgpu::TextureView resolveView; // MSAA resolve target; null if msaaSamples == 1
   wgpu::TextureView depthStencilView;
+  wgpu::TextureView normalView;        // optional thin-g-buffer normal target; null if disabled
+  wgpu::TextureView normalResolveView; // MSAA resolve target for normals; null if msaaSamples == 1
   wgpu::Texture copySourceTexture;
   wgpu::TextureView copySourceView;
   wgpu::TextureView copySourceDepthView;
+  wgpu::Texture copySourceNormalTexture; // resolved (or single-sample) normal target, for snapshots
   wgpu::Extent3D targetSize;
   uint32_t msaaSamples = 1;
 
@@ -235,6 +238,7 @@ struct RenderPass {
   // Full-target snapshots for the public resolve_pass API
   wgpu::Texture snapshotColorDst;
   wgpu::TextureView snapshotDepthDst;
+  wgpu::Texture snapshotNormalDst;
   Vec4<float> clearColorValue{0.f, 0.f, 0.f, 0.f};
   float clearDepthValue = gx::UseReversedZ ? 0.f : 1.f;
   wgpu::LoadOp colorLoadOp = wgpu::LoadOp::Undefined;
@@ -256,7 +260,7 @@ struct RenderPass {
   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
 
   // Something copies this pass's output after it ends: a GX resolve or resolve_pass snapshots.
-  bool has_consumer() const { return resolveTarget || snapshotColorDst || snapshotDepthDst; }
+  bool has_consumer() const { return resolveTarget || snapshotColorDst || snapshotDepthDst || snapshotNormalDst; }
   // The pass mutates its attachments: draws or pending clears.
   bool has_content() const { return hasDraws || clearColor || clearDepth; }
 };
@@ -457,14 +461,18 @@ static void map_staging_buffer(size_t slot, bool releaseSlotOnCompletion = false
 }
 
 static void set_efb_targets(RenderPass& pass) {
+  const bool msaa = webgpu::g_graphicsConfig.msaaSamples > 1;
   pass.colorView = webgpu::g_frameBuffer.view;
-  pass.resolveView = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : nullptr;
+  pass.resolveView = msaa ? webgpu::g_frameBufferResolved.view : nullptr;
   pass.depthStencilView = webgpu::g_depthBuffer.view;
-  pass.copySourceTexture =
-      webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.texture : webgpu::g_frameBuffer.texture;
-  pass.copySourceView =
-      webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : webgpu::g_frameBuffer.view;
+  pass.copySourceTexture = msaa ? webgpu::g_frameBufferResolved.texture : webgpu::g_frameBuffer.texture;
+  pass.copySourceView = msaa ? webgpu::g_frameBufferResolved.view : webgpu::g_frameBuffer.view;
   pass.copySourceDepthView = webgpu::g_depthBuffer.view;
+  if (webgpu::g_graphicsConfig.normalBuffer) {
+    pass.normalView = webgpu::g_normalBuffer.view;
+    pass.normalResolveView = msaa ? webgpu::g_normalBufferResolved.view : nullptr;
+    pass.copySourceNormalTexture = msaa ? webgpu::g_normalBufferResolved.texture : webgpu::g_normalBuffer.texture;
+  }
   pass.targetSize = webgpu::g_frameBuffer.size;
   pass.msaaSamples = webgpu::g_graphicsConfig.msaaSamples;
   pass.hasDepth = true;
@@ -493,7 +501,8 @@ static absl::flat_hash_map<OffscreenCacheKey, OffscreenCacheEntry> g_offscreenCa
 // copies after the old frame's reads.
 struct PassSnapshotEntry {
   webgpu::TextureWithSampler color;
-  webgpu::TextureWithSampler depth; // R32Float raw depth
+  webgpu::TextureWithSampler depth;  // R32Float raw depth
+  webgpu::TextureWithSampler normal; // view-space normal (NormalBufferFormat)
 };
 struct PassSnapshotPool {
   std::vector<PassSnapshotEntry> entries;
@@ -501,7 +510,8 @@ struct PassSnapshotPool {
 };
 static std::array<PassSnapshotPool, FrameSlotCount> g_passSnapshotPools;
 
-static PassSnapshotEntry& acquire_pass_snapshot(uint32_t width, uint32_t height, bool wantColor, bool wantDepth) {
+static PassSnapshotEntry& acquire_pass_snapshot(uint32_t width, uint32_t height, bool wantColor, bool wantDepth,
+                                                bool wantNormal) {
   auto& pool = g_passSnapshotPools[g_recordingFrameSlot];
   if (pool.used == pool.entries.size()) {
     pool.entries.emplace_back();
@@ -546,6 +556,25 @@ static PassSnapshotEntry& acquire_pass_snapshot(uint32_t width, uint32_t height,
         .view = std::move(view),
         .size = size,
         .format = wgpu::TextureFormat::R32Float,
+    };
+  }
+  if (wantNormal && (!entry.normal.texture || entry.normal.size.width != width || entry.normal.size.height != height)) {
+    const wgpu::TextureDescriptor desc{
+        .label = "Pass Snapshot Normal",
+        .usage = wgpu::TextureUsage::CopyDst | wgpu::TextureUsage::TextureBinding,
+        .dimension = wgpu::TextureDimension::e2D,
+        .size = size,
+        .format = webgpu::NormalBufferFormat,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+    };
+    auto texture = g_device.CreateTexture(&desc);
+    auto view = texture.CreateView();
+    entry.normal = webgpu::TextureWithSampler{
+        .texture = std::move(texture),
+        .view = std::move(view),
+        .size = size,
+        .format = webgpu::NormalBufferFormat,
     };
   }
   return entry;
@@ -843,14 +872,18 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
 
   // Populate new render pass from previous
   const auto msaaSamples = prevPass.msaaSamples;
+  const bool hasNormalTarget = static_cast<bool>(prevPass.normalView);
   RenderPass newPass{
       .label = pass_label("EFB"),
       .colorView = prevPass.colorView,
       .resolveView = prevPass.resolveView,
       .depthStencilView = prevPass.depthStencilView,
+      .normalView = prevPass.normalView,
+      .normalResolveView = prevPass.normalResolveView,
       .copySourceTexture = prevPass.copySourceTexture,
       .copySourceView = prevPass.copySourceView,
       .copySourceDepthView = prevPass.copySourceDepthView,
+      .copySourceNormalTexture = prevPass.copySourceNormalTexture,
       .targetSize = prevPass.targetSize,
       .msaaSamples = msaaSamples,
       .clearColorValue = clearColorValue,
@@ -872,6 +905,7 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
             .clearColor = clearColor,
             .clearAlpha = clearAlpha,
             .clearDepth = false, // Depth cleared via render attachment
+            .normalTarget = hasNormalTarget,
         }),
         .color =
             wgpu::Color{
@@ -899,6 +933,13 @@ uint32_t get_sample_count() noexcept {
   return current_render_passes()[g_currentRenderPass].msaaSamples;
 }
 
+bool pass_has_normal_target() noexcept {
+  if (g_currentRenderPass == UINT32_MAX) {
+    return false;
+  }
+  return static_cast<bool>(current_render_passes()[g_currentRenderPass].normalView);
+}
+
 void clear_caches() noexcept {
   g_offscreenCache.clear();
   std::lock_guard lock{g_bindGroupCacheMutex};
@@ -916,6 +957,12 @@ wgpu::TextureFormat depth_format() noexcept { return webgpu::g_graphicsConfig.de
 uint32_t sample_count() noexcept { return webgpu::g_graphicsConfig.msaaSamples; }
 
 bool uses_reversed_z() noexcept { return gx::UseReversedZ; }
+
+bool has_normal_buffer() noexcept { return webgpu::g_graphicsConfig.normalBuffer; }
+
+wgpu::TextureFormat normal_format() noexcept {
+  return webgpu::g_graphicsConfig.normalBuffer ? webgpu::NormalBufferFormat : wgpu::TextureFormat::Undefined;
+}
 
 DrawTypeId register_draw_type(const DrawTypeDescriptor& desc) {
   if (desc.draw == nullptr) {
@@ -1167,9 +1214,16 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
   auto& prevPass = current_render_passes()[g_currentRenderPass];
   const uint32_t width = prevPass.targetSize.width;
   const uint32_t height = prevPass.targetSize.height;
+
+  bool wantNormal = desc.normal;
+  if (wantNormal && !(webgpu::g_graphicsConfig.normalBuffer && prevPass.copySourceNormalTexture)) {
+    Log.warn("resolve_pass: normal snapshot requested but the normal buffer is unavailable in this pass");
+    wantNormal = false;
+  }
+
   // Requesting no snapshots is a plain pass break (or offscreen close, discarding its output).
-  if (desc.color || wantDepth) {
-    auto& entry = acquire_pass_snapshot(width, height, desc.color, wantDepth);
+  if (desc.color || wantDepth || wantNormal) {
+    auto& entry = acquire_pass_snapshot(width, height, desc.color, wantDepth, wantNormal);
     if (desc.color) {
       prevPass.snapshotColorDst = entry.color.texture;
       out.color = entry.color.view;
@@ -1178,6 +1232,11 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
     if (wantDepth) {
       prevPass.snapshotDepthDst = entry.depth.view;
       out.depth = entry.depth.view;
+    }
+    if (wantNormal) {
+      prevPass.snapshotNormalDst = entry.normal.texture;
+      out.normal = entry.normal.view;
+      out.normalFormat = entry.normal.format;
     }
   }
   out.width = width;
@@ -1204,9 +1263,12 @@ static void resume_efb_pass_loading(const RenderPass& prevPass) {
       .colorView = prevPass.colorView,
       .resolveView = prevPass.resolveView,
       .depthStencilView = prevPass.depthStencilView,
+      .normalView = prevPass.normalView,
+      .normalResolveView = prevPass.normalResolveView,
       .copySourceTexture = prevPass.copySourceTexture,
       .copySourceView = prevPass.copySourceView,
       .copySourceDepthView = prevPass.copySourceDepthView,
+      .copySourceNormalTexture = prevPass.copySourceNormalTexture,
       .targetSize = prevPass.targetSize,
       .msaaSamples = prevPass.msaaSamples,
       .clearColor = false,
@@ -1850,23 +1912,35 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
     return;
   }
 
-  const std::array attachments{
-      wgpu::RenderPassColorAttachment{
-          .view = passInfo.colorView,
-          .resolveTarget = passInfo.resolveView,
-          .loadOp = passInfo.colorLoadOp != wgpu::LoadOp::Undefined
-                        ? passInfo.colorLoadOp
-                        : (passInfo.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load),
-          .storeOp = passInfo.colorStoreOp,
-          .clearValue =
-              {
-                  .r = passInfo.clearColorValue.x(),
-                  .g = passInfo.clearColorValue.y(),
-                  .b = passInfo.clearColorValue.z(),
-                  .a = passInfo.clearColorValue.w(),
-              },
-      },
+  std::array<wgpu::RenderPassColorAttachment, 2> attachments{};
+  attachments[0] = wgpu::RenderPassColorAttachment{
+      .view = passInfo.colorView,
+      .resolveTarget = passInfo.resolveView,
+      .loadOp = passInfo.colorLoadOp != wgpu::LoadOp::Undefined
+                    ? passInfo.colorLoadOp
+                    : (passInfo.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load),
+      .storeOp = passInfo.colorStoreOp,
+      .clearValue =
+          {
+              .r = passInfo.clearColorValue.x(),
+              .g = passInfo.clearColorValue.y(),
+              .b = passInfo.clearColorValue.z(),
+              .a = passInfo.clearColorValue.w(),
+          },
   };
+  uint32_t colorAttachmentCount = 1;
+  if (passInfo.normalView) {
+    // Thin g-buffer normal target: cleared to (0,0,0,0) (validity 0) on the frame's first EFB
+    // pass, loaded on resumed segments, so a resolve_pass snapshot sees all prior opaque normals.
+    attachments[1] = wgpu::RenderPassColorAttachment{
+        .view = passInfo.normalView,
+        .resolveTarget = passInfo.normalResolveView,
+        .loadOp = passInfo.clearColor ? wgpu::LoadOp::Clear : wgpu::LoadOp::Load,
+        .storeOp = wgpu::StoreOp::Store,
+        .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0},
+    };
+    colorAttachmentCount = 2;
+  }
   wgpu::RenderPassDepthStencilAttachment depthStencilAttachment{};
   const wgpu::RenderPassDepthStencilAttachment* depthStencilAttachmentPtr = nullptr;
   if (passInfo.depthStencilView) {
@@ -1888,7 +1962,7 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
                                             : fmt::format("{} {}", passInfo.label, passIndex);
   const wgpu::RenderPassDescriptor renderPassDescriptor{
       .label = label.c_str(),
-      .colorAttachmentCount = attachments.size(),
+      .colorAttachmentCount = colorAttachmentCount,
       .colorAttachments = attachments.data(),
       .depthStencilAttachment = depthStencilAttachmentPtr,
       .timestampWrites = webgpu::gpu_prof::pass_writes(label),
@@ -1962,6 +2036,22 @@ static void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& pa
   if (passInfo.snapshotDepthDst) {
     tex_copy_conv::snapshot_depth(cmd, passInfo.copySourceDepthView, passInfo.msaaSamples, passInfo.snapshotDepthDst);
   }
+  if (passInfo.snapshotNormalDst && passInfo.copySourceNormalTexture) {
+    // Normal target is an ordinary color texture, so its snapshot is a plain copy (like color).
+    const webgpu::gpu_prof::Zone zone{cmd, "Normal snapshot"};
+    const wgpu::TexelCopyTextureInfo src{
+        .texture = passInfo.copySourceNormalTexture,
+    };
+    const wgpu::TexelCopyTextureInfo dst{
+        .texture = passInfo.snapshotNormalDst,
+    };
+    const wgpu::Extent3D size{
+        .width = passInfo.targetSize.width,
+        .height = passInfo.targetSize.height,
+        .depthOrArrayLayers = 1,
+    };
+    cmd.CopyTextureToTexture(&src, &dst, &size);
+  }
 }
 
 void after_submit() noexcept { depth_peek::after_submit(); }
@@ -2023,6 +2113,7 @@ static DrawContext make_draw_context(const RenderPass& passInfo) {
       .storageBuffer = g_storageBuffer,
       .colorFormat = webgpu::g_graphicsConfig.surfaceConfiguration.format,
       .depthFormat = webgpu::g_graphicsConfig.depthFormat,
+      .normalFormat = passInfo.normalView ? webgpu::NormalBufferFormat : wgpu::TextureFormat::Undefined,
       .sampleCount = passInfo.msaaSamples,
       .targetWidth = passInfo.targetSize.width,
       .targetHeight = passInfo.targetSize.height,

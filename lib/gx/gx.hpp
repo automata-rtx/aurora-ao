@@ -449,8 +449,9 @@ struct AttrConfig {
 struct ShaderConfig {
   u8 fogType = GX_FOG_NONE;
   u8 vtxStride = 0;
-  u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
-  u8 pad1 : 6 = 0;
+  u8 lineMode : 2 = 0;    // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
+  u8 normalTarget : 1 = 0; // emit the thin-g-buffer normal output (@location(1))
+  u8 pad1 : 5 = 0;
   u8 pad2 = 0;
   std::array<AttrConfig, MaxVtxAttr> attrs;
   std::array<TevSwap, MaxTevSwap> tevSwapTable;

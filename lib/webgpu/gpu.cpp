@@ -44,6 +44,8 @@ GraphicsConfig g_graphicsConfig;
 TextureWithSampler g_frameBuffer;
 TextureWithSampler g_frameBufferResolved;
 TextureWithSampler g_depthBuffer;
+TextureWithSampler g_normalBuffer;
+TextureWithSampler g_normalBufferResolved;
 
 // EFB -> XFB copy pipeline
 static wgpu::BindGroupLayout g_CopyBindGroupLayout;
@@ -251,13 +253,16 @@ uint32_t viewport_extent(float value) noexcept {
 
 } // namespace
 
-TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled) {
+TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled,
+                                         wgpu::TextureFormat format) {
   const wgpu::Extent3D size{
       .width = width,
       .height = height,
       .depthOrArrayLayers = 1,
   };
-  const auto format = g_graphicsConfig.surfaceConfiguration.format;
+  if (format == wgpu::TextureFormat::Undefined) {
+    format = g_graphicsConfig.surfaceConfiguration.format;
+  }
   uint32_t sampleCount = 1;
   if (multisampled) {
     sampleCount = g_graphicsConfig.msaaSamples;
@@ -1037,6 +1042,7 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
       .depthFormat = wgpu::TextureFormat::Depth32Float,
       .msaaSamples = g_config.msaa,
       .textureAnisotropy = g_config.maxTextureAnisotropy,
+      .normalBuffer = g_config.enableNormalBuffer,
   };
   create_copy_pipeline();
   create_resample_pipeline();
@@ -1061,6 +1067,8 @@ void shutdown() {
   g_frameBuffer = {};
   g_frameBufferResolved = {};
   g_depthBuffer = {};
+  g_normalBuffer = {};
+  g_normalBufferResolved = {};
   g_queue = {};
   g_surface = {};
   g_device = {};
@@ -1103,6 +1111,15 @@ static void resize_swapchain_internal(uint32_t width, uint32_t height, uint32_t 
   g_frameBuffer = create_render_texture(width, height, true);
   g_frameBufferResolved = create_render_texture(width, height, false);
   g_depthBuffer = create_depth_texture(width, height);
+  if (g_graphicsConfig.normalBuffer) {
+    g_normalBuffer = create_render_texture(width, height, true, NormalBufferFormat);
+    g_normalBufferResolved = g_graphicsConfig.msaaSamples > 1
+                                 ? create_render_texture(width, height, false, NormalBufferFormat)
+                                 : TextureWithSampler{};
+  } else {
+    g_normalBuffer = {};
+    g_normalBufferResolved = {};
+  }
   g_CopyBindGroup = create_copy_bind_group(present_source());
 }
 

@@ -261,6 +261,7 @@ void begin_offscreen(uint32_t width, uint32_t height);
 void end_offscreen();
 bool is_offscreen() noexcept;
 uint32_t get_sample_count() noexcept;
+bool pass_has_normal_target() noexcept;
 void clear_caches() noexcept;
 
 namespace tex_palette_conv {
