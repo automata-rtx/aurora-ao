@@ -48,6 +48,22 @@ target_link_libraries(aurora_gx PUBLIC aurora::core dawn::webgpu_dawn xxhash)
 target_link_libraries(aurora_gx PRIVATE absl::btree absl::flat_hash_map sqlite3 TracyClient PNG::PNG)
 target_compile_definitions(aurora_gx PRIVATE WEBGPU_DAWN)
 
+if (AURORA_ENABLE_D3D9)
+    target_sources(aurora_gx PRIVATE
+        lib/dx9/dx9.hpp
+        lib/dx9/dx9_internal.hpp
+        lib/dx9/dx9_backend.cpp
+        lib/dx9/dx9_texture.hpp
+        lib/dx9/dx9_texture.cpp
+        lib/dx9/dx9_vertex.hpp
+        lib/dx9/dx9_vertex.cpp
+        lib/dx9/dx9_tev.hpp
+        lib/dx9/dx9_tev.cpp
+        lib/dx9/dx9_draw.cpp
+    )
+    target_link_libraries(aurora_gx PRIVATE d3d9)
+endif ()
+
 if (AURORA_ENABLE_RMLUI)
     target_sources(aurora_gx PRIVATE
         lib/rmlui/pipeline.cpp

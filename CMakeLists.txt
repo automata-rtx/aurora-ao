@@ -12,6 +12,13 @@ option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" OFF)  # TODO:
 option(AURORA_ENABLE_CARD "Enable CARD implementation based on kabufuda" ON)
 option(AURORA_ENABLE_RMLUI "Enable HTML/CSS Based UI Library for use in end-user UI development." OFF)
 option(AURORA_CACHE_USE_ZSTD "Compress WebGPU cache entries with zstd" ON)
+# Direct3D 9 fixed-function backend (RTX Remix oriented); Windows only.
+# See docs/dx9/README.md.
+if (WIN32)
+    option(AURORA_ENABLE_D3D9 "Enable the Direct3D 9 fixed-function backend" ON)
+else ()
+    set(AURORA_ENABLE_D3D9 OFF)
+endif ()
 
 # Dependency versions
 include(cmake/AuroraDependencyVersions.cmake)

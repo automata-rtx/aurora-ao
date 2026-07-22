@@ -1,6 +1,7 @@
 #include "gx.hpp"
 
 #include "pipeline.hpp"
+#include "../dx9/dx9.hpp"
 #include "../dolphin/vi/vi_internal.hpp"
 #include "../webgpu/gpu.hpp"
 #include "../internal.hpp"
@@ -345,6 +346,10 @@ void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
 
 void set_render_viewport(const gfx::Viewport& viewport) noexcept {
   g_gxState.renderViewport = viewport;
+  if (dx9::active()) {
+    dx9::set_render_viewport();
+    return;
+  }
   gfx::set_viewport(viewport);
 }
 
@@ -355,12 +360,17 @@ void set_logical_scissor(const gfx::ClipRect& scissor) noexcept {
 
 void set_render_scissor(const gfx::ClipRect& scissor) noexcept {
   g_gxState.renderScissor = scissor;
+  if (dx9::active()) {
+    dx9::set_render_scissor();
+    return;
+  }
   gfx::set_scissor(scissor);
 }
 
 const gfx::TextureBind& get_texture(GXTexMapID id) noexcept { return g_gxState.textures[static_cast<size_t>(id)]; }
 
 void evict_texture_object(u32 texObjId) noexcept {
+  dx9::on_evict_texture(texObjId);
   if (const auto it = s_textureObjectCaches.find(texObjId); it != s_textureObjectCaches.end()) {
     clear_texture_dependency(texObjId, it->second.tlutObjId);
     s_textureObjectCaches.erase(it);
@@ -375,6 +385,7 @@ void evict_texture_object(u32 texObjId) noexcept {
 }
 
 void evict_tlut_object(u32 tlutObjId) noexcept {
+  dx9::on_evict_tlut(tlutObjId);
   if (const auto it = s_tlutObjectCaches.find(tlutObjId); it != s_tlutObjectCaches.end()) {
     for (const u32 texObjId : it->second.staticTextureUsers) {
       s_textureObjectCaches.erase(texObjId);
@@ -401,6 +412,7 @@ void clear_copy_texture_cache() noexcept {
 void clear_static_texture_cache() noexcept { s_staticTextureCacheClearPending.store(true, std::memory_order_release); }
 
 void evict_copy_texture(const void* dest) noexcept {
+  dx9::on_evict_copy_texture(dest);
   absl::flat_hash_set<const void*> sourceIdentities;
   if (const auto it = g_gxState.copyTextures.find(dest); it != g_gxState.copyTextures.end()) {
     if (it->second.handle) {

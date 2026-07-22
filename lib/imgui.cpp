@@ -13,6 +13,7 @@
 #include <SDL3/SDL_render.h>
 
 #include "internal.hpp"
+#include "dx9/dx9.hpp"
 #include "gfx/render_worker.hpp"
 #include "webgpu/gpu.hpp"
 #include "window.hpp"
@@ -28,6 +29,8 @@ static float g_scale;
 static std::string g_imguiSettings{};
 static std::string g_imguiLog{};
 static bool g_useSdlRenderer = false;
+// D3D9 mode: platform backend only, no renderer; draw data is discarded.
+static bool g_headless = false;
 
 static std::vector<SDL_Texture*> g_sdlTextures;
 static std::vector<wgpu::Texture> g_wgpuTextures;
@@ -49,6 +52,16 @@ void create_context() noexcept {
 
 void initialize() noexcept {
   ZoneScoped;
+  if (dx9::active()) {
+    // D3D9 mode runs ImGui headless: the SDL3 platform backend keeps game-side
+    // ImGui code functional (input, layout), but no renderer backend is
+    // attached and draw data is discarded. Build the font atlas on the CPU so
+    // ImGui::NewFrame doesn't assert.
+    g_headless = true;
+    ImGui_ImplSDL3_InitForOther(window::get_sdl_window());
+    ImGui::GetIO().Fonts->Build();
+    return;
+  }
   SDL_Renderer* renderer = window::get_sdl_renderer();
   ImGui_ImplSDL3_InitForSDLRenderer(window::get_sdl_window(), renderer);
   g_useSdlRenderer = renderer != nullptr;
@@ -64,7 +77,9 @@ void initialize() noexcept {
 
 void shutdown() noexcept {
   ZoneScoped;
-  if (g_useSdlRenderer) {
+  if (g_headless) {
+    // No renderer backend was initialized.
+  } else if (g_useSdlRenderer) {
     ImGui_ImplSDLRenderer3_Shutdown();
   } else {
     ImGui_ImplWGPU_Shutdown();
@@ -121,7 +136,9 @@ void new_frame(const AuroraWindowSize& size) noexcept {
   };
   ImVec2 displaySize{static_cast<float>(size.width), static_cast<float>(size.height)};
 
-  if (g_useSdlRenderer) {
+  if (g_headless) {
+    // No renderer backend; platform new-frame only.
+  } else if (g_useSdlRenderer) {
     if (SDL_Renderer* renderer = window::get_sdl_renderer()) {
       float renderScaleX = 1.0f;
       float renderScaleY = 1.0f;
@@ -164,6 +181,9 @@ DrawData freeze() noexcept {
   ZoneScoped;
   ImGui::Render();
 
+  if (g_headless) {
+    return {};
+  }
   auto* data = ImGui::GetDrawData();
   data->FramebufferScale = ImGui::GetIO().DisplayFramebufferScale;
   auto frozen = std::make_shared<DrawData::Impl>();

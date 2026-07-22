@@ -2,6 +2,7 @@
 
 #include "clear.hpp"
 #include "depth_peek.hpp"
+#include "../dx9/dx9.hpp"
 #include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
 #include "../webgpu/gpu_prof.hpp"
@@ -790,6 +791,12 @@ static void push_draw_command(ShaderDrawCommand data) {
 }
 
 Vec2<uint32_t> get_render_target_size() noexcept {
+  if (dx9::active()) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    dx9::get_backbuffer_size(width, height);
+    return {width, height};
+  }
   if (g_currentRenderPass < current_render_passes().size()) {
     const auto& size = current_render_passes()[g_currentRenderPass].targetSize;
     return {size.width, size.height};
@@ -892,7 +899,7 @@ void queue_palette_conv(tex_palette_conv::ConvRequest req) {
   renderPass.paletteConvs.push_back(std::move(req));
 }
 
-bool is_offscreen() noexcept { return g_inOffscreen; }
+bool is_offscreen() noexcept { return dx9::active() ? dx9::in_offscreen() : g_inOffscreen; }
 
 uint32_t get_sample_count() noexcept {
   CHECK(g_currentRenderPass != UINT32_MAX, "get_sample_count called outside of a frame");
@@ -976,6 +983,10 @@ bool push_custom_draw(DrawTypeId type, const void* payload, size_t payloadSize) 
 
   gx::fifo::drain();
 
+  if (dx9::active()) {
+    // Custom draw types are WebGPU-based (mods); inert on the D3D9 backend.
+    return false;
+  }
   if (g_recordingFrame == nullptr || g_currentRenderPass == UINT32_MAX) {
     Log.warn("push_custom_draw: called outside an active render pass");
     return false;
@@ -1136,6 +1147,9 @@ bool create_pass(uint32_t width, uint32_t height) {
 
   gx::fifo::drain();
 
+  if (dx9::active()) {
+    return false;
+  }
   if (g_recordingFrame == nullptr || g_currentRenderPass == UINT32_MAX) {
     Log.warn("create_pass: called outside an active render pass");
     return false;
@@ -1153,6 +1167,9 @@ bool resolve_pass(const ResolveDesc& desc, ResolvedTargets& out) {
   out = {};
   gx::fifo::drain();
 
+  if (dx9::active()) {
+    return false;
+  }
   if (g_recordingFrame == nullptr || g_currentRenderPass == UINT32_MAX) {
     Log.warn("resolve_pass: called outside an active render pass");
     return false;
@@ -1280,6 +1297,9 @@ bool push_encoder_task(EncoderTaskId type, const void* payload, size_t payloadSi
 
   gx::fifo::drain();
 
+  if (dx9::active()) {
+    return false;
+  }
   if (g_recordingFrame == nullptr || g_currentRenderPass == UINT32_MAX) {
     Log.warn("push_encoder_task: called outside an active render pass");
     return false;

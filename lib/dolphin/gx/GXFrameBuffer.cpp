@@ -1,6 +1,7 @@
 #include "gx.hpp"
 #include "__gx.h"
 
+#include "../../dx9/dx9.hpp"
 #include "../../gfx/tex_copy_conv.hpp"
 #include "../../gfx/texture.hpp"
 #include "../../window.hpp"
@@ -33,6 +34,11 @@ aurora::Vec2<uint32_t> scale_copy_dst(u32 logicalWidth, u32 logicalHeight) {
 
 namespace aurora::gx {
 void copy_tex(const void* dest, GXBool clear) noexcept {
+  if (aurora::dx9::active()) {
+    // v1: placeholder texture + clear semantics only (docs/dx9 mapping #10).
+    aurora::dx9::copy_tex(dest, clear != GX_FALSE);
+    return;
+  }
   const auto rect = map_logical_scissor(g_gxState.texCopySrc);
   const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);
   const auto texCopyFmt = g_gxState.texCopyFmt;

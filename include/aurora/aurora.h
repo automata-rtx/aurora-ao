@@ -27,6 +27,12 @@ typedef enum {
   BACKEND_OPENGLES,
   BACKEND_WEBGPU,
   BACKEND_NULL,
+  /**
+   * Direct3D 9 fixed-function renderer (Windows only), designed for RTX Remix
+   * compatibility. Appended after BACKEND_NULL to keep existing enum values
+   * stable. See docs/dx9/README.md.
+   */
+  BACKEND_D3D9,
 } AuroraBackend;
 
 typedef enum {

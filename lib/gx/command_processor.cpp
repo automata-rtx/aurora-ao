@@ -1,5 +1,6 @@
 #include "command_processor.hpp"
 
+#include "../dx9/dx9.hpp"
 #include "../gfx/common.hpp"
 #include "../gfx/depth_peek.hpp"
 #include "dolphin/gx/GXAurora.h"
@@ -1557,7 +1558,8 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
 // Draw command handler - parses vertices inline and caches results
 static ByteBuffer handle_draw_idx_buf;
 
-static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, const u8* data, u32& pos, u32 size) {
+static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, const u8* data, u32& pos, u32 size,
+                      bool bigEndian) {
   ZoneScoped;
   u32 vtxSize;
   if (g_gxState.lastVtxFmt == fmt)
@@ -1568,6 +1570,14 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, const u8* da
   u32 totalVtxBytes = vtxCount * vtxSize;
   if (pos + totalVtxBytes > size)
     UNLIKELY { handle_draw_overrun(totalVtxBytes, data, pos, size); }
+
+  if (dx9::active()) {
+    // D3D9 backend: decode + submit immediately; no wgpu buffers involved.
+    dx9::draw_prim(prim, fmt, vtxCount, data + pos, vtxSize, bigEndian);
+    g_gxState.stateDirty = false;
+    pos += totalVtxBytes;
+    return;
+  }
 
   auto* lastDraw = !g_gxState.stateDirty ? gfx::get_last_draw_command<DrawData>() : nullptr;
   // Skinned draws carry a per-shape palette and key influences by position index, so they must
@@ -1625,7 +1635,7 @@ static void handle_draw(u8 cmd, const u8* data, u32& pos, u32 size, bool bigEndi
   u16 vtxCount = read_u16(data + pos, bigEndian);
   pos += 2;
 
-  draw_prim(prim, fmt, vtxCount, data, pos, size);
+  draw_prim(prim, fmt, vtxCount, data, pos, size, bigEndian);
 }
 
 static ByteBuffer handle_draw_unmerged_idxBuf;
@@ -1871,16 +1881,27 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     g_gxState.texCopyDest = reinterpret_cast<const void*>(read_u64(data + pos, bigEndian));
     pos += 8;
   } else if (subCmd == GX_AURORA_REQUEST_DEPTH_SNAPSHOT) {
-    gfx::depth_peek::request_snapshot();
+    if (!dx9::active()) {
+      gfx::depth_peek::request_snapshot();
+    }
   } else if (subCmd == GX_AURORA_BEGIN_OFFSCREEN) {
     CHECK(pos + 8 <= size, "GX_AURORA_BEGIN_OFFSCREEN read overrun");
     const u32 width = read_u32(data + pos, bigEndian);
     pos += 4;
     const u32 height = read_u32(data + pos, bigEndian);
     pos += 4;
-    gfx::begin_offscreen(width, height);
+    if (dx9::active()) {
+      // v1: draws inside offscreen passes are discarded (docs #10).
+      dx9::begin_offscreen();
+    } else {
+      gfx::begin_offscreen(width, height);
+    }
   } else if (subCmd == GX_AURORA_END_OFFSCREEN) {
-    gfx::end_offscreen();
+    if (dx9::active()) {
+      dx9::end_offscreen();
+    } else {
+      gfx::end_offscreen();
+    }
   } else if (subCmd == GX_AURORA_DESTROY_TEXOBJ) {
     CHECK(pos + 4 <= size, "GX_AURORA_DESTROY_TEXOBJ read overrun");
     evict_texture_object(read_u32(data + pos, bigEndian));
@@ -1912,7 +1933,7 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
              "GX_AURORA_DRAW_SIZED: {} bytes is not a whole number of size-{} vertices", byteLen, vtxSize);
       u32 vtxCount = byteLen / vtxSize;
       ASSERT(vtxCount <= 0xFFFF, "GX_AURORA_DRAW_SIZED: too many vertices ({})", vtxCount);
-      draw_prim(prim, fmt, static_cast<u16>(vtxCount), data, pos, size);
+      draw_prim(prim, fmt, static_cast<u16>(vtxCount), data, pos, size, bigEndian);
     }
   } else if (subCmd == GX_AURORA_DRAW_INDEXED) {
     ZoneScopedN("DRAW_INDEXED");
@@ -1929,6 +1950,24 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
            static_cast<u32>(prim));
     const u32 idxBytes = indexCount * static_cast<u32>(sizeof(u16));
     CHECK(pos + idxBytes <= size, "GX_AURORA_DRAW_INDEXED index data overrun");
+    if (dx9::active()) {
+      const auto* indices = reinterpret_cast<const u16*>(data + pos);
+      pos += idxBytes;
+      u32 vtxSize;
+      if (g_gxState.lastVtxFmt == fmt) {
+        vtxSize = g_gxState.lastVtxSize;
+      } else {
+        vtxSize = calculate_last_vtx_size(fmt);
+      }
+      const u32 totalVtxBytes = vtxCount * vtxSize;
+      CHECK(pos + totalVtxBytes <= size, "GX_AURORA_DRAW_INDEXED vertex data overrun");
+      if (indexCount != 0) {
+        dx9::draw_indexed(fmt, vtxCount, data + pos, vtxSize, indices, indexCount, bigEndian);
+        g_gxState.stateDirty = false;
+      }
+      pos += totalVtxBytes;
+      return;
+    }
     // Index data is always host-endian; push it to the GPU buffer as-is
     const gfx::Range idxRange = gfx::push_indices(data + pos, idxBytes, 4);
     pos += idxBytes;
@@ -1973,12 +2012,20 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     // built at runtime by the game. Upload both to the shared storage buffer for this frame.
     const auto* palette = reinterpret_cast<const uint8_t*>(paletteAddr);
     const auto* influences = reinterpret_cast<const uint8_t*>(influenceAddr);
-    g_gxState.skinPaletteRange = gfx::push_storage(palette, static_cast<size_t>(jointCount) * 48);
-    g_gxState.skinInfluenceRange =
-        gfx::push_storage(influences, static_cast<size_t>(vtxCount) * influenceCount * 8);
+    if (dx9::active()) {
+      // D3D9 keeps the host pointers and bakes weights/indices at decode time.
+      dx9::set_skinning(palette, jointCount, influences, vtxCount, influenceCount);
+    } else {
+      g_gxState.skinPaletteRange = gfx::push_storage(palette, static_cast<size_t>(jointCount) * 48);
+      g_gxState.skinInfluenceRange =
+          gfx::push_storage(influences, static_cast<size_t>(vtxCount) * influenceCount * 8);
+    }
     g_gxState.skinInfluences = static_cast<u8>(influenceCount);
     g_gxState.skinningActive = true;
   } else if (subCmd == GX_AURORA_CLEAR_SKINNING) {
+    if (dx9::active()) {
+      dx9::clear_skinning();
+    }
     g_gxState.skinningActive = false;
   }
 

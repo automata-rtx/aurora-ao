@@ -14,6 +14,7 @@
 #include "rmlui.hpp"
 #endif
 
+#include "dx9/dx9.hpp"
 #include "input.hpp"
 #include "internal.hpp"
 #include "window.hpp"
@@ -79,6 +80,11 @@ constexpr std::array PreferredBackendOrder{
 #ifdef DAWN_ENABLE_BACKEND_OPENGLES
     BACKEND_OPENGLES,
 #endif
+#ifdef AURORA_ENABLE_D3D9
+    // Last-resort real renderer (fixed-function, Remix-oriented); never
+    // preferred over the Dawn backends by auto-selection.
+    BACKEND_D3D9,
+#endif
 #ifdef DAWN_ENABLE_BACKEND_NULL
     BACKEND_NULL,
 #endif
@@ -127,10 +133,16 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 
 #ifdef AURORA_ENABLE_GX
   /* Attempt to create a window using the calling application's desired backend */
+  const auto initializeBackend = [&config](AuroraBackend backend) {
+    if (backend == BACKEND_D3D9) {
+      return dx9::initialize();
+    }
+    return webgpu::initialize(backend, config.allowCpuAdapter);
+  };
   AuroraBackend selectedBackend = config.desiredBackend;
   bool windowCreated = false;
   if (selectedBackend != BACKEND_AUTO && window::create_window(selectedBackend)) {
-    if (webgpu::initialize(selectedBackend, config.allowCpuAdapter)) {
+    if (initializeBackend(selectedBackend)) {
       windowCreated = true;
     } else {
       window::destroy_window();
@@ -143,7 +155,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
       if (!window::create_window(selectedBackend)) {
         continue;
       }
-      if (webgpu::initialize(selectedBackend, config.allowCpuAdapter)) {
+      if (initializeBackend(selectedBackend)) {
         windowCreated = true;
         break;
       } else {
@@ -167,7 +179,9 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   window::show_window();
 
 #ifdef AURORA_ENABLE_GX
-  gfx::initialize();
+  if (!dx9::active()) {
+    gfx::initialize();
+  }
 
   imgui::create_context();
 #endif
@@ -181,7 +195,10 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 #endif
 
 #ifdef AURORA_ENABLE_RMLUI
-  rmlui::initialize(size);
+  // The RmlUi backend renders through WebGPU; unavailable on the D3D9 path.
+  if (!dx9::active()) {
+    rmlui::initialize(size);
+  }
 #endif
 
   g_initialFrame = true;
@@ -197,13 +214,18 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 
 void shutdown() noexcept {
 #ifdef AURORA_ENABLE_GX
-  gfx::render_worker::synchronize();
+  if (dx9::active()) {
+    imgui::shutdown();
+    dx9::shutdown();
+  } else {
+    gfx::render_worker::synchronize();
 #ifdef AURORA_ENABLE_RMLUI
-  rmlui::shutdown();
+    rmlui::shutdown();
 #endif
-  imgui::shutdown();
-  gfx::shutdown();
-  webgpu::shutdown();
+    imgui::shutdown();
+    gfx::shutdown();
+    webgpu::shutdown();
+  }
 #endif
   input::shutdown();
   window::shutdown();
@@ -221,6 +243,17 @@ const AuroraEvent* update() noexcept {
 bool begin_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
+  if (dx9::active()) {
+    if (!window::is_presentable() || window::is_paused()) {
+      return false;
+    }
+    if (!dx9::begin_frame()) {
+      return false;
+    }
+    imgui::new_frame(window::get_window_size());
+    return true;
+  }
+
   {
     if (!window::is_presentable()) {
       webgpu::release_surface();
@@ -248,6 +281,15 @@ bool begin_frame() noexcept {
 void end_frame() noexcept {
   ZoneScoped;
 #ifdef AURORA_ENABLE_GX
+  if (dx9::active()) {
+    gx::fifo::drain();
+    // Complete the (headless) ImGui frame so game-side ImGui code stays
+    // functional; the draw data is not rendered in D3D9 mode (docs).
+    imgui::freeze();
+    dx9::end_frame();
+    return;
+  }
+
   gx::fifo::drain();
   gfx::finish();
   auto imguiDrawData = imgui::freeze();
