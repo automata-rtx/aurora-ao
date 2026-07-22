@@ -1,8 +1,8 @@
 # Thin G-Buffer for Authored Normals — Feasibility & Design
 
-**Status:** design / feasibility investigation
-**Scope:** Aurora (`aurora-ao`) renderer + Dusklight (`dusklight-ao`) mod SDK and `ao_mod`
-**Goal:** Let screen-space modded effects (today: GTAO in `mods/ao_mod`) consume the game's **authored, interpolated vertex normals** instead of normals reconstructed from the depth buffer, eliminating faceting without an expensive smoothing pass.
+**Status:** implemented on branch `claude/thin-gbuffer-authored-normals-wgqupt` — **pending on-device validation** (builds against Dawn/WebGPU; not runnable in the investigation environment). See §12 for the change list and validation checklist.
+**Scope:** Aurora (`aurora-ao`) renderer + Dusklight (`dusklight-ao`) mod SDK, `ao_mod`, `shadow_mod`.
+**Goal:** Let screen-space modded effects (e.g. GTAO ambient occlusion) consume the game's **authored, interpolated vertex normals** instead of normals reconstructed from the depth buffer, eliminating faceting without an expensive normal-smoothing pass.
 
 > This document lives in both `aurora-ao` and `dusklight-ao` on branch
 > `claude/thin-gbuffer-authored-normals-wgqupt`; the feature spans both repos.
@@ -73,7 +73,7 @@ push_uniform + push_compute + push_draw                         (mod.cpp:609/626
   (4) composite.wgsl -> fullscreen multiply of AO over the scene
 ```
 
-**Correction to the working premise.** The reconstructed normals are **never stored or blurred** — they are produced inside `gtao.wgsl` and consumed in place. The expensive bilateral blur (`denoise.wgsl`) smooths the **AO visibility output**, not normals. So:
+**Note on the two AO mod variants.** In the *public* `mods/ao_mod` demo checked into the repo, the reconstructed normals are **never stored or blurred** — they are produced inside `gtao.wgsl` and consumed in place, and the expensive bilateral blur (`denoise.wgsl`) smooths the **AO visibility output**, not normals. The maintainer's *actual* (private) AO mod is a more advanced fork that **does** reconstruct normals from depth and then run a dedicated **normal blur pass** before the AO — so "blur the reconstructed normals" is accurate for that variant. Either way, the authored-normal buffer removes the reconstruction (and any normal-smoothing built to hide its faceting):
 
 - What the thin g-buffer **removes**: the per-pixel 5-tap `reconstruct_normal` (8 `load_depth` taps + 2 extra unprojections) and the faceting it causes — plus any separate normal-smoothing you run to hide that faceting.
 - What **stays**: the AO spatial denoise (`denoise.wgsl`) is inherent to GTAO's sample noise and is unrelated to normals; it is unaffected. (It may be tuned down once normals are cleaner, but it is not the pass being replaced.)
@@ -268,3 +268,39 @@ Proceed with the thin normals g-buffer. Suggested phasing:
 4. **Optional:** offer the normal buffer to `shadow_mod` (contact shadows) and any future SSR/rim effects.
 
 The GTAO port was written *against* a prepass normal texture and only reconstructs because Aurora didn't expose one. This change closes that gap directly.
+
+---
+
+## 12. Implementation status (what was built) & validation checklist
+
+This design has been **implemented** on `claude/thin-gbuffer-authored-normals-wgqupt` in both repos. It is **not yet compiled or run** — Dawn/WebGPU is not buildable in the investigation environment and there is no GPU — so treat everything below as needing on-device validation.
+
+### Aurora (`aurora-ao`) — commit "gfx: optional thin g-buffer normal target"
+- `AuroraConfig::enableNormalBuffer` (off by default) → `GraphicsConfig::normalBuffer`; `NormalBufferFormat = RGBA8Unorm` (`gpu.hpp`).
+- `g_normalBuffer` / `g_normalBufferResolved` created/destroyed alongside the EFB textures; `create_render_texture` gained a format arg (`gpu.cpp`).
+- `RenderPass` gained normal views + snapshot dst; wired in **all** EFB-pass construction sites (`set_efb_targets`, `resume_efb_pass_loading`, `resolve_pass_into`); `render()` adds a 2nd color attachment; `resolve_pass`/`acquire_pass_snapshot` snapshot the normal via `CopyTextureToTexture` (`common.cpp`).
+- `ShaderConfig` gained a `normalTarget` bit (via a spare pad bit); `GXPipelineConfigVersion` 13→14; `build_pipeline` adds a 2nd `ColorTargetState` (blend off; write mask on only for opaque `GX_BM_NONE` depth-writing draws); the GX fragment shader emits `@location(1)` `normalize(mv_nrm)*0.5+0.5` + validity (`gx.cpp`, `shader.cpp`, `pipeline.hpp`, `gx.hpp`).
+- Public API: `has_normal_buffer()`, `normal_format()`, `ResolveDesc::normal`, `ResolvedTargets::{normal,normalFormat}`, `DrawContext::normalFormat` (`gfx.hpp`).
+
+**The one non-obvious constraint discovered during implementation:** a render pass with two color attachments requires **every** pipeline drawing into it to declare two targets. So the **clear** pipeline gained a write-masked second target (`clear.*`, `GXFrameBuffer.cpp`), and `DrawContext::normalFormat` is exposed so **custom mod draws** recorded into the EFB pass can add a matching (masked) target. RmlUi (its own layer passes), imgui (its own present pass), and the palette/copy conversions (outside the EFB pass) are unaffected.
+
+### Dusklight (`dusklight-ao`) — commit "mods: consume authored normals via Aurora thin g-buffer"
+- SDK ABI: `GfxResolveDesc::normal`, `GfxResolvedTargets::{normal,normal_format}`, `GfxDeviceInfo::normal_format`, `GfxDrawContext::normal_format` (all appended, `struct_size`-guarded); bridge maps them in `src/dusk/mods/svc/gfx.cpp`.
+- `m_Do_main.cpp` sets `config.enableNormalBuffer = true` (could be gated on a video setting).
+- `ao_mod`: requests the normal snapshot, binds it in the GTAO group (`@binding(5)`), and `gtao.wgsl` samples the authored normal (per-pixel fallback to the 5-tap reconstruction where validity = 0). Its composite pipeline adds the masked 2nd target.
+- `shadow_mod`: composite pipeline adds the masked 2nd target (so it stays valid when the buffer is enabled).
+
+### On-device validation checklist
+1. **Build** Aurora + Dusklight (all three graphics backends: D3D12, Vulkan, Metal).
+2. **Baseline (buffer off):** temporarily set `enableNormalBuffer = false`; confirm rendering is byte-for-byte unchanged (default-off path).
+3. **Buffer on, no MSAA:** confirm the scene renders normally; enable `ao_mod` and use its **Debug View → Normals** to confirm smooth (non-faceted) normals, and **Staircase** to confirm the quantization artifact is gone.
+4. **MSAA on (2×/4×):** confirm no validation errors and that the normal snapshot resolves (normals are renormalized on read; slight silhouette error is expected/acceptable).
+5. **Pass-break paths:** exercise `GXCopyTex`/`GXCopyDisp` clears and any mid-frame EFB copies (the clear pipeline's 2nd target); confirm no "attachment count" validation errors.
+6. **Mods drawing into the scene pass:** enable `ao_mod` and `shadow_mod` (together) — confirm both composites work with the buffer on.
+7. **Precision:** if RGBA8 banding shows on smooth surfaces under strong AO, switch `NormalBufferFormat` to `RGB10A2Unorm` (keeps the validity channel) or RG16F octahedral (needs a separate validity signal).
+8. **Perf:** compare frame time with the authored-normal path vs. the old reconstruction/normal-blur path.
+
+### Follow-ups
+- Optionally show authored normals in `composite.wgsl`'s debug "Normals" view (currently still reconstructs, useful as an A/B).
+- Consider gating `enableNormalBuffer` on whether a normal-consuming effect is active, to avoid the extra target's cost when unused.
+- Feed the normal buffer to `shadow_mod`'s contact shadows and any future SSR/rim-light effects.
