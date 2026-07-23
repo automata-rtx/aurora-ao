@@ -48,10 +48,43 @@ struct PtrKey {
 };
 absl::flat_hash_map<PtrKey, CachedTexture> s_byPointer;
 
-// EFB-copy destinations that have been registered (v1: all share one
-// placeholder texture; see docs/dx9/gx-to-d3d9-mapping.md #10).
+// EFB-copy destinations stubbed with the shared neutral placeholder
+// (depth/unsupported formats; see docs/dx9/gx-to-d3d9-mapping.md #10).
 absl::flat_hash_map<const void*, bool> s_copyDests;
 IDirect3DTexture9* s_copyPlaceholder = nullptr;
+
+// Real EFB copy targets, keyed by the guest destination pointer.
+struct CopyTarget {
+  IDirect3DTexture9* tex = nullptr;
+  uint32_t width = 0;
+  uint32_t height = 0;
+
+  void release() noexcept {
+    if (tex != nullptr) {
+      tex->Release();
+      tex = nullptr;
+    }
+  }
+};
+absl::flat_hash_map<const void*, CopyTarget> s_copyTargets;
+
+// Offscreen render targets cached by size (like the wgpu offscreen cache).
+absl::flat_hash_map<uint64_t, OffscreenTarget> s_offscreenTargets;
+
+void release_offscreen_targets() noexcept {
+  for (auto& [_, t] : s_offscreenTargets) {
+    if (t.depth != nullptr) {
+      t.depth->Release();
+    }
+    if (t.colorSurface != nullptr) {
+      t.colorSurface->Release();
+    }
+    if (t.color != nullptr) {
+      t.color->Release();
+    }
+  }
+  s_offscreenTargets.clear();
+}
 
 IDirect3DTexture9* create_placeholder() noexcept {
   IDirect3DTexture9* tex = nullptr;
@@ -60,7 +93,10 @@ IDirect3DTexture9* create_placeholder() noexcept {
   }
   D3DLOCKED_RECT lr{};
   if (SUCCEEDED(tex->LockRect(0, &lr, nullptr, 0))) {
-    *static_cast<uint32_t*>(lr.pBits) = 0xFF000000u; // opaque black
+    // White with zero alpha: neutral for modulate-style consumers and
+    // invisible under alpha blending (an opaque-black placeholder darkened
+    // everything that projected it, e.g. ground shadows).
+    *static_cast<uint32_t*>(lr.pBits) = 0x00FFFFFFu;
     tex->UnlockRect(0);
   }
   return tex;
@@ -158,6 +194,7 @@ void texture_cache_shutdown() noexcept {
   }
   s_byPointer.clear();
   s_copyDests.clear();
+  texture_cache_release_default_pool();
   if (s_copyPlaceholder != nullptr) {
     s_copyPlaceholder->Release();
     s_copyPlaceholder = nullptr;
@@ -167,10 +204,77 @@ void texture_cache_shutdown() noexcept {
 void texture_cache_begin_frame() noexcept {}
 
 void texture_cache_release_default_pool() noexcept {
-  // v1: everything lives in D3DPOOL_MANAGED; nothing to do.
+  // Copy targets and offscreen targets are D3DPOOL_DEFAULT; they must be
+  // released ahead of a device Reset and are recreated lazily afterwards.
+  for (auto& [_, entry] : s_copyTargets) {
+    entry.release();
+  }
+  s_copyTargets.clear();
+  release_offscreen_targets();
 }
 
 void texture_register_copy_placeholder(const void* dest) noexcept { s_copyDests[dest] = true; }
+
+IDirect3DTexture9* texture_get_copy_target(const void* dest, uint32_t width, uint32_t height) noexcept {
+  auto& entry = s_copyTargets[dest];
+  if (entry.tex != nullptr && (entry.width != width || entry.height != height)) {
+    entry.release();
+  }
+  if (entry.tex == nullptr) {
+    IDirect3DTexture9* tex = nullptr;
+    const HRESULT hr = g_dx9.dev->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+                                                D3DPOOL_DEFAULT, &tex, nullptr);
+    if (FAILED(hr)) {
+      Log.warn("dx9: copy target {}x{} creation failed ({:#x})", width, height, static_cast<uint32_t>(hr));
+      s_copyTargets.erase(dest);
+      return nullptr;
+    }
+    entry.tex = tex;
+    entry.width = width;
+    entry.height = height;
+  }
+  return entry.tex;
+}
+
+IDirect3DBaseTexture9* texture_find_copy(const void* data) noexcept {
+  if (const auto it = s_copyTargets.find(data); it != s_copyTargets.end()) {
+    return it->second.tex;
+  }
+  return nullptr;
+}
+
+OffscreenTarget* texture_get_offscreen(uint32_t width, uint32_t height) noexcept {
+  const uint64_t key = static_cast<uint64_t>(width) << 32 | height;
+  auto& target = s_offscreenTargets[key];
+  if (target.color != nullptr) {
+    return &target;
+  }
+  do {
+    if (FAILED(g_dx9.dev->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                        &target.color, nullptr))) {
+      break;
+    }
+    if (FAILED(target.color->GetSurfaceLevel(0, &target.colorSurface))) {
+      break;
+    }
+    if (FAILED(g_dx9.dev->CreateDepthStencilSurface(width, height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, TRUE,
+                                                    &target.depth, nullptr))) {
+      break;
+    }
+    target.width = width;
+    target.height = height;
+    return &target;
+  } while (false);
+  Log.warn("dx9: offscreen target {}x{} creation failed", width, height);
+  if (target.colorSurface != nullptr) {
+    target.colorSurface->Release();
+  }
+  if (target.color != nullptr) {
+    target.color->Release();
+  }
+  s_offscreenTargets.erase(key);
+  return nullptr;
+}
 
 IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
   if (id >= gx::MaxTextures) {
@@ -178,8 +282,13 @@ IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
   }
   const GXTexObj_& obj = g_gxState.loadedTextures[static_cast<size_t>(id)];
 
-  // EFB-copy source? v1 placeholder.
-  if (g_gxState.copyTextures.contains(obj.data) || s_copyDests.contains(obj.data)) {
+  // EFB-copy source? Real color copies first; depth/unsupported copies get
+  // the neutral placeholder. Palette-format copies (e.g. shadow silhouettes)
+  // are sampled as plain color for now — approximate but visible.
+  if (IDirect3DBaseTexture9* copy = texture_find_copy(obj.data)) {
+    return copy;
+  }
+  if (s_copyDests.contains(obj.data)) {
     return s_copyPlaceholder;
   }
   if (!obj.has_data()) {
@@ -328,7 +437,13 @@ void on_evict_tlut(uint32_t tlutObjId) noexcept {
   }
 }
 
-void on_evict_copy_texture(const void* dest) noexcept { s_copyDests.erase(dest); }
+void on_evict_copy_texture(const void* dest) noexcept {
+  s_copyDests.erase(dest);
+  if (const auto it = s_copyTargets.find(dest); it != s_copyTargets.end()) {
+    it->second.release();
+    s_copyTargets.erase(it);
+  }
+}
 
 } // namespace aurora::dx9
 

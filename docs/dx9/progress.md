@@ -21,6 +21,39 @@
 
 ---
 
+## Checkpoint 3 — IN-GAME AND RENDERING (2026-07-22)
+
+**Fourth run reached gameplay.** Screenshot review (Faron-area): skinned
+characters (Link) near-perfect incl. textures — fixed-function indexed
+vertex blending confirmed working; HUD hearts/buttons/rupees/items perfect;
+grass-cut particles, pickups all correct. Owner confirms unlit look is
+exactly what Remix needs — keep it.
+
+**Issues found & fixed this round:**
+1. **moya (drifting cloud-shadow projection) corrupted textures + wrong
+   ground darkening.** Two-part fix: (a) root cause — camera-space texgen
+   used D3D view-space inputs where GX texgen reads *model-space* inputs;
+   now compensated by premultiplying the texture matrix with the per-draw
+   model-view inverse (`g_worldViewInv`, rigid draws only — see
+   `dx9_draw.cpp apply_transforms` / `dx9_tev.cpp apply_texgen`); (b) per
+   owner requirement, moya is **disabled outright in D3D9 mode**
+   (`dKankyo_cloud_Packet::draw` early-out, dusklight) — Remix path-traced
+   shadows replace it, matching the owner's existing sun-shadows mod policy.
+2. **Minimap black square** — EFB copies were 1x1 placeholders. Implemented
+   REAL color EFB copies (`StretchRect` from the current render target into
+   per-dest RT textures) and REAL offscreen passes
+   (`SetRenderTarget`/depth surface cache by size, draws no longer
+   discarded). Placeholder (still used for depth-format copies) changed from
+   opaque black to white/alpha-0 — opaque black was darkening every
+   projected consumer.
+3. Viewport/scissor/copy sizing now tracks the current target (offscreen vs
+   backbuffer) via `get_backbuffer_size`.
+
+**Verify next run:** minimap renders; no white blotches on canopy; ground
+darkening near player gone; character env-mapped materials (metal shine)
+improved by the texgen fix. Skinned draws with camera-space texgen log
+`texgen: camera-space source without invertible world` — expected, cosmetic.
+
 ## Checkpoint 2.2 — third run: d3d9 active; UI document crash fixed (2026-07-22)
 
 **Progress:** `dx9: device created` confirms the backend now initializes on

@@ -1891,8 +1891,7 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     const u32 height = read_u32(data + pos, bigEndian);
     pos += 4;
     if (dx9::active()) {
-      // v1: draws inside offscreen passes are discarded (docs #10).
-      dx9::begin_offscreen();
+      dx9::begin_offscreen(width, height);
     } else {
       gfx::begin_offscreen(width, height);
     }

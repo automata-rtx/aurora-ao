@@ -211,6 +211,7 @@ bool apply_pixel_state() noexcept {
 void apply_transforms(const DecodedDraw& draw) noexcept {
   set_proj_matrix(to_d3d_proj(g_gxState.proj));
 
+  g_worldViewInv.valid = false;
   const D3DMATRIX identity{{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
   if (draw.skinned) {
     // Fixed-function indexed vertex blending against the bone palette; the
@@ -240,10 +241,22 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_0WEIGHTS);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else {
-    set_world_matrix(0, to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos));
+    const D3DMATRIX world = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);
+    set_world_matrix(0, world);
     set_view_matrix(identity);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
+    // Camera-space texgen compensation (docs #7): D3D feeds view-space
+    // inputs where GX texgen reads model-space; premultiplying the texture
+    // matrix with the model-view inverse restores GX semantics (projected
+    // shadows/light shafts, env maps). Only well-defined for rigid draws.
+    if (mtx_affine_inverse(world, g_worldViewInv.full)) {
+      g_worldViewInv.rotation = g_worldViewInv.full;
+      g_worldViewInv.rotation.m[3][0] = 0.f;
+      g_worldViewInv.rotation.m[3][1] = 0.f;
+      g_worldViewInv.rotation.m[3][2] = 0.f;
+      g_worldViewInv.valid = true;
+    }
   }
 }
 
@@ -280,7 +293,7 @@ uint32_t build_indices(GXPrimitive prim, uint16_t vtxCount, std::vector<uint16_t
   return static_cast<uint32_t>(out.size());
 }
 
-bool can_draw() noexcept { return g_dx9.dev != nullptr && g_dx9.inScene && !g_dx9.inOffscreen; }
+bool can_draw() noexcept { return g_dx9.dev != nullptr && g_dx9.inScene; }
 
 void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
   set_fvf(draw.fvf);

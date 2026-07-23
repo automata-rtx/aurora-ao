@@ -11,6 +11,7 @@
 #include <absl/container/flat_hash_set.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace aurora::dx9 {
 static Module Log("aurora::dx9");
@@ -18,9 +19,34 @@ static Module Log("aurora::dx9");
 Device g_dx9;
 StateCache g_cache;
 SkinState g_skin;
+WorldViewInv g_worldViewInv;
 
 static bool s_active = false;
 static absl::flat_hash_set<uint64_t> s_warned;
+// Backbuffer color/depth surfaces, cached after device create/reset so
+// offscreen passes can restore them.
+static IDirect3DSurface9* s_backbufferColor = nullptr;
+static IDirect3DSurface9* s_backbufferDepth = nullptr;
+
+static void release_backbuffer_surfaces() noexcept {
+  if (s_backbufferColor != nullptr) {
+    s_backbufferColor->Release();
+    s_backbufferColor = nullptr;
+  }
+  if (s_backbufferDepth != nullptr) {
+    s_backbufferDepth->Release();
+    s_backbufferDepth = nullptr;
+  }
+}
+
+static void cache_backbuffer_surfaces() noexcept {
+  release_backbuffer_surfaces();
+  g_dx9.dev->GetRenderTarget(0, &s_backbufferColor);
+  g_dx9.dev->GetDepthStencilSurface(&s_backbufferDepth);
+}
+
+static uint32_t current_target_width() noexcept { return g_dx9.inOffscreen ? g_dx9.offscreenWidth : g_dx9.width; }
+static uint32_t current_target_height() noexcept { return g_dx9.inOffscreen ? g_dx9.offscreenHeight : g_dx9.height; }
 
 bool active() noexcept { return s_active; }
 
@@ -137,6 +163,7 @@ bool initialize() noexcept {
   Log.info("dx9: device created {}x{} (maxBlendMtxIdx={}, perStageConstants={})", g_dx9.width, g_dx9.height,
            g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants);
   apply_default_state();
+  cache_backbuffer_surfaces();
   texture_cache_initialize();
   return true;
 }
@@ -145,6 +172,7 @@ void shutdown() noexcept {
   if (!s_active) {
     return;
   }
+  release_backbuffer_surfaces();
   texture_cache_shutdown();
   if (g_dx9.dev != nullptr) {
     g_dx9.dev->Release();
@@ -158,6 +186,7 @@ void shutdown() noexcept {
 }
 
 static bool reset_device(uint32_t width, uint32_t height) noexcept {
+  release_backbuffer_surfaces();
   texture_cache_release_default_pool();
   fill_present_params(width, height);
   const HRESULT hr = g_dx9.dev->Reset(&g_dx9.pp);
@@ -168,6 +197,7 @@ static bool reset_device(uint32_t width, uint32_t height) noexcept {
   g_dx9.width = g_dx9.pp.BackBufferWidth;
   g_dx9.height = g_dx9.pp.BackBufferHeight;
   apply_default_state();
+  cache_backbuffer_surfaces();
   return true;
 }
 
@@ -208,6 +238,11 @@ void end_frame() noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
+  if (g_dx9.inOffscreen) {
+    // Unbalanced GXCreateFrameBuffer; make sure the frame presents the
+    // backbuffer and the next Clear hits it.
+    end_offscreen();
+  }
   if (g_dx9.inScene) {
     g_dx9.dev->EndScene();
     g_dx9.inScene = false;
@@ -219,8 +254,10 @@ void end_frame() noexcept {
 }
 
 void get_backbuffer_size(uint32_t& width, uint32_t& height) noexcept {
-  width = g_dx9.width;
-  height = g_dx9.height;
+  // Current render target size: the shared gx layer uses this for
+  // logical->render mapping, which must track offscreen passes.
+  width = current_target_width();
+  height = current_target_height();
 }
 
 // ---------------------------------------------------------------------------
@@ -277,8 +314,8 @@ void set_render_viewport() noexcept {
     return;
   }
   const auto& vp = g_gxState.renderViewport;
-  const float maxW = static_cast<float>(g_dx9.width);
-  const float maxH = static_cast<float>(g_dx9.height);
+  const float maxW = static_cast<float>(current_target_width());
+  const float maxH = static_cast<float>(current_target_height());
   const float left = std::clamp(vp.left, 0.f, maxW);
   const float top = std::clamp(vp.top, 0.f, maxH);
   const float right = std::clamp(vp.left + vp.width, left, maxW);
@@ -301,30 +338,87 @@ void set_render_scissor() noexcept {
     return;
   }
   const auto& sc = g_gxState.renderScissor;
+  const auto maxW = static_cast<int32_t>(current_target_width());
+  const auto maxH = static_cast<int32_t>(current_target_height());
   RECT rect;
-  rect.left = std::clamp<int32_t>(sc.x, 0, static_cast<int32_t>(g_dx9.width));
-  rect.top = std::clamp<int32_t>(sc.y, 0, static_cast<int32_t>(g_dx9.height));
-  rect.right = std::clamp<int32_t>(sc.x + sc.width, rect.left, static_cast<int32_t>(g_dx9.width));
-  rect.bottom = std::clamp<int32_t>(sc.y + sc.height, rect.top, static_cast<int32_t>(g_dx9.height));
+  rect.left = std::clamp<int32_t>(sc.x, 0, maxW);
+  rect.top = std::clamp<int32_t>(sc.y, 0, maxH);
+  rect.right = std::clamp<int32_t>(sc.x + sc.width, rect.left, maxW);
+  rect.bottom = std::clamp<int32_t>(sc.y + sc.height, rect.top, maxH);
   g_dx9.dev->SetScissorRect(&rect);
 }
 
 // ---------------------------------------------------------------------------
-// EFB copies & offscreen passes — v1 policy (docs/dx9/gx-to-d3d9-mapping.md #10)
+// EFB copies & offscreen passes (docs/dx9/gx-to-d3d9-mapping.md #10)
 // ---------------------------------------------------------------------------
+
+// Scales the logical copy destination size to render pixels (mirrors the
+// shared scale_copy_dst in GXFrameBuffer.cpp).
+static void scale_copy_dst(uint32_t& width, uint32_t& height) noexcept {
+  width = std::max(g_gxState.texCopyDstWidth, 1u);
+  height = std::max(g_gxState.texCopyDstHeight, 1u);
+  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+    return;
+  }
+  const auto [logicalW, logicalH] = gx::logical_fb_size();
+  if (logicalW == 0 || logicalH == 0) {
+    return;
+  }
+  const float scaleX = static_cast<float>(current_target_width()) / static_cast<float>(logicalW);
+  const float scaleY = static_cast<float>(current_target_height()) / static_cast<float>(logicalH);
+  width = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(width) * scaleX)), 1);
+  height = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(height) * scaleY)), 1);
+}
 
 void copy_tex(const void* dest, bool clear) noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
-  // Register a placeholder so anything sampling this copy binds valid data.
-  texture_register_copy_placeholder(dest);
 
-  if (clear && !g_dx9.inOffscreen) {
-    // Honor the clear semantics on the real target, scoped to the copy source
-    // rect (mapped to render coordinates by the shared helpers).
-    const auto rect = gx::map_logical_scissor(g_gxState.texCopySrc);
-    D3DRECT d3dRect{rect.x, rect.y, rect.x + rect.width, rect.y + rect.height};
+  const auto srcRect = gx::map_logical_scissor(g_gxState.texCopySrc);
+  const bool colorCopy = !gx::is_depth_format(g_gxState.texCopyFmt);
+  bool copied = false;
+  if (colorCopy && srcRect.width > 0 && srcRect.height > 0) {
+    uint32_t dstWidth = 0;
+    uint32_t dstHeight = 0;
+    scale_copy_dst(dstWidth, dstHeight);
+    if (IDirect3DTexture9* dst = texture_get_copy_target(dest, dstWidth, dstHeight)) {
+      IDirect3DSurface9* srcSurface = nullptr;
+      IDirect3DSurface9* dstSurface = nullptr;
+      g_dx9.dev->GetRenderTarget(0, &srcSurface);
+      dst->GetSurfaceLevel(0, &dstSurface);
+      if (srcSurface != nullptr && dstSurface != nullptr) {
+        const auto maxW = static_cast<LONG>(current_target_width());
+        const auto maxH = static_cast<LONG>(current_target_height());
+        RECT src;
+        src.left = std::clamp<LONG>(srcRect.x, 0, maxW);
+        src.top = std::clamp<LONG>(srcRect.y, 0, maxH);
+        src.right = std::clamp<LONG>(srcRect.x + srcRect.width, src.left, maxW);
+        src.bottom = std::clamp<LONG>(srcRect.y + srcRect.height, src.top, maxH);
+        if (src.right > src.left && src.bottom > src.top) {
+          copied = SUCCEEDED(g_dx9.dev->StretchRect(srcSurface, &src, dstSurface, nullptr, D3DTEXF_LINEAR));
+          if (!copied) {
+            warn_once(0xA000, "copy_tex: StretchRect failed");
+          }
+        }
+      }
+      if (dstSurface != nullptr) {
+        dstSurface->Release();
+      }
+      if (srcSurface != nullptr) {
+        srcSurface->Release();
+      }
+    }
+  }
+  if (!copied) {
+    // Depth copies and failures keep a neutral placeholder bound.
+    texture_register_copy_placeholder(dest);
+  }
+
+  if (clear) {
+    // Honor the clear semantics on the current target, scoped to the copy
+    // source rect.
+    D3DRECT d3dRect{srcRect.x, srcRect.y, srcRect.x + srcRect.width, srcRect.y + srcRect.height};
     DWORD flags = 0;
     if (g_gxState.colorUpdate || g_gxState.alphaUpdate) {
       flags |= D3DCLEAR_TARGET;
@@ -339,9 +433,42 @@ void copy_tex(const void* dest, bool clear) noexcept {
   }
 }
 
-void begin_offscreen() noexcept { g_dx9.inOffscreen = true; }
+void begin_offscreen(uint32_t width, uint32_t height) noexcept {
+  if (g_dx9.dev == nullptr || g_dx9.inOffscreen) {
+    return;
+  }
+  OffscreenTarget* target = texture_get_offscreen(std::max(width, 1u), std::max(height, 1u));
+  if (target == nullptr) {
+    return;
+  }
+  g_dx9.dev->SetRenderTarget(0, target->colorSurface);
+  g_dx9.dev->SetDepthStencilSurface(target->depth);
+  g_dx9.inOffscreen = true;
+  g_dx9.offscreenWidth = target->width;
+  g_dx9.offscreenHeight = target->height;
 
-void end_offscreen() noexcept { g_dx9.inOffscreen = false; }
+  // Fresh pass: clear and reset viewport/scissor to the full target (the
+  // wgpu path does the same; the game then sets its own).
+  g_dx9.dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+  D3DVIEWPORT9 vp{0, 0, target->width, target->height, 0.f, 1.f};
+  g_dx9.dev->SetViewport(&vp);
+  RECT scissor{0, 0, static_cast<LONG>(target->width), static_cast<LONG>(target->height)};
+  g_dx9.dev->SetScissorRect(&scissor);
+}
+
+void end_offscreen() noexcept {
+  if (g_dx9.dev == nullptr || !g_dx9.inOffscreen) {
+    return;
+  }
+  g_dx9.dev->SetRenderTarget(0, s_backbufferColor);
+  g_dx9.dev->SetDepthStencilSurface(s_backbufferDepth);
+  g_dx9.inOffscreen = false;
+  g_dx9.offscreenWidth = 0;
+  g_dx9.offscreenHeight = 0;
+  // Restore the EFB viewport/scissor state.
+  set_render_viewport();
+  set_render_scissor();
+}
 
 bool in_offscreen() noexcept { return g_dx9.inOffscreen; }
 

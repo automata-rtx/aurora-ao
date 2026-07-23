@@ -68,13 +68,15 @@ void clear_skinning() noexcept;
 void set_render_viewport() noexcept;
 void set_render_scissor() noexcept;
 
-// EFB copy (GXCopyTex): v1 registers a placeholder texture for `dest` and
-// performs the clear semantics; see docs/dx9/gx-to-d3d9-mapping.md #10.
+// EFB copy (GXCopyTex): color copies StretchRect the current render target
+// (backbuffer or offscreen) into a texture registered for `dest`; depth /
+// unsupported formats fall back to a neutral placeholder. Clear semantics are
+// applied to the source region. See docs/dx9/gx-to-d3d9-mapping.md #10.
 void copy_tex(const void* dest, bool clear) noexcept;
 
-// Offscreen framebuffer passes (GXCreateFrameBuffer): v1 discards contained
-// draws (shadow silhouettes etc.).
-void begin_offscreen() noexcept;
+// Offscreen framebuffer passes (GXCreateFrameBuffer): rendered to a real
+// render-target texture (minimap, shadow silhouettes, ...).
+void begin_offscreen(uint32_t width, uint32_t height) noexcept;
 void end_offscreen() noexcept;
 bool in_offscreen() noexcept;
 
@@ -98,7 +100,7 @@ inline void clear_skinning() noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}
-inline void begin_offscreen() noexcept {}
+inline void begin_offscreen(uint32_t, uint32_t) noexcept {}
 inline void end_offscreen() noexcept {}
 inline bool in_offscreen() noexcept { return false; }
 inline void on_evict_texture(uint32_t) noexcept {}

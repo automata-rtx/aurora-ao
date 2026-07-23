@@ -516,8 +516,15 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
     if (mtxIdx < gx::MaxTexMtx) {
       const auto& gxm = g_gxState.texMtxs[mtxIdx];
       if (cameraSpace) {
-        // Input is a 3-component camera-space vector: full 3x4 transform.
+        // GX texgen reads the *model-space* position/normal, but D3D's
+        // camera-space TCI inputs are view-space; premultiply the model-view
+        // inverse to restore GX semantics (projected shadows, env maps).
         m = to_d3d(gxm);
+        if (g_worldViewInv.valid) {
+          m = mtx_multiply(tcg.src == GX_TG_POS ? g_worldViewInv.full : g_worldViewInv.rotation, m);
+        } else {
+          warn_once(0x5002, "texgen: camera-space source without invertible world (skinned draw?)");
+        }
       } else {
         // Input is (s, t): D3D expands 2D coords with a third component of 1,
         // so fold the GX (s,t,1,1) constant terms together.
@@ -530,8 +537,11 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
       }
     }
   } else if (cameraSpace) {
-    // Camera-space inputs always run through the transform unit.
-    m = D3DMATRIX{{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
+    // Identity texmtx on a camera-space input: still undo the view-space
+    // transform so the coordinates match GX's model-space inputs.
+    if (g_worldViewInv.valid) {
+      m = tcg.src == GX_TG_POS ? g_worldViewInv.full : g_worldViewInv.rotation;
+    }
   }
   if (hasPostMtx) {
     const uint32_t postIdx = static_cast<uint32_t>(tcg.postMtx) - GX_PTTEXMTX0;

@@ -39,11 +39,24 @@ struct Device {
   bool inScene = false;
   bool deviceLost = false;
   bool perStageConstants = false; // D3DPMISCCAPS_PERSTAGECONSTANT
-  // v1 policy: draws inside offscreen passes (shadow silhouettes etc.) are
-  // discarded; see docs/dx9/gx-to-d3d9-mapping.md #10.
+  // Offscreen pass state (GXCreateFrameBuffer): draws target a render-target
+  // texture until end_offscreen restores the backbuffer.
   bool inOffscreen = false;
+  uint32_t offscreenWidth = 0;
+  uint32_t offscreenHeight = 0;
 };
 extern Device g_dx9;
+
+// Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
+// D3D's camera-space texgen inputs back to GX's model-space inputs
+// (docs #7). Invalid for per-vertex matrix-palette / skinned draws, where a
+// single inverse doesn't exist.
+struct WorldViewInv {
+  D3DMATRIX full{};     // affine inverse incl. translation (POS-source texgen)
+  D3DMATRIX rotation{}; // same with translation zeroed (NRM-source texgen)
+  bool valid = false;
+};
+extern WorldViewInv g_worldViewInv;
 
 // ---------------------------------------------------------------------------
 // Redundant-state filtering. D3D9 SetRenderState & co. are cheap but Remix
@@ -200,6 +213,46 @@ void set_world_matrix(uint32_t slot, const D3DMATRIX& m) noexcept;
 void set_view_matrix(const D3DMATRIX& m) noexcept;
 void set_proj_matrix(const D3DMATRIX& m) noexcept;
 void set_texture_matrix(uint32_t stage, const D3DMATRIX& m) noexcept;
+
+// Row-vector composition: result = a * b (apply a, then b).
+inline D3DMATRIX mtx_multiply(const D3DMATRIX& a, const D3DMATRIX& b) noexcept {
+  D3DMATRIX result{};
+  for (int row = 0; row < 4; ++row) {
+    for (int col = 0; col < 4; ++col) {
+      float sum = 0.f;
+      for (int k = 0; k < 4; ++k) {
+        sum += a.m[row][k] * b.m[k][col];
+      }
+      result.m[row][col] = sum;
+    }
+  }
+  return result;
+}
+
+// Inverts an affine row-vector transform (rows 0-2 = basis, row 3 =
+// translation, last column 0,0,0,1). General 3x3 inverse handles scale.
+inline bool mtx_affine_inverse(const D3DMATRIX& m, D3DMATRIX& out) noexcept {
+  const float a = m.m[0][0], b = m.m[0][1], c = m.m[0][2];
+  const float d = m.m[1][0], e = m.m[1][1], f = m.m[1][2];
+  const float g = m.m[2][0], h = m.m[2][1], i = m.m[2][2];
+  const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (det > -1e-12f && det < 1e-12f) {
+    return false;
+  }
+  const float inv = 1.0f / det;
+  out = D3DMATRIX{{{
+      (e * i - f * h) * inv, (c * h - b * i) * inv, (b * f - c * e) * inv, 0.f, //
+      (f * g - d * i) * inv, (a * i - c * g) * inv, (c * d - a * f) * inv, 0.f, //
+      (d * h - e * g) * inv, (b * g - a * h) * inv, (a * e - b * d) * inv, 0.f, //
+      0.f, 0.f, 0.f, 1.f,                                                      //
+  }}};
+  // Translation: t' = -t * R^-1.
+  const float tx = m.m[3][0], ty = m.m[3][1], tz = m.m[3][2];
+  out.m[3][0] = -(tx * out.m[0][0] + ty * out.m[1][0] + tz * out.m[2][0]);
+  out.m[3][1] = -(tx * out.m[0][1] + ty * out.m[1][1] + tz * out.m[2][1]);
+  out.m[3][2] = -(tx * out.m[0][2] + ty * out.m[1][2] + tz * out.m[2][2]);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Skinning extension state (raw host pointers; see dx9.hpp set_skinning).
