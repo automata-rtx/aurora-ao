@@ -21,6 +21,33 @@
 
 ---
 
+## Checkpoint 3.1 — moya hard-disable; Link mouth/armpit under investigation (2026-07-22)
+
+**Run 5 screenshot review:** texgen fix confirmed working (projections now
+land correctly — which made the moya overlay visible *as designed*, but the
+owner wants it gone entirely). Link's eyes turned out fine (fullbright
+washes out the pupils — unlit mode, expected). Still broken:
+
+1. **Moya still rendered** despite the `dKankyo_cloud_Packet::draw`
+   early-out. `drawCloudShadow` (d_kankyo_rain.cpp) is its only caller and
+   draws z-test-disabled camera-facing billboards — matching the dapple over
+   the whole scene. Second gate added inside `drawCloudShadow` itself (the
+   single funnel), so the disable no longer depends on which path invokes
+   it. If the effect still shows after a *dusklight* rebuild, the build
+   didn't include the game-side commits (aurora-only rebuilds don't pick
+   them up).
+   The washed-out terrain in the same shot is almost certainly the overlay
+   itself (SRCALPHA/additive billboards, Z off, drawn over everything) — 
+   verify terrain texture recovers once moya is truly gone.
+2. **Link's mouth + left armpit/torso shape missing** (see-through). Konst
+   selector resolution audited against GXEnum — correct. Cull/winding parity
+   with the wgpu path verified. Remaining suspects: compare-mode TEV ops
+   (approximated as passthrough), dst-alpha tricks, multi-konst conflicts —
+   all of which log `dx9: unsupported: …` warn-once lines naming the
+   construct. **Next run: capture the log and match the warn lines**; if
+   compare-mode TEV is the culprit, the fix is a targeted ps_1_x fallback
+   (within the SM1 ceiling) or a smarter reduction for that pattern.
+
 ## Checkpoint 3 — IN-GAME AND RENDERING (2026-07-22)
 
 **Fourth run reached gameplay.** Screenshot review (Faron-area): skinned
