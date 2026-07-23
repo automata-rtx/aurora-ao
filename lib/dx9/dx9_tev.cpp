@@ -321,27 +321,84 @@ DWORD materialize(const Operand& op, ConstAlloc& consts, DWORD stage, bool& stag
   return D3DTA_TFACTOR;
 }
 
-struct ReducedOp {
+// One TSS operation. A reduced GX pass expands to at most: an optional
+// TEMP-writing op (runs first, leaves CURRENT untouched via
+// D3DTSS_RESULTARG=TEMP), a main op, and an optional post-scale op.
+struct PassOp {
   DWORD op = D3DTOP_SELECTARG1;
-  Operand arg1;
+  Operand arg1; // Operand default = CURRENT, so a default PassOp is a pass-through
   Operand arg2;
   Operand arg0;
   bool usesArg2 = false;
   bool usesArg0 = false;
   bool complementArg2 = false; // apply D3DTA_COMPLEMENT to arg2
-  bool complementArg0 = false;
 };
 
-// Reduces one TEV pass (out = d +/- (a*(1-c) + b*c), bias, scale) to a TSS op.
+struct ReducedPass {
+  bool hasTemp = false;
+  PassOp tempOp;
+  std::array<PassOp, 2> finals{}; // main op, then optional post-scale
+  int finalCount = 1;
+};
+
+inline Operand current_operand() noexcept { return Operand{}; }
+inline Operand temp_operand() noexcept {
+  Operand o;
+  o.ta = D3DTA_TEMP;
+  return o;
+}
+inline Operand white_operand() noexcept {
+  Operand o;
+  o.isConst = true;
+  o.constValue = 0xFFFFFFFFu;
+  return o;
+}
+
+// Appends a x2/x4 post-multiply stage (MODULATE2X/4X against white).
+void append_scale(ReducedPass& r, GXTevScale scale, uint64_t hash, bool allowMulti) noexcept {
+  if (scale == GX_CS_SCALE_1) {
+    return;
+  }
+  if (scale == GX_CS_DIVIDE_2) {
+    warn_once(hash ^ 0x14, "tev: divide-2 scale ignored");
+    return;
+  }
+  if (!allowMulti || r.finalCount >= 2) {
+    warn_once(hash ^ 0x19, "tev: scale on add ignored (no stage budget)");
+    return;
+  }
+  PassOp s;
+  s.op = scale == GX_CS_SCALE_4 ? D3DTOP_MODULATE4X : D3DTOP_MODULATE2X;
+  s.arg1 = current_operand();
+  s.arg2 = white_operand();
+  s.usesArg2 = true;
+  r.finals[r.finalCount++] = s;
+}
+
+// Reduces one TEV pass (out = d +/- (a*(1-c) + b*c), bias, scale) to TSS ops.
 // `hash` seeds warn_once keys so each distinct unsupported shape logs once.
-ReducedOp reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::TevOp& op, uint64_t hash) noexcept {
-  ReducedOp r;
+// allowMulti permits multi-stage decomposition (TEMP register, post-scale);
+// when false the pass collapses to the closest single op.
+ReducedPass reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::TevOp& op, uint64_t hash,
+                        bool allowMulti) noexcept {
+  ReducedPass r;
+  PassOp& main = r.finals[0];
+  const bool useTemp = allowMulti && g_dx9.tssTemp;
 
   const bool isCompare = op.op >= GX_TEV_COMP_R8_GT;
   if (isCompare) {
-    warn_once(hash ^ 0x10, "tev: compare-mode op approximated as pass-through");
-    r.op = D3DTOP_SELECTARG1;
-    r.arg1 = d.is_zero() ? Operand{.ta = D3DTA_CURRENT} : d;
+    // out = d + (compare ? c : 0). Assume the compare passes: masks built
+    // this way keep their visible texels (dropping c made them invisible).
+    warn_once(hash ^ 0x10, "tev: compare-mode op approximated as always-true (d + c)");
+    if (c.is_zero() || d.is_zero()) {
+      main.op = D3DTOP_SELECTARG1;
+      main.arg1 = c.is_zero() ? (d.is_zero() ? d /* zero const */ : d) : c;
+    } else {
+      main.op = D3DTOP_ADD;
+      main.arg1 = d;
+      main.arg2 = c;
+      main.usesArg2 = true;
+    }
     return r;
   }
 
@@ -372,19 +429,42 @@ ReducedOp reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::TevO
   const bool subtract = op.op == GX_TEV_SUB;
 
   if (termIsLerp) {
-    // out = d + lerp; only representable without d.
-    if (!d.is_zero()) {
-      warn_once(hash ^ 0x11, "tev: lerp with additive d approximated (d dropped)");
+    if (d.is_zero()) {
+      if (subtract) {
+        warn_once(hash ^ 0x12, "tev: subtractive lerp approximated as lerp");
+      }
+      main.op = D3DTOP_LERP; // arg0*arg1 + (1-arg0)*arg2
+      main.arg0 = c;
+      main.arg1 = b;
+      main.arg2 = a;
+      main.usesArg0 = true;
+      main.usesArg2 = true;
+      append_scale(r, op.scale, hash, allowMulti);
+      return r;
     }
-    if (subtract) {
-      warn_once(hash ^ 0x12, "tev: subtractive lerp approximated as lerp");
+    if (useTemp) {
+      // Exact: lerp into TEMP (CURRENT preserved), then d +/- TEMP.
+      r.hasTemp = true;
+      r.tempOp.op = D3DTOP_LERP;
+      r.tempOp.arg0 = c;
+      r.tempOp.arg1 = b;
+      r.tempOp.arg2 = a;
+      r.tempOp.usesArg0 = true;
+      r.tempOp.usesArg2 = true;
+      main.op = subtract ? D3DTOP_SUBTRACT : D3DTOP_ADD;
+      main.arg1 = d;
+      main.arg2 = temp_operand();
+      main.usesArg2 = true;
+      append_scale(r, op.scale, hash, allowMulti);
+      return r;
     }
-    r.op = D3DTOP_LERP; // arg0*arg1 + (1-arg0)*arg2
-    r.arg0 = c;
-    r.arg1 = b;
-    r.arg2 = a;
-    r.usesArg0 = true;
-    r.usesArg2 = true;
+    warn_once(hash ^ 0x11, "tev: lerp with additive d approximated (d dropped, no TEMP support)");
+    main.op = D3DTOP_LERP;
+    main.arg0 = c;
+    main.arg1 = b;
+    main.arg2 = a;
+    main.usesArg0 = true;
+    main.usesArg2 = true;
     return r;
   }
 
@@ -393,34 +473,50 @@ ReducedOp reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::TevO
       if (subtract) {
         warn_once(hash ^ 0x13, "tev: 0 - x*y approximated as x*y");
       }
-      r.op = op.scale == GX_CS_SCALE_2 ? D3DTOP_MODULATE2X
-             : op.scale == GX_CS_SCALE_4 ? D3DTOP_MODULATE4X
-                                         : D3DTOP_MODULATE;
+      main.op = op.scale == GX_CS_SCALE_2   ? D3DTOP_MODULATE2X
+                : op.scale == GX_CS_SCALE_4 ? D3DTOP_MODULATE4X
+                                            : D3DTOP_MODULATE;
       if (op.scale == GX_CS_DIVIDE_2) {
         warn_once(hash ^ 0x14, "tev: divide-2 scale ignored");
       }
-      r.arg1 = modX;
-      r.arg2 = modY;
-      r.usesArg2 = true;
-      r.complementArg2 = modYComplement;
+      main.arg1 = modX;
+      main.arg2 = modY;
+      main.usesArg2 = true;
+      main.complementArg2 = modYComplement;
       return r;
     }
     if (subtract) {
+      if (useTemp) {
+        // Exact: x*y into TEMP, then d - TEMP.
+        r.hasTemp = true;
+        r.tempOp.op = D3DTOP_MODULATE;
+        r.tempOp.arg1 = modX;
+        r.tempOp.arg2 = modY;
+        r.tempOp.usesArg2 = true;
+        r.tempOp.complementArg2 = modYComplement;
+        main.op = D3DTOP_SUBTRACT;
+        main.arg1 = d;
+        main.arg2 = temp_operand();
+        main.usesArg2 = true;
+        append_scale(r, op.scale, hash, allowMulti);
+        return r;
+      }
       warn_once(hash ^ 0x15, "tev: d - x*y approximated as subtract(d, x)");
-      r.op = D3DTOP_SUBTRACT;
-      r.arg1 = d;
-      r.arg2 = modX;
-      r.usesArg2 = true;
+      main.op = D3DTOP_SUBTRACT;
+      main.arg1 = d;
+      main.arg2 = modX;
+      main.usesArg2 = true;
       return r;
     }
     // d + x*y -> MULTIPLYADD(arg0=d, arg1=x, arg2=y)
-    r.op = D3DTOP_MULTIPLYADD;
-    r.arg0 = d;
-    r.arg1 = modX;
-    r.arg2 = modY;
-    r.usesArg0 = true;
-    r.usesArg2 = true;
-    r.complementArg2 = modYComplement;
+    main.op = D3DTOP_MULTIPLYADD;
+    main.arg0 = d;
+    main.arg1 = modX;
+    main.arg2 = modY;
+    main.usesArg0 = true;
+    main.usesArg2 = true;
+    main.complementArg2 = modYComplement;
+    append_scale(r, op.scale, hash, allowMulti);
     return r;
   }
 
@@ -432,37 +528,54 @@ ReducedOp reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::TevO
     if (op.bias == GX_TB_SUBHALF || op.bias == GX_TB_ADDHALF) {
       warn_once(hash ^ 0x17, "tev: bias on single-term pass ignored");
     }
-    r.op = D3DTOP_SELECTARG1;
-    r.arg1 = term;
+    if (op.scale == GX_CS_SCALE_2 || op.scale == GX_CS_SCALE_4) {
+      main.op = op.scale == GX_CS_SCALE_4 ? D3DTOP_MODULATE4X : D3DTOP_MODULATE2X;
+      main.arg1 = term;
+      main.arg2 = white_operand();
+      main.usesArg2 = true;
+    } else {
+      main.op = D3DTOP_SELECTARG1;
+      main.arg1 = term;
+    }
     return r;
   }
   if (term.is_zero()) {
-    r.op = D3DTOP_SELECTARG1;
-    r.arg1 = d;
+    if (op.scale == GX_CS_SCALE_2 || op.scale == GX_CS_SCALE_4) {
+      main.op = op.scale == GX_CS_SCALE_4 ? D3DTOP_MODULATE4X : D3DTOP_MODULATE2X;
+      main.arg1 = d;
+      main.arg2 = white_operand();
+      main.usesArg2 = true;
+    } else {
+      main.op = D3DTOP_SELECTARG1;
+      main.arg1 = d;
+    }
     return r;
   }
   if (subtract) {
-    r.op = D3DTOP_SUBTRACT;
-    r.arg1 = d;
-    r.arg2 = term;
-    r.usesArg2 = true;
+    main.op = D3DTOP_SUBTRACT;
+    main.arg1 = d;
+    main.arg2 = term;
+    main.usesArg2 = true;
+    append_scale(r, op.scale, hash, allowMulti);
     return r;
   }
   // d + term (+ bias): ADDSIGNED family covers bias -0.5.
   if (op.bias == GX_TB_SUBHALF) {
-    r.op = op.scale == GX_CS_SCALE_2 ? D3DTOP_ADDSIGNED2X : D3DTOP_ADDSIGNED;
+    main.op = op.scale == GX_CS_SCALE_2 ? D3DTOP_ADDSIGNED2X : D3DTOP_ADDSIGNED;
   } else {
     if (op.bias == GX_TB_ADDHALF) {
       warn_once(hash ^ 0x18, "tev: +0.5 bias ignored");
     }
-    if (op.scale != GX_CS_SCALE_1) {
-      warn_once(hash ^ 0x19, "tev: scale on add ignored");
-    }
-    r.op = D3DTOP_ADD;
+    main.op = D3DTOP_ADD;
+    main.arg1 = d;
+    main.arg2 = term;
+    main.usesArg2 = true;
+    append_scale(r, op.scale, hash, allowMulti);
+    return r;
   }
-  r.arg1 = d;
-  r.arg2 = term;
-  r.usesArg2 = true;
+  main.arg1 = d;
+  main.arg2 = term;
+  main.usesArg2 = true;
   return r;
 }
 
@@ -595,69 +708,103 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     const Operand cb = color_operand(stage.colorPass.b, stage, i, hasTexture, draw);
     const Operand cc = color_operand(stage.colorPass.c, stage, i, hasTexture, draw);
     const Operand cd = color_operand(stage.colorPass.d, stage, i, hasTexture, draw);
-    ReducedOp colorOp = reduce_pass(ca, cb, cc, cd, stage.colorOp, cfgHash);
-
     const Operand aa = alpha_operand(stage.alphaPass.a, stage, i, hasTexture, draw);
     const Operand ab = alpha_operand(stage.alphaPass.b, stage, i, hasTexture, draw);
     const Operand ac = alpha_operand(stage.alphaPass.c, stage, i, hasTexture, draw);
     const Operand ad = alpha_operand(stage.alphaPass.d, stage, i, hasTexture, draw);
-    ReducedOp alphaOp = reduce_pass(aa, ab, ac, ad, stage.alphaOp, cfgHash ^ 0xA1FA);
+
+    ReducedPass cp = reduce_pass(ca, cb, cc, cd, stage.colorOp, cfgHash, true);
+    ReducedPass ap = reduce_pass(aa, ab, ac, ad, stage.alphaOp, cfgHash ^ 0xA1FA, true);
+
+    // Stage plan: [optional shared TEMP stage] + start-aligned finals.
+    bool anyTemp = cp.hasTemp || ap.hasTemp;
+    int finalsN = std::max(cp.finalCount, ap.finalCount);
+    uint32_t need = (anyTemp ? 1u : 0u) + static_cast<uint32_t>(finalsN);
+    if (d3dStage + need > MaxStages) {
+      // Not enough stage budget: fall back to single-op approximations.
+      cp = reduce_pass(ca, cb, cc, cd, stage.colorOp, cfgHash ^ 0x51, false);
+      ap = reduce_pass(aa, ab, ac, ad, stage.alphaOp, cfgHash ^ 0x52, false);
+      anyTemp = false;
+      finalsN = 1;
+      need = 1;
+      if (d3dStage + need > MaxStages) {
+        warn_once(0x6201 | i << 8, "tev: out of D3D stages, GX stage dropped");
+        continue;
+      }
+    }
 
     // Skip pure pass-through stages (both passes keep CURRENT) to save the
     // 8-stage budget for meaningful work.
-    const auto is_current_pass = [](const ReducedOp& r) {
-      return r.op == D3DTOP_SELECTARG1 && !r.arg1.isConst && (r.arg1.ta & ~D3DTA_ALPHAREPLICATE) == D3DTA_CURRENT;
+    const auto is_current_pass = [](const ReducedPass& r) {
+      return !r.hasTemp && r.finalCount == 1 && r.finals[0].op == D3DTOP_SELECTARG1 && !r.finals[0].arg1.isConst &&
+             (r.finals[0].arg1.ta & ~D3DTA_COMPLEMENT & ~D3DTA_ALPHAREPLICATE) == D3DTA_CURRENT;
     };
-    if (d3dStage > 0 && is_current_pass(colorOp) && is_current_pass(alphaOp)) {
+    if (d3dStage > 0 && is_current_pass(cp) && is_current_pass(ap)) {
       continue;
     }
 
-    // Bind texture + sampler + texgen for this stage.
-    if (hasTexture) {
-      IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId);
-      set_texture(d3dStage, tex);
-      if (tex != nullptr) {
-        apply_sampler(d3dStage, stage.texMapId);
+    static const PassOp kPassthrough{};
+    for (uint32_t k = 0; k < need; ++k, ++d3dStage) {
+      const bool isTempStage = anyTemp && k == 0;
+      const int fi = static_cast<int>(k) - (anyTemp ? 1 : 0);
+      const PassOp& colorOp = isTempStage ? (cp.hasTemp ? cp.tempOp : kPassthrough)
+                              : fi < cp.finalCount ? cp.finals[fi]
+                                                   : kPassthrough;
+      const PassOp& alphaOp = isTempStage ? (ap.hasTemp ? ap.tempOp : kPassthrough)
+                              : fi < ap.finalCount ? ap.finals[fi]
+                                                   : kPassthrough;
+
+      // Bind texture + sampler + texgen on every emitted stage of this GX
+      // stage (any of them may reference D3DTA_TEXTURE).
+      if (hasTexture) {
+        IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId);
+        set_texture(d3dStage, tex);
+        if (tex != nullptr) {
+          apply_sampler(d3dStage, stage.texMapId);
+        }
+        set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, stage.texCoordId, draw));
+      } else {
+        set_texture(d3dStage, nullptr);
+        set_tss(d3dStage, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+        set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, 0);
       }
-      set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, stage.texCoordId, draw));
-    } else {
-      set_texture(d3dStage, nullptr);
-      set_tss(d3dStage, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-      set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, 0);
-    }
 
-    // Materialize operands (constants -> TFACTOR / per-stage constant).
-    bool stageConstUsed = false;
-    uint32_t stageConstValue = 0;
-    const auto mat = [&](const Operand& op, uint64_t key) {
-      return materialize(op, consts, d3dStage, stageConstUsed, stageConstValue, cfgHash ^ key);
-    };
+      // Materialize operands (constants -> TFACTOR / per-stage constant).
+      bool stageConstUsed = false;
+      uint32_t stageConstValue = 0;
+      const auto mat = [&](const Operand& op, uint64_t key) {
+        return materialize(op, consts, d3dStage, stageConstUsed, stageConstValue, cfgHash ^ key ^ (k * 0x100));
+      };
 
-    DWORD carg1 = mat(colorOp.arg1, 0x20);
-    DWORD carg2 = colorOp.usesArg2 ? mat(colorOp.arg2, 0x21) : D3DTA_CURRENT;
-    DWORD carg0 = colorOp.usesArg0 ? mat(colorOp.arg0, 0x22) : D3DTA_CURRENT;
-    if (colorOp.complementArg2) {
-      carg2 |= D3DTA_COMPLEMENT;
-    }
-    DWORD aarg1 = mat(alphaOp.arg1, 0x30);
-    DWORD aarg2 = alphaOp.usesArg2 ? mat(alphaOp.arg2, 0x31) : D3DTA_CURRENT;
-    DWORD aarg0 = alphaOp.usesArg0 ? mat(alphaOp.arg0, 0x32) : D3DTA_CURRENT;
-    if (alphaOp.complementArg2) {
-      aarg2 |= D3DTA_COMPLEMENT;
-    }
+      DWORD carg1 = mat(colorOp.arg1, 0x20);
+      DWORD carg2 = colorOp.usesArg2 ? mat(colorOp.arg2, 0x21) : D3DTA_CURRENT;
+      DWORD carg0 = colorOp.usesArg0 ? mat(colorOp.arg0, 0x22) : D3DTA_CURRENT;
+      if (colorOp.complementArg2) {
+        carg2 |= D3DTA_COMPLEMENT;
+      }
+      DWORD aarg1 = mat(alphaOp.arg1, 0x30);
+      DWORD aarg2 = alphaOp.usesArg2 ? mat(alphaOp.arg2, 0x31) : D3DTA_CURRENT;
+      DWORD aarg0 = alphaOp.usesArg0 ? mat(alphaOp.arg0, 0x32) : D3DTA_CURRENT;
+      if (alphaOp.complementArg2) {
+        aarg2 |= D3DTA_COMPLEMENT;
+      }
 
-    set_tss(d3dStage, D3DTSS_COLOROP, colorOp.op);
-    set_tss(d3dStage, D3DTSS_COLORARG1, carg1);
-    set_tss(d3dStage, D3DTSS_COLORARG2, carg2);
-    set_tss(d3dStage, D3DTSS_COLORARG0, carg0);
-    set_tss(d3dStage, D3DTSS_ALPHAOP, alphaOp.op);
-    set_tss(d3dStage, D3DTSS_ALPHAARG1, aarg1);
-    set_tss(d3dStage, D3DTSS_ALPHAARG2, aarg2);
-    set_tss(d3dStage, D3DTSS_ALPHAARG0, aarg0);
-    if (stageConstUsed) {
-      set_tss(d3dStage, D3DTSS_CONSTANT, stageConstValue);
+      set_tss(d3dStage, D3DTSS_COLOROP, colorOp.op);
+      set_tss(d3dStage, D3DTSS_COLORARG1, carg1);
+      set_tss(d3dStage, D3DTSS_COLORARG2, carg2);
+      set_tss(d3dStage, D3DTSS_COLORARG0, carg0);
+      set_tss(d3dStage, D3DTSS_ALPHAOP, alphaOp.op);
+      set_tss(d3dStage, D3DTSS_ALPHAARG1, aarg1);
+      set_tss(d3dStage, D3DTSS_ALPHAARG2, aarg2);
+      set_tss(d3dStage, D3DTSS_ALPHAARG0, aarg0);
+      if (stageConstUsed) {
+        set_tss(d3dStage, D3DTSS_CONSTANT, stageConstValue);
+      }
+      if (g_dx9.tssTemp) {
+        // Reset RESULTARG on every stage; a previous draw may have left TEMP.
+        set_tss(d3dStage, D3DTSS_RESULTARG, isTempStage ? D3DTA_TEMP : D3DTA_CURRENT);
+      }
     }
-    ++d3dStage;
   }
 
   if (g_gxState.numTevStages > MaxStages) {
@@ -672,6 +819,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     set_tss(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
     set_tss(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     set_tss(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    if (g_dx9.tssTemp) {
+      set_tss(0, D3DTSS_RESULTARG, D3DTA_CURRENT);
+    }
     d3dStage = 1;
   }
 
@@ -692,6 +842,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
       set_tss(d3dStage, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
       set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, 0);
+      if (g_dx9.tssTemp) {
+        set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_CURRENT);
+      }
       ++d3dStage;
     }
   }

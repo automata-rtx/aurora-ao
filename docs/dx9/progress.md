@@ -21,6 +21,40 @@
 
 ---
 
+## Checkpoint 3.2 — the "moya" dapple was our own TEV bug: d-term dropped (2026-07-23)
+
+**Run 6 (build `ee3b15014f` — BOTH moya gates included) + full log analysis
+settled it:** the scene-wide dapple is NOT the moya cloud-shadow system (it
+was gated and still rendered). It is the BG materials' own baked light-ramp
+TEV — `PREV + lerp(shadowColor C0, litColor C1, rampTexture)` — and the
+mapper was **dropping the `d` (PREV) term**, i.e. deleting the
+diffuse-texture base and leaving only the ramp. Log counts: 13 configs
+"lerp with additive d dropped", 27 "more than two distinct constants in one
+stage", 3 "scale on add ignored" — all the same material family.
+
+**Fix — multi-stage TEV emission using the TSS TEMP register**
+(`D3DPMISCCAPS_TSSARGTEMP`, `g_dx9.tssTemp`, logged at device create):
+- `d ± lerp(a,b,c)` now EXACT: stage k computes the lerp with
+  `D3DTSS_RESULTARG = D3DTA_TEMP` (CURRENT preserved), stage k+1 does
+  `ADD/SUBTRACT(d, TEMP)`. Same for `d − x*y`.
+- ×2/×4 scale on add/lerp results: appended `MODULATE2X/4X(CURRENT, white)`
+  stage instead of being ignored.
+- Constants now spread across the decomposed stages' per-stage CONSTANT
+  slots, resolving most of the 27 multi-constant warnings.
+- Compare-mode ops approximate as always-true (`d + c`) instead of dropping
+  the compare result — mask-style materials (suspected Link mouth/armpit)
+  stay visible.
+- Stage budget: decomposition falls back to single-op approximations when
+  the 8-stage budget would overflow; RESULTARG is reset on every stage
+  (stale TEMP from prior draws).
+
+**Expected next run:** terrain shows real grass/dirt with subtle light
+variation (compare against the DX12 reference shot); Link mouth/armpit
+restored; possibly the minimap too (dst-alpha chain may have been a
+casualty of the same bugs). Moya drifting shadows remain disabled by
+design. If mouth/armpit still missing, next suspects per log:
+"irreducible AND/OR" alpha compares (keys 0x7100/0x7101).
+
 ## Checkpoint 3.1 — moya hard-disable; Link mouth/armpit under investigation (2026-07-22)
 
 **Run 5 screenshot review:** texgen fix confirmed working (projections now

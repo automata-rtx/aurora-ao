@@ -39,6 +39,7 @@ struct Device {
   bool inScene = false;
   bool deviceLost = false;
   bool perStageConstants = false; // D3DPMISCCAPS_PERSTAGECONSTANT
+  bool tssTemp = false;           // D3DPMISCCAPS_TSSARGTEMP (TEMP register)
   // Offscreen pass state (GXCreateFrameBuffer): draws target a render-target
   // texture until end_offscreen restores the backbuffer.
   bool inOffscreen = false;

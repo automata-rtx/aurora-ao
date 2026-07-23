@@ -11,7 +11,7 @@ mapper logs a new unsupported configuration.
 | # | Effect / GX feature | Where TP uses it | v1 behavior | Remix-side compensation |
 |---|---------------------|------------------|-------------|-------------------------|
 | 1 | **Indirect texturing** (`GXSetTevIndirect`, ind stages/matrices) | Heat shimmer, water surface warp, some magic/distortion | Ignored: base stages still draw, no warp | None needed — distortion is post-like; Remix replaces water/heat with PT materials |
-| 2 | **Compare-mode TEV ops** (`GX_TEV_COMP_*`) | Occasional masking tricks | Stage collapsed to CURRENT passthrough, logged | Usually cosmetic masks; replace affected material textures in Remix |
+| 2 | **Compare-mode TEV ops** (`GX_TEV_COMP_*`) | Occasional masking tricks | Approximated as always-true (`d + c`) — keeps mask-style consumers visible; logged | Usually cosmetic masks; replace affected material textures in Remix |
 | 3 | **TEV output registers REG0-2 as true accumulators** (multi-register programs) | Complex characters/effects (e.g. layered eyes, some sky) | Collapsed to the PREV chain, logged per config | Material replacement in Remix restores intended look |
 | 4 | **>8 effective TEV stages** | Rare (J3D TevBlock16 materials) | Truncated at 8, logged | Same as #3 |
 | 5 | **Arbitrary TEV swap tables** (non-identity, non-alpha-replicate) | Rare channel shuffles | Ignored unless expressible as ALPHAREPLICATE | Texture-level fix in Remix if ever visible |

@@ -153,6 +153,7 @@ bool initialize() noexcept {
 
   g_dx9.dev->GetDeviceCaps(&g_dx9.caps);
   g_dx9.perStageConstants = (g_dx9.caps.PrimitiveMiscCaps & D3DPMISCCAPS_PERSTAGECONSTANT) != 0;
+  g_dx9.tssTemp = (g_dx9.caps.PrimitiveMiscCaps & D3DPMISCCAPS_TSSARGTEMP) != 0;
   g_dx9.width = g_dx9.pp.BackBufferWidth;
   g_dx9.height = g_dx9.pp.BackBufferHeight;
   g_dx9.deviceLost = false;
@@ -160,8 +161,8 @@ bool initialize() noexcept {
   g_dx9.inOffscreen = false;
   s_active = true;
 
-  Log.info("dx9: device created {}x{} (maxBlendMtxIdx={}, perStageConstants={})", g_dx9.width, g_dx9.height,
-           g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants);
+  Log.info("dx9: device created {}x{} (maxBlendMtxIdx={}, perStageConstants={}, tssTemp={})", g_dx9.width,
+           g_dx9.height, g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants, g_dx9.tssTemp);
   apply_default_state();
   cache_backbuffer_surfaces();
   texture_cache_initialize();
