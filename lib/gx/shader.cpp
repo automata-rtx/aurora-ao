@@ -538,6 +538,14 @@ static inline std::string vtx_attr(const ShaderConfig& config, GXAttr attr) {
     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
       return "vec4f(0.0, 0.0, 0.0, 0.0)"s;
     }
+    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
+      // A texgen references a texcoord attribute the vertex stream doesn't
+      // provide (stale numTexGens/TCG state; hardware would read garbage).
+      // Use zeroed coordinates instead of aborting, matching the NRM/CLR
+      // fallbacks above. Logged once per shader config (builds are cached).
+      Log.warn("texgen reads missing vtx attr {}, substituting zero", underlying(attr));
+      return "vec2f(0.0, 0.0)"s;
+    }
     UNLIKELY FATAL("unmapped vtx attr {}", underlying(attr));
   }
   if (attr == GX_VA_POS) {

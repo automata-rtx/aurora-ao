@@ -21,6 +21,27 @@
 
 ---
 
+## Checkpoint 2.1 — second run report: config never selected d3d9 (2026-07-22)
+
+**Symptom:** "still crashes on launch" — but the log shows this run never used
+the D3D9 backend at all: `config.json` failed to parse ("parse error at line
+80 … unexpected end of input", likely a hand-edit that dropped a brace), so
+`backend.graphicsBackend` reverted to defaults → auto → **WebGPU/D3D12**
+initialized (RTX 5090). No disc path was configured either, so the game sat
+in the no-disc prelaunch flow and died on a **pre-existing wgpu-path fatal**:
+`FATAL aurora::gfx::gx unmapped vtx attr 13` — WGSL shader gen aborts when a
+texgen references TEX0 coords the vertex stream doesn't provide (stale
+numTexGens/TCG state; real hardware would just read garbage).
+
+**Fix:** `shader.cpp vtx_attr` now substitutes `vec2f(0.0)` for missing
+TEX0-7 attributes (warn-once per shader config), mirroring the existing
+NRM/CLR fallbacks. The D3D9 path already handled this case.
+
+**User-side requirement discovered:** ensure `config.json` is valid JSON (or
+delete it and reconfigure), or bypass config entirely with `--backend d3d9`
+on the command line. A `dx9: device created …` line in the log is the
+signature that the D3D9 backend is actually active.
+
 ## Checkpoint 2 — first Windows run: startup crash fixed (2026-07-22)
 
 **Symptom:** with `--backend d3d9` the window appeared then the process died,
