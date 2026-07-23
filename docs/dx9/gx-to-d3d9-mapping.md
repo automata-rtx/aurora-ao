@@ -142,9 +142,20 @@ RTX Remix understands natively (rest-pose verts hashed, bones replayed):
 characters:
 - Load `g_gxState.pnMtx[0..9].pos` into `SetTransform(D3DTS_WORLDMATRIX(i))`
   for the ≤10 palette slots (only when dirty).
-- Vertex gets `BLENDINDICES = UBYTE4(pnmtxidx/3, 0,0,0)` and **no weights**;
-  `D3DRS_VERTEXBLEND = D3DVBF_0WEIGHTS` (one matrix, implicit weight 1) +
-  `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`.
+- Vertex gets `BLENDINDICES = UBYTE4(pnmtxidx/3, 0,0,0)` **and one stored
+  weight of 1.0**; `D3DRS_VERTEXBLEND = D3DVBF_1WEIGHTS` +
+  `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`. Plain fixed-function would accept
+  the terser `D3DVBF_0WEIGHTS` with indices alone (one matrix, implicit
+  weight 1), but **dxvk-remix requires a BLENDWEIGHT vertex element**: its
+  `RtxGeometryUtils::dispatchSkinning` early-outs with "draw call has bones
+  but no blend weight buffer" when `blendWeightBuffer` is undefined, while
+  the draw is still *classified* as skinned — the GPU skinning pass never
+  runs and the mesh renders disfigured. `XYZB2|LASTBETA_UBYTE4` decodes to
+  FLOAT1 BLENDWEIGHT + UBYTE4 BLENDINDICES in dxvk's FVF→declaration
+  conversion, satisfying it. The 1WEIGHTS form is mathematically identical
+  under real fixed-function: the implicit second weight is 1−1.0 = 0, so the
+  padding bone (index byte 1 = 0) contributes nothing, and Remix's skinning
+  shader likewise skips bones with weight ≤ 0.
 - TEXMTXIDX attributes (per-vertex texture matrix select) are consumed from
   the stream but **[later]** (rare; env-mapped skinned parts may look off).
 
@@ -155,8 +166,10 @@ characters:
 - Per vertex: position is indexed; use the **position index value** to fetch
   `influences[posIdx * influenceCount .. +influenceCount]` ({u32 bone,
   f32 weight}); emit `influenceCount-1` weights (D3D infers the last) +
-  UBYTE4 indices; `D3DRS_VERTEXBLEND = D3DVBF_{0,1,2,3}WEIGHTS` by count;
-  indexed enable TRUE.
+  UBYTE4 indices; `D3DRS_VERTEXBLEND = D3DVBF_{1,2,3}WEIGHTS` by count;
+  indexed enable TRUE. At least one weight is always stored (a hypothetical
+  single-influence stream stores its 1.0 weight explicitly) for the same
+  Remix blend-weight-buffer requirement as (a).
 - `D3DTS_VIEW = skinBaseMtx` (model→view applied after the blend — matches
   the WGSL `skin_base_mtx` exactly since FF computes `v*W(i)` then `*VIEW`).
   Non-skinned draws keep VIEW = identity, so VIEW must be reset when
@@ -312,7 +325,22 @@ suffice.
 - `SetTransform` WORLD/VIEW/PROJECTION per draw (world-space geometry
   recoverable; view = identity except skinned ext draws).
 - Fixed-function skinning via `D3DTS_WORLDMATRIX(i)` + indexed blending —
-  Remix hashes rest-pose vertices and replays bones.
+  Remix hashes rest-pose vertices and replays bones. Every blended draw
+  carries an explicit BLENDWEIGHT stream (never bare `D3DVBF_0WEIGHTS`),
+  because dxvk-remix's `dispatchSkinning` skips skinning entirely without
+  one (§6a).
+- **Bone-space convention caveat:** our blend matrices are model→**view**
+  (GX has no separate view matrix; `D3DTS_VIEW` = identity for palette
+  draws, = `skinBaseMtx` for ext draws). dxvk-remix's `finalizeSkinningData`
+  assumes bones are object→**world** and rebuilds the instance transform
+  from its tracked camera (`objectToView := worldToView; objectToWorld :=
+  cameraViewToWorld × objectToView`). Because Remix derives its camera from
+  our PROJECTION/VIEW state, the composition still lands vertices in the
+  right place on screen, but Remix-side "world space" bone transforms (e.g.
+  the `ReadBoneTransform` graph component) read out camera-relative values.
+  **[later]** if this matters: pass the real game view (j3dSys view mtx)
+  through `D3DTS_VIEW` and re-express pnMtx/palette bones as model→world on
+  the aurora side, so Remix sees a conventional world-space rig.
 - `SetTexture(stage 0..n)` with stage 0 = the dominant diffuse map (TEV mapper
   orders stages so the first texture-sampling stage lands on stage 0 —
   important for Remix material capture).

@@ -21,6 +21,59 @@
 
 ---
 
+## Checkpoint 3.3 — RTX Remix skinning disfigurement: blend-weight buffer required (2026-07-23)
+
+**Owner report:** running the D3D9 build under RTX Remix (dxvk-remix
+d3d9.dll), translated visuals appear, but GPU-skinned characters are
+**horribly disfigured** — correct general location, mangled deformation —
+while the same build renders them perfectly under raw D3D9 fixed-function.
+
+**Root cause (found by reading dxvk-remix source, read-only):**
+`RtxGeometryUtils::dispatchSkinning` (rtx_geometry_utils.cpp) early-outs —
+`Logger::err("...draw call has bones but no blend weight buffer, cannot
+apply skinning")` — whenever `geometryData.blendWeightBuffer` is undefined.
+Our matrix-palette path (PNMTXIDX draws = all normal characters, incl.
+Link) used `D3DVBF_0WEIGHTS` + `D3DFVF_XYZB1|LASTBETA_UBYTE4`: dxvk's
+FVF→declaration conversion (d3d9_vertex_declaration.cpp) emits **only** a
+BLENDINDICES element for that FVF (beta count 1 − UBYTE4 slot = 0 weight
+floats), so no BLENDWEIGHT stream exists. Remix still *classifies* the draw
+as skinned (`processSkinning` accepts 0WEIGHTS+INDEXEDVERTEXBLENDENABLE),
+captures SkinningData/bones, replaces the transform pipeline — but the
+skinning compute pass silently never runs → disfigured mesh. That one-line
+`Logger::err` should appear in the owner's Remix log (`ONCE`, so a single
+line).
+
+**Fix (aurora):** every blended draw now stores ≥1 explicit weight:
+- `dx9_vertex.cpp decode_draw`: PNMTXIDX draws emit a stored `1.0f` weight
+  (weightCount 0 → 1; FVF becomes `XYZB2|LASTBETA_UBYTE4` = FLOAT1
+  BLENDWEIGHT + UBYTE4 BLENDINDICES). Ext-skinning draws clamp to
+  weightCount ∈ [1,3]. Equivalent under real FF: implicit last weight is
+  1−1.0 = 0 and both FF and Remix's skinning shader skip weight-0 bones
+  (padding index byte 0 is harmless).
+- `dx9_draw.cpp apply_transforms`: palette path `D3DVBF_0WEIGHTS` →
+  `D3DVBF_1WEIGHTS`.
+- Spec updated (`gx-to-d3d9-mapping.md` §6a/§6b/§13) with the Remix
+  requirement and a new **bone-space caveat**: our blend matrices are
+  model→view (VIEW=identity / skinBaseMtx), while Remix's
+  `finalizeSkinningData` assumes bones are object→world and re-derives
+  instance transforms from its tracked camera. Composition still places
+  vertices correctly on screen; only Remix-side "world-space bone
+  transform" readouts (e.g. the ReadBoneTransform graph node) see
+  camera-relative values. Documented `[later]` option: route the real game
+  view matrix through `D3DTS_VIEW` and re-express bones as model→world.
+
+**Verification state:** both changed TUs pass the MinGW `-fsyntax-only`
+harness. NOT yet built/run on Windows. **Note: the owner has NOT yet tested
+checkpoint 3.2's TEV/TEMP-register build either** — the next Windows build
+carries BOTH the terrain/TEV fixes (3.2) and this Remix skinning fix (3.3).
+
+**Next run checklist (raw D3D9, no Remix):** terrain grass/dirt textures
+(3.2), Link mouth/armpit (3.2), minimap (3.2), skinned characters still
+correct after the 1WEIGHTS switch (3.3 must not regress FF rendering);
+device log line should show `tssTemp=true`. **Under Remix:** characters no
+longer disfigured; check the Remix log for the "no blend weight buffer"
+error line disappearing.
+
 ## Checkpoint 3.2 — the "moya" dapple was our own TEV bug: d-term dropped (2026-07-23)
 
 **Run 6 (build `ee3b15014f` — BOTH moya gates included) + full log analysis

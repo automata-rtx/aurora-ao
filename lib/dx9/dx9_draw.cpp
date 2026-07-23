@@ -233,12 +233,15 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else if (draw.hasPnMtxIdx) {
     // Matrix-palette draws (J3D characters): the 10 GX position matrices
-    // become the world matrix palette, selected per vertex with weight 1.
+    // become the world matrix palette, selected per vertex. The vertices
+    // store an explicit 1.0 weight (D3DVBF_1WEIGHTS rather than 0WEIGHTS,
+    // equivalent under fixed-function) because RTX Remix's GPU skinning
+    // requires a blend-weight stream — see decode_draw.
     for (uint32_t i = 0; i < gx::MaxPnMtx; ++i) {
       set_world_matrix(i, to_d3d(g_gxState.pnMtx[i].pos));
     }
     set_view_matrix(identity);
-    set_rs(D3DRS_VERTEXBLEND, D3DVBF_0WEIGHTS);
+    set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else {
     const D3DMATRIX world = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);

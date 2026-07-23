@@ -16,7 +16,8 @@ struct DecodedDraw {
   // Fixed-function vertex blending inputs for this draw:
   bool hasPnMtxIdx = false; // per-vertex matrix palette (PNMTXIDX attr)
   bool skinned = false;     // GXSetSkinning influences baked into the vertices
-  uint32_t weightCount = 0; // float weights stored per vertex (0-3)
+  uint32_t weightCount = 0; // float weights stored per vertex (0 rigid;
+                            // always 1-3 when blended, for Remix's sake)
   // GX texcoord attr (VA_TEXn) -> uv slot in the decoded vertex, -1 if absent.
   std::array<int8_t, 8> texSlot{-1, -1, -1, -1, -1, -1, -1, -1};
   uint8_t uvCount = 0;

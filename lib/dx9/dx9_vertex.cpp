@@ -2,6 +2,7 @@
 
 #ifdef AURORA_ENABLE_D3D9
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -152,7 +153,19 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
     warn_once(0x3001, "skinning active but position not indexed; drawing rigid");
   }
   out.hasPnMtxIdx = !out.skinned && plan[GX_VA_PNMTXIDX].attrType != GX_NONE;
-  out.weightCount = out.skinned ? g_skin.influenceCount - 1 : 0;
+  // Every blended draw stores at least one explicit weight. Fixed-function
+  // D3D9 would accept D3DVBF_0WEIGHTS with indices alone, but the RTX Remix
+  // runtime (dxvk-remix dispatchSkinning) refuses to run its GPU skinning
+  // pass unless the vertex declaration carries a BLENDWEIGHT element — the
+  // draw is then classified as skinned yet never skinned, mangling the mesh.
+  // A stored weight of 1.0 under D3DVBF_1WEIGHTS is equivalent to 0WEIGHTS:
+  // the implicit last weight becomes 0, so its (padding) bone contributes
+  // nothing. See docs/dx9/gx-to-d3d9-mapping.md #6.
+  if (out.skinned) {
+    out.weightCount = std::clamp(g_skin.influenceCount, 2u, 4u) - 1;
+  } else if (out.hasPnMtxIdx) {
+    out.weightCount = 1;
+  }
   const bool hasBlendIndices = out.skinned || out.hasPnMtxIdx;
 
   out.hasNormal = plan[GX_VA_NRM].attrType != GX_NONE;
@@ -320,6 +333,8 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
       }
       std::memcpy(dst + indicesOffset, &indices, 4);
     } else if (out.hasPnMtxIdx) {
+      const float one = 1.0f;
+      std::memcpy(dst + weightsOffset, &one, 4);
       const uint32_t indices = pnmtxidx;
       std::memcpy(dst + indicesOffset, &indices, 4);
     }
