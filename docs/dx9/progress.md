@@ -21,6 +21,31 @@
 
 ---
 
+## Checkpoint 2.2 — third run: d3d9 active; UI document crash fixed (2026-07-22)
+
+**Progress:** `dx9: device created` confirms the backend now initializes on
+the desktop (RTX 5090 machine). Crash moved past aurora into dusklight init:
+`EXCEPTION_ACCESS_VIOLATION` fault addr 0x90 in dusklight.exe right after
+"Texture replacement directory loaded".
+
+**Root cause:** `game_main` creates RmlUi documents unconditionally.
+`dusk::ui::initialize()` correctly returns false without RmlUi, but the
+return value was ignored and `push_document(make_unique<Overlay>(), …)` ran
+anyway — `Overlay::Overlay()` does `mDocument->GetElementById("fps")` with a
+null `mDocument` (base `Document` is null-safe; subclass ctors are not).
+
+**Fix (dusklight `m_Do_main.cpp`):** gate all startup document creation on
+`uiAvailable = dusk::ui::initialize()`: Overlay/TouchControls/MenuBar, the
+prelaunch picker (falls through to config/CLI DVD path with a clear warning +
+existing "No DVD image specified" fatal), CrashReportWindow, and PresetWindow
+(which would otherwise fire on any fresh config). Mods UI svc already guards
+via `rmlui::is_initialized()`; `update_midna_icon_texture` is CPU-only; the
+settings-internal Modal is unreachable without a root document.
+
+**Launch requirement in d3d9 mode:** no prelaunch picker → the game path must
+come from `backend.isoPath` or `--dvd <path>`. Recommended:
+`dusklight --backend d3d9 --dvd <game.rvz>`.
+
 ## Checkpoint 2.1 — second run report: config never selected d3d9 (2026-07-22)
 
 **Symptom:** "still crashes on launch" — but the log shows this run never used
