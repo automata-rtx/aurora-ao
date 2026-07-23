@@ -648,11 +648,15 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, ArrayRef<wgpu:
   };
   const auto blendState =
       to_blend_state(config.blendMode, config.blendFacSrc, config.blendFacDst, config.blendOp, config.dstAlpha);
-  // Thin g-buffer normal target (location 1). No blending; write only for frontmost opaque
-  // surfaces so the buffer holds the opaque surface normal (matching the depth buffer).
+  // Thin g-buffer normal target (location 1). No blending; write for any depth-writing draw so
+  // the buffer holds the normal of whatever surface established the depth at each pixel (the
+  // frontmost depth-writing surface wins via the depth test). This matches the coverage of a
+  // depth-reconstructed normal exactly — including depth-writing transparencies (e.g. water) —
+  // so consumers get an authored (smooth) normal wherever reconstruction could produce one.
+  // Blend-only draws that do not write depth (additive particles, etc.) are absent from the
+  // depth buffer and are intentionally left out here too.
   const bool normalTarget = config.shaderConfig.normalTarget;
-  const bool writeNormal =
-      normalTarget && config.depthCompare && config.depthUpdate && config.blendMode == GX_BM_NONE;
+  const bool writeNormal = normalTarget && config.depthCompare && config.depthUpdate;
   const std::array colorTargets{
       wgpu::ColorTargetState{
           .format = g_graphicsConfig.surfaceConfiguration.format,

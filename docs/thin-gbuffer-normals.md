@@ -143,14 +143,14 @@ attachments[1] = wgpu::RenderPassColorAttachment{
 
 ### 6.5 Pipeline — `lib/gx/pipeline.hpp` + `lib/gx/gx.cpp`
 - Add a discriminator to `PipelineConfig` (`pipeline.hpp:20-35`): `bool normalTarget = false;` (set from the current pass, like `msaaSamples`). **Bump `GXPipelineConfigVersion` 13 → 14** and keep `has_unique_object_representations` intact. This is required because the color format is *not* otherwise in the cache key (it is read globally at build time, `gx.cpp:651-655`) — without a discriminator, one-target and two-target pipelines would collide.
-- In `build_pipeline` (`gx.cpp:633-681`), when `config.normalTarget`, append a second `wgpu::ColorTargetState` for `normalFormat` with **blend disabled** and a **write mask gated to opaque draws**:
+- In `build_pipeline` (`gx.cpp:633-681`), when `config.normalTarget`, append a second `wgpu::ColorTargetState` for `normalFormat` with **blend disabled** and a **write mask gated on depth-write**:
   ```cpp
-  // target 1 writes only for frontmost opaque surfaces
-  const bool opaque = config.depthCompare && config.depthUpdate && config.blendMode == GX_BM_NONE;
+  // target 1 writes for any depth-writing draw; frontmost depth-writer wins via the depth test
+  const bool writeNormal = config.depthCompare && config.depthUpdate;
   colorTargets[1] = { .format = normalFormat, .blend = nullptr,
-                      .writeMask = opaque ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None };
+                      .writeMask = writeNormal ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None };
   ```
-  All those inputs are already in the cache key, so the derived write mask is deterministic per key. Translucent/decal draws keep target 1 but write nothing, so the buffer holds the opaque surface normal — exactly what AO wants.
+  All those inputs are already in the cache key, so the derived write mask is deterministic per key. Coverage therefore matches the depth buffer: opaque **and** depth-writing transparencies get an authored normal; blend-only non-depth-writing draws (which aren't in depth) write nothing.
 - `config.normalTarget` is populated in `populate_pipeline_config` (`gx.cpp:683`) from the current pass (mirroring how `msaaSamples` comes from `gfx::get_sample_count()`), so EFB pipelines get 2 targets and offscreen pipelines get 1.
 
 ### 6.6 Shader generation — `lib/gx/shader.cpp`
@@ -234,7 +234,7 @@ Recommend **RGBA8Unorm + alpha validity** for v1 (cheapest to land, integrates w
 
 - **Extra bandwidth:** one 4-byte write per opaque fragment in the main pass, plus the target's memory (w·h·4, doubled under MSAA for MSAA+resolve). Small next to what it removes (8 depth taps + 2 unprojections/pixel in GTAO, over the whole screen).
 - **MSAA:** if enabled (`g_graphicsConfig.msaaSamples > 1`), the normal target needs its own MSAA texture + single-sample resolve. Hardware MSAA resolve **averages** samples; averaged normals are only approximately unit and slightly wrong at silhouettes — renormalize on read; acceptable for AO. (Depth snapshots already forbid MSAA in `depth_peek`; the color/normal resolve path does not.)
-- **Translucent / non-depth-writing draws:** intentionally excluded (write mask off on target 1), so glass/water/particles do not clobber the opaque normal. Effects needing normals on translucents are out of scope for v1.
+- **Coverage = the depth buffer.** The normal write is gated on **depth-write** (`depthCompare && depthUpdate`), not on "opaque (no blend)". So the buffer holds an authored normal for *whatever surface established the depth* at each pixel (frontmost depth-writer wins via the depth test), which matches a depth-reconstructed normal's coverage exactly — including depth-writing transparencies such as water. Blend-only draws that do not write depth (additive particles, etc.) are absent from the depth buffer and are left out here too, so nothing that a depth reconstruction could reach is missed.
 - **Geometry without authored normals** (UI, some billboards/particles, sky): validity `w = 0`; consumers must handle (fallback or skip). These are normally excluded from AO anyway.
 - **Pipeline permutations:** the `normalTarget` bool adds at most a ×2 to GX pipeline variants in principle, but in practice a game either uses the feature (EFB pipelines all carry target 1) or not, so the real increase is ~1×. Requires the `GXPipelineConfigVersion` bump (cache invalidation on first run after upgrade).
 - **First-run shader compile:** every EFB pipeline recompiles to add the second output; cached thereafter.
@@ -279,7 +279,7 @@ This design has been **implemented** on `claude/thin-gbuffer-authored-normals-wg
 - `AuroraConfig::enableNormalBuffer` (off by default) → `GraphicsConfig::normalBuffer`; `NormalBufferFormat = RGBA8Unorm` (`gpu.hpp`).
 - `g_normalBuffer` / `g_normalBufferResolved` created/destroyed alongside the EFB textures; `create_render_texture` gained a format arg (`gpu.cpp`).
 - `RenderPass` gained normal views + snapshot dst; wired in **all** EFB-pass construction sites (`set_efb_targets`, `resume_efb_pass_loading`, `resolve_pass_into`); `render()` adds a 2nd color attachment; `resolve_pass`/`acquire_pass_snapshot` snapshot the normal via `CopyTextureToTexture` (`common.cpp`).
-- `ShaderConfig` gained a `normalTarget` bit (via a spare pad bit); `GXPipelineConfigVersion` 13→14; `build_pipeline` adds a 2nd `ColorTargetState` (blend off; write mask on only for opaque `GX_BM_NONE` depth-writing draws); the GX fragment shader emits `@location(1)` `normalize(mv_nrm)*0.5+0.5` + validity (`gx.cpp`, `shader.cpp`, `pipeline.hpp`, `gx.hpp`).
+- `ShaderConfig` gained a `normalTarget` bit (via a spare pad bit); `GXPipelineConfigVersion` 13→14; `build_pipeline` adds a 2nd `ColorTargetState` (blend off; write mask on for any depth-writing draw — `depthCompare && depthUpdate` — so coverage matches the depth buffer, transparencies included); the GX fragment shader emits `@location(1)` `normalize(mv_nrm)*0.5+0.5` + validity (`gx.cpp`, `shader.cpp`, `pipeline.hpp`, `gx.hpp`).
 - Public API: `has_normal_buffer()`, `normal_format()`, `ResolveDesc::normal`, `ResolvedTargets::{normal,normalFormat}`, `DrawContext::normalFormat` (`gfx.hpp`).
 
 **The one non-obvious constraint discovered during implementation:** a render pass with two color attachments requires **every** pipeline drawing into it to declare two targets. So the **clear** pipeline gained a write-masked second target (`clear.*`, `GXFrameBuffer.cpp`), and `DrawContext::normalFormat` is exposed so **custom mod draws** recorded into the EFB pass can add a matching (masked) target. RmlUi (its own layer passes), imgui (its own present pass), and the palette/copy conversions (outside the EFB pass) are unaffected.
