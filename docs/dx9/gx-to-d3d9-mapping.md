@@ -16,8 +16,20 @@ expressed at all lives in `unsupported-effects.md`.
   - Present params: `D3DSWAPEFFECT_DISCARD`, backbuffer `D3DFMT_X8R8G8B8`,
     `AutoDepthStencilFormat = D3DFMT_D24S8`, windowed, vsync from config
     (`D3DPRESENT_INTERVAL_ONE/IMMEDIATE`). Backbuffer size = window client
-    size; on resize → `Reset` with rebuilt pp (all pool-default resources
-    released first; managed pool textures survive).
+    size (`native_fb_*`); on resize → `Reset` with rebuilt pp. Before Reset:
+    end any offscreen pass, end the scene, **unbind every texture** (a
+    resource still bound to the device survives our Release and makes Reset
+    fail), then release all pool-default resources; managed textures survive.
+    A failed Reset marks the device lost and retries next frame; a minimized
+    window (0x0) skips the frame entirely.
+  - **Render rect (letterbox).** The backbuffer is the full window, but
+    drawing targets a centered rect of `AuroraWindowSize::fb_*`
+    (`renderWidth/Height` + `renderOffsetX/Y`) — the same size the game lays
+    its HUD out against via `AuroraGetRenderSize`, and what the viewport
+    policy letterboxes to the game's aspect. `get_backbuffer_size` reports the
+    render size, viewport/scissor/EFB-copy rects add the offset, and the bars
+    are cleared to black. Rendering into the raw window instead stretched the
+    image and desynced HUD placement.
   - **Remix note:** plain HAL device + `*UP` draws + `SetTransform` +
     `SetTexture` + fixed-function is the exact subset Remix intercepts.
 - Frame: `begin_frame` → handle device-lost (`TestCooperativeLevel`),
@@ -245,6 +257,31 @@ wholesale and the game bakes most world lighting into vertex colors:
   is irrelevant under Remix.
 
 ## 9. TEV → texture-stage states [v1] — `lib/dx9/dx9_tev.*`
+
+> **Remix constraint (load-bearing).** Remix reconstructs a draw's material
+> from **one** texture stage — the first bound to the lowest
+> `D3DTSS_TEXCOORDINDEX` — and decodes only ops
+> `MODULATE/SELECTARG1/SELECTARG2/MODULATE2X/MODULATE4X/ADD` (anything else
+> reads as MODULATE) and arg sources `DIFFUSE/CURRENT/TEXTURE/TFACTOR/
+> SPECULAR` **with no modifier bits** (`convertTextureOp`/`convertTextureArg`,
+> d3d9_rtx_utils.cpp). `D3DTA_TEMP`, `D3DTA_CONSTANT`, and anything carrying
+> `D3DTA_COMPLEMENT`/`D3DTA_ALPHAREPLICATE` decode to
+> `RtTextureArgSource::None`, which drops the texture from the material and
+> renders the surface **black** under Remix while the texture still appears in
+> Remix's texture list. Consequences, all implemented in `dx9_tev.cpp`:
+> - When the leading stage of a textured draw isn't decodable, a plain
+>   `MODULATE(TEXTURE, DIFFUSE)` stage is prepended for Remix to read; it
+>   writes CURRENT which the real chain overwrites, and it is only emitted
+>   when nothing in that GX stage reads CURRENT, so raster is unchanged.
+> - The texture is bound only on emitted stages that actually reference
+>   `D3DTA_TEXTURE` — Remix keeps two texture candidates per draw, so
+>   duplicates from a split stage crowd out a real second texture.
+> - Unused stages are disabled **and unbound**: Remix's scan skips
+>   texture-less stages rather than stopping at the first disabled one, so a
+>   leftover binding could win the albedo slot.
+> - Only `colorTextures[0]` is used as albedo for normal materials
+>   (`ColorTexture2` is RayPortal-only), so multi-texture GX materials are
+>   inherently approximated under Remix.
 
 The heart of the fixed-function mapping. GX TEV per stage computes
 `d ± (a*(1-c) + b*c) + bias, × scale` per color and alpha with arbitrary

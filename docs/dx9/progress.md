@@ -26,6 +26,92 @@
 
 ---
 
+## Checkpoint 3.7 — Remix reads ONE texture stage: black materials, HUD scale, resize reset (2026-07-24)
+
+**Owner report (Remix run):** VRAM leak fixed. New: (a) many assets across
+the world render with a **black texture** although the textures are present
+in Remix's texture-categorization list; (b) **Link's eyes render white** —
+the outer/edge eye texture shows, the iris inside does not; (c) the **HUD no
+longer scales with the window**, and resizing the window **crashes**.
+
+**Root cause A — Remix decodes only a tiny subset of fixed-function state.**
+`D3D9Rtx::processTextures<FixedFunction>` (d3d9_rtx.cpp) picks ONE stage —
+the first bound to the lowest `D3DTSS_TEXCOORDINDEX` — and
+`setTextureStageState` (d3d9_rtx_utils.cpp) reconstructs the material from
+*that stage alone* via:
+```cpp
+DxvkRtTextureOperation convertTextureOp(uint32_t op) {   // default -> Modulate
+  case D3DTOP_DISABLE / SELECTARG1 / SELECTARG2 / MODULATE2X / MODULATE4X / ADD
+}
+RtTextureArgSource convertTextureArg(uint32_t arg, ...) {
+  default: return RtTextureArgSource::None;              // <-- everything else
+  case D3DTA_CURRENT: case D3DTA_DIFFUSE: ... case D3DTA_TEXTURE: case D3DTA_TFACTOR:
+}
+```
+The switch runs on the **raw** arg, so `D3DTA_TEMP`, `D3DTA_CONSTANT`, and
+any arg carrying `D3DTA_COMPLEMENT` / `D3DTA_ALPHAREPLICATE` all decode to
+`None` — the texture drops out of the material and the surface renders black
+even though it is resident and correctly bound (hence "visible in the texture
+list but not applied"). Our TEV reduction emits all of those routinely:
+`D3DTA_TEMP` for the checkpoint-3.2 split-stage decomposition,
+`TEXTURE|ALPHAREPLICATE` for GX's TEXA/RASA-as-color operands, per-stage
+`D3DTA_CONSTANT` for a second distinct constant.
+
+**Fix A** (`dx9_tev.cpp`): when the leading stage of a textured draw isn't
+decodable, prepend a plain `MODULATE(TEXTURE, DIFFUSE)` stage for Remix to
+read. It writes CURRENT and the real chain overwrites it, and it is only
+emitted when nothing in that GX stage reads CURRENT — so **rasterization is
+unchanged**. Also: bind the texture only on emitted stages that actually
+reference `D3DTA_TEXTURE` (Remix keeps just two texture candidates per draw,
+so duplicates from a decomposed stage crowd out a real second texture), and
+disable *and unbind* every unused stage at the end of the chain — Remix's
+scan `continue`s past stages with no texture instead of stopping, so a
+texture left bound on a high stage by an earlier draw could be collected as a
+candidate and win the albedo slot if its stale texcoord sorted lower.
+
+**Root cause B — render size vs. HUD layout size.** The game lays out its HUD
+against `AuroraGetRenderSize()` = `AuroraWindowSize::fb_*`, which the
+viewport policy (`AURORA_VIEWPORT_FIT`, the default) letterboxes to the
+game's aspect. The wgpu path renders into a framebuffer texture of exactly
+that size. The D3D9 path created its backbuffer from `native_fb_*` (the raw
+window pixels) and reported that as the render target size, so on any
+non-4:3 window the image was stretched to fill and the HUD was laid out for a
+size we never rendered into.
+
+**Fix B** (`dx9_backend.cpp`, `dx9_internal.hpp`): the backbuffer stays
+native-sized, but a new render rect (`renderWidth/Height` +
+`renderOffsetX/Y`) tracks `fb_*` centered inside it. `get_backbuffer_size`
+reports the render size, viewport/scissor/EFB-copy rects add the offset, and
+the letterbox bars are cleared to black instead of the scene clear color.
+
+**Fix C — resize.** `reset_device` now ends any offscreen pass, ends the
+scene, and unbinds all textures before releasing default-pool resources (a
+resource still bound to the device survives our Release and makes `Reset`
+fail); a failed Reset marks the device lost and retries next frame instead of
+drawing against a half-reset device; minimized windows (0x0) skip the frame
+rather than resetting to a 0-sized backbuffer. **The crash itself is not yet
+confirmed** — no log was available for the crashing run. If it persists,
+capture `dusklight*.log` from a run that crashes on resize.
+
+**Verification state:** all five dx9 TUs pass the MinGW harness in d3d9
+on+off. NOT yet run on Windows. (`lib/gx/gx.cpp` and `lib/gfx/common.cpp`
+cannot be syntax-checked with the harness — the shim's Dawn headers are
+stubs; unchanged here.)
+
+**Next run checklist:**
+- Black assets: expect textures to appear. Any that stay black are draws
+  whose *chosen* stage still isn't decodable — grab the Remix log and check
+  for `[RTX-Compatibility-Info] Texture 0 without valid hash detected`.
+- Link's eyes: may still be wrong. Remix binds at most 2 textures per draw
+  and only uses `colorTextures[0]` as albedo for normal materials
+  (`ColorTexture2` is RayPortal-only per d3d9_rtx.cpp), so a second-stage
+  iris decal may be unrepresentable by design — confirm whether the iris is
+  a separate draw before pursuing.
+- HUD should scale with the window again, with black letterbox bars and no
+  horizontal stretch on wide windows. Raw D3D9 aspect should now match the
+  wgpu backends.
+- Resize should no longer crash; if it does, the log is required.
+
 ## Checkpoint 3.6 — branch consolidation (2026-07-24)
 
 Owner reorganized both repos around two branches (same names in each):

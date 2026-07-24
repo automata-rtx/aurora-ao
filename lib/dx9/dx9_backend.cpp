@@ -46,8 +46,16 @@ static void cache_backbuffer_surfaces() noexcept {
   g_dx9.dev->GetDepthStencilSurface(&s_backbufferDepth);
 }
 
-static uint32_t current_target_width() noexcept { return g_dx9.inOffscreen ? g_dx9.offscreenWidth : g_dx9.width; }
-static uint32_t current_target_height() noexcept { return g_dx9.inOffscreen ? g_dx9.offscreenHeight : g_dx9.height; }
+static uint32_t current_target_width() noexcept {
+  return g_dx9.inOffscreen ? g_dx9.offscreenWidth : g_dx9.renderWidth;
+}
+static uint32_t current_target_height() noexcept {
+  return g_dx9.inOffscreen ? g_dx9.offscreenHeight : g_dx9.renderHeight;
+}
+// Origin of the render area within the current target (letterbox offset on the
+// backbuffer, zero inside an offscreen pass, which owns its whole target).
+static int32_t target_offset_x() noexcept { return g_dx9.inOffscreen ? 0 : g_dx9.renderOffsetX; }
+static int32_t target_offset_y() noexcept { return g_dx9.inOffscreen ? 0 : g_dx9.renderOffsetY; }
 
 bool active() noexcept { return s_active; }
 
@@ -116,6 +124,21 @@ static void current_window_size(uint32_t& width, uint32_t& height) noexcept {
   height = size.native_fb_height != 0 ? size.native_fb_height : size.height;
 }
 
+// Recomputes the letterboxed render area from the window's framebuffer size -
+// the same size the game asks aurora for when it lays out its HUD - and
+// centers it in the backbuffer.
+static void update_render_rect() noexcept {
+  const auto size = window::get_window_size();
+  uint32_t w = size.fb_width != 0 ? size.fb_width : g_dx9.width;
+  uint32_t h = size.fb_height != 0 ? size.fb_height : g_dx9.height;
+  w = std::clamp(w, 1u, std::max(g_dx9.width, 1u));
+  h = std::clamp(h, 1u, std::max(g_dx9.height, 1u));
+  g_dx9.renderWidth = w;
+  g_dx9.renderHeight = h;
+  g_dx9.renderOffsetX = static_cast<int32_t>((g_dx9.width - w) / 2);
+  g_dx9.renderOffsetY = static_cast<int32_t>((g_dx9.height - h) / 2);
+}
+
 bool initialize() noexcept {
   g_dx9.hwnd = window_hwnd();
   if (g_dx9.hwnd == nullptr) {
@@ -160,10 +183,12 @@ bool initialize() noexcept {
   g_dx9.deviceLost = false;
   g_dx9.inScene = false;
   g_dx9.inOffscreen = false;
+  update_render_rect();
   s_active = true;
 
-  Log.info("dx9: device created {}x{} (maxBlendMtxIdx={}, perStageConstants={}, tssTemp={})", g_dx9.width,
-           g_dx9.height, g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants, g_dx9.tssTemp);
+  Log.info("dx9: device created {}x{} (render {}x{}+{}+{}, maxBlendMtxIdx={}, perStageConstants={}, tssTemp={})",
+           g_dx9.width, g_dx9.height, g_dx9.renderWidth, g_dx9.renderHeight, g_dx9.renderOffsetX, g_dx9.renderOffsetY,
+           g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants, g_dx9.tssTemp);
   apply_default_state();
   cache_backbuffer_surfaces();
   texture_cache_initialize();
@@ -190,16 +215,34 @@ void shutdown() noexcept {
 }
 
 static bool reset_device(uint32_t width, uint32_t height) noexcept {
+  // Reset fails unless every D3DPOOL_DEFAULT resource is released first, and a
+  // resource still bound to the device stays alive through our Release. Drop
+  // the offscreen pass (which owns the render target), unbind every texture,
+  // then release the default-pool caches.
+  if (g_dx9.inOffscreen) {
+    end_offscreen();
+  }
+  if (g_dx9.inScene) {
+    g_dx9.dev->EndScene();
+    g_dx9.inScene = false;
+  }
+  for (uint32_t stage = 0; stage < MaxStages; ++stage) {
+    g_dx9.dev->SetTexture(stage, nullptr);
+  }
   release_backbuffer_surfaces();
   texture_cache_release_default_pool();
   fill_present_params(width, height);
   const HRESULT hr = g_dx9.dev->Reset(&g_dx9.pp);
   if (FAILED(hr)) {
-    Log.warn("dx9: Reset failed ({:#x})", static_cast<uint32_t>(hr));
+    Log.warn("dx9: Reset failed ({:#x}); retrying next frame", static_cast<uint32_t>(hr));
+    // Leave the device marked lost so the next frame retries rather than
+    // drawing against a half-reset device.
+    g_dx9.deviceLost = true;
     return false;
   }
   g_dx9.width = g_dx9.pp.BackBufferWidth;
   g_dx9.height = g_dx9.pp.BackBufferHeight;
+  update_render_rect();
   apply_default_state();
   cache_backbuffer_surfaces();
   return true;
@@ -219,17 +262,36 @@ bool begin_frame() noexcept {
   uint32_t width = 0;
   uint32_t height = 0;
   current_window_size(width, height);
-  if (coop == D3DERR_DEVICENOTRESET || g_dx9.deviceLost ||
-      (width != 0 && height != 0 && (width != g_dx9.width || height != g_dx9.height))) {
+  if (width == 0 || height == 0) {
+    // Minimized: there is nothing to present, and resetting to a 0-sized
+    // backbuffer would fail. Skip the frame and pick the size up on restore.
+    return false;
+  }
+  if (coop == D3DERR_DEVICENOTRESET || g_dx9.deviceLost || width != g_dx9.width || height != g_dx9.height) {
     if (!reset_device(width, height)) {
       return false;
     }
     g_dx9.deviceLost = false;
+  } else {
+    // The backbuffer is unchanged, but the render area still tracks the
+    // framebuffer size (viewport policy / display scale can move it).
+    update_render_rect();
   }
 
   const auto& clear = g_gxState.clearColor;
   const D3DCOLOR clearColor = D3DCOLOR_COLORVALUE(clear[0], clear[1], clear[2], clear[3]);
-  g_dx9.dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, 1.0f, 0);
+  const bool letterboxed = g_dx9.renderWidth != g_dx9.width || g_dx9.renderHeight != g_dx9.height;
+  if (letterboxed) {
+    // Bars stay black rather than inheriting the scene's clear color.
+    g_dx9.dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, D3DCOLOR_ARGB(255, 0, 0, 0),
+                     1.0f, 0);
+    D3DRECT rect{g_dx9.renderOffsetX, g_dx9.renderOffsetY,
+                 g_dx9.renderOffsetX + static_cast<LONG>(g_dx9.renderWidth),
+                 g_dx9.renderOffsetY + static_cast<LONG>(g_dx9.renderHeight)};
+    g_dx9.dev->Clear(1, &rect, D3DCLEAR_TARGET, clearColor, 1.0f, 0);
+  } else {
+    g_dx9.dev->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL, clearColor, 1.0f, 0);
+  }
   if (SUCCEEDED(g_dx9.dev->BeginScene())) {
     g_dx9.inScene = true;
   }
@@ -325,8 +387,8 @@ void set_render_viewport() noexcept {
   const float right = std::clamp(vp.left + vp.width, left, maxW);
   const float bottom = std::clamp(vp.top + vp.height, top, maxH);
   D3DVIEWPORT9 d3dvp{};
-  d3dvp.X = static_cast<DWORD>(left);
-  d3dvp.Y = static_cast<DWORD>(top);
+  d3dvp.X = static_cast<DWORD>(left + static_cast<float>(target_offset_x()));
+  d3dvp.Y = static_cast<DWORD>(top + static_cast<float>(target_offset_y()));
   d3dvp.Width = std::max<DWORD>(static_cast<DWORD>(right - left), 1);
   d3dvp.Height = std::max<DWORD>(static_cast<DWORD>(bottom - top), 1);
   d3dvp.MinZ = std::clamp(vp.znear, 0.f, 1.f);
@@ -344,11 +406,15 @@ void set_render_scissor() noexcept {
   const auto& sc = g_gxState.renderScissor;
   const auto maxW = static_cast<int32_t>(current_target_width());
   const auto maxH = static_cast<int32_t>(current_target_height());
+  const auto left = std::clamp<int32_t>(sc.x, 0, maxW);
+  const auto top = std::clamp<int32_t>(sc.y, 0, maxH);
+  const auto right = std::clamp<int32_t>(sc.x + sc.width, left, maxW);
+  const auto bottom = std::clamp<int32_t>(sc.y + sc.height, top, maxH);
   RECT rect;
-  rect.left = std::clamp<int32_t>(sc.x, 0, maxW);
-  rect.top = std::clamp<int32_t>(sc.y, 0, maxH);
-  rect.right = std::clamp<int32_t>(sc.x + sc.width, rect.left, maxW);
-  rect.bottom = std::clamp<int32_t>(sc.y + sc.height, rect.top, maxH);
+  rect.left = left + target_offset_x();
+  rect.top = top + target_offset_y();
+  rect.right = right + target_offset_x();
+  rect.bottom = bottom + target_offset_y();
   g_dx9.dev->SetScissorRect(&rect);
 }
 
@@ -395,10 +461,10 @@ void copy_tex(const void* dest, bool clear) noexcept {
         const auto maxW = static_cast<LONG>(current_target_width());
         const auto maxH = static_cast<LONG>(current_target_height());
         RECT src;
-        src.left = std::clamp<LONG>(srcRect.x, 0, maxW);
-        src.top = std::clamp<LONG>(srcRect.y, 0, maxH);
-        src.right = std::clamp<LONG>(srcRect.x + srcRect.width, src.left, maxW);
-        src.bottom = std::clamp<LONG>(srcRect.y + srcRect.height, src.top, maxH);
+        src.left = std::clamp<LONG>(srcRect.x, 0, maxW) + target_offset_x();
+        src.top = std::clamp<LONG>(srcRect.y, 0, maxH) + target_offset_y();
+        src.right = std::clamp<LONG>(srcRect.x + srcRect.width, 0, maxW) + target_offset_x();
+        src.bottom = std::clamp<LONG>(srcRect.y + srcRect.height, 0, maxH) + target_offset_y();
         if (src.right > src.left && src.bottom > src.top) {
           copied = SUCCEEDED(g_dx9.dev->StretchRect(srcSurface, &src, dstSurface, nullptr, D3DTEXF_LINEAR));
           if (!copied) {
@@ -422,7 +488,9 @@ void copy_tex(const void* dest, bool clear) noexcept {
   if (clear) {
     // Honor the clear semantics on the current target, scoped to the copy
     // source rect.
-    D3DRECT d3dRect{srcRect.x, srcRect.y, srcRect.x + srcRect.width, srcRect.y + srcRect.height};
+    D3DRECT d3dRect{srcRect.x + target_offset_x(), srcRect.y + target_offset_y(),
+                    srcRect.x + srcRect.width + target_offset_x(),
+                    srcRect.y + srcRect.height + target_offset_y()};
     DWORD flags = 0;
     if (g_gxState.colorUpdate || g_gxState.alphaUpdate) {
       flags |= D3DCLEAR_TARGET;

@@ -354,6 +354,83 @@ inline Operand white_operand() noexcept {
   return o;
 }
 
+// --- RTX Remix material reconstruction -------------------------------------
+//
+// Remix rebuilds a draw call's material from exactly ONE texture stage - the
+// first stage bound to the lowest D3DTSS_TEXCOORDINDEX - and decodes only a
+// small subset of fixed-function state (d3d9_rtx_utils.cpp,
+// convertTextureOp/convertTextureArg): ops MODULATE, SELECTARG1, SELECTARG2,
+// MODULATE2X, MODULATE4X and ADD (anything else is read as MODULATE), and arg
+// sources DIFFUSE, CURRENT, TEXTURE, TFACTOR and SPECULAR *with no modifier
+// bits*. Everything else - D3DTA_TEMP, D3DTA_CONSTANT, and any arg carrying
+// D3DTA_COMPLEMENT or D3DTA_ALPHAREPLICATE - decodes to
+// RtTextureArgSource::None, which drops the texture out of the material and
+// renders the surface black under Remix even though the texture is resident
+// and correctly bound (it still shows up in Remix's texture list). TEV
+// reductions reach for all of those routinely - TEMP for the split-stage
+// decomposition, ALPHAREPLICATE for GX's TEXA/RASA-as-color operands - so when
+// the leading stage isn't decodable we prepend a plain MODULATE(TEXTURE,
+// DIFFUSE) stage purely for Remix to read. It writes CURRENT, which the real
+// chain then overwrites, so the rasterized result is unchanged.
+constexpr DWORD arg_base(DWORD ta) noexcept { return ta & ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE); }
+
+bool remix_decodable_op(const PassOp& op) noexcept {
+  switch (op.op) {
+  case D3DTOP_SELECTARG1:
+  case D3DTOP_SELECTARG2:
+  case D3DTOP_MODULATE:
+  case D3DTOP_MODULATE2X:
+  case D3DTOP_MODULATE4X:
+  case D3DTOP_ADD:
+    break;
+  default:
+    return false;
+  }
+  if (op.complementArg2 || op.usesArg0) {
+    // Remix reads arg1/arg2 only; arg0 (LERP/MULTIPLYADD) is dropped.
+    return false;
+  }
+  // The first constant of a draw claims TFACTOR (decodable); a second distinct
+  // one falls back to the per-stage constant, which does not decode.
+  int constCount = 0;
+  const auto decodable = [&constCount](const Operand& o) {
+    if (o.isConst) {
+      return ++constCount <= 1;
+    }
+    if (o.ta != arg_base(o.ta)) {
+      return false;
+    }
+    switch (o.ta) {
+    case D3DTA_DIFFUSE:
+    case D3DTA_CURRENT:
+    case D3DTA_TEXTURE:
+    case D3DTA_TFACTOR:
+    case D3DTA_SPECULAR:
+      return true;
+    default:
+      return false;
+    }
+  };
+  return decodable(op.arg1) && (!op.usesArg2 || decodable(op.arg2));
+}
+
+bool op_reads(const PassOp& op, DWORD source) noexcept {
+  const auto is = [source](const Operand& o) { return !o.isConst && arg_base(o.ta) == source; };
+  return is(op.arg1) || (op.usesArg2 && is(op.arg2)) || (op.usesArg0 && is(op.arg0));
+}
+
+bool pass_reads(const ReducedPass& r, DWORD source) noexcept {
+  if (r.hasTemp && op_reads(r.tempOp, source)) {
+    return true;
+  }
+  for (int i = 0; i < r.finalCount; ++i) {
+    if (op_reads(r.finals[i], source)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Appends a x2/x4 post-multiply stage (MODULATE2X/4X against white).
 void append_scale(ReducedPass& r, GXTevScale scale, uint64_t hash, bool allowMulti) noexcept {
   if (scale == GX_CS_SCALE_1) {
@@ -744,6 +821,34 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     }
 
     static const PassOp kPassthrough{};
+
+    // Give Remix a decodable leading stage when this one isn't (see the
+    // remix_decodable_op comment). Only worth doing for the very first stage
+    // of the draw - that is the one Remix reconstructs the material from - and
+    // only when nothing in this GX stage reads CURRENT, so seeding CURRENT
+    // here cannot change the rasterized result.
+    if (d3dStage == 0 && hasTexture && d3dStage + need < MaxStages) {
+      const PassOp& lead = (anyTemp && cp.hasTemp) ? cp.tempOp : cp.finals[0];
+      if (!(remix_decodable_op(lead) && op_reads(lead, D3DTA_TEXTURE)) &&
+          !pass_reads(cp, D3DTA_CURRENT) && !pass_reads(ap, D3DTA_CURRENT)) {
+        if (IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId); tex != nullptr) {
+          set_texture(d3dStage, tex);
+          apply_sampler(d3dStage, stage.texMapId);
+          set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, stage.texCoordId, draw));
+          set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+          set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+          set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+          set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+          set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+          set_tss(d3dStage, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+          if (g_dx9.tssTemp) {
+            set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_CURRENT);
+          }
+          ++d3dStage;
+        }
+      }
+    }
+
     for (uint32_t k = 0; k < need; ++k, ++d3dStage) {
       const bool isTempStage = anyTemp && k == 0;
       const int fi = static_cast<int>(k) - (anyTemp ? 1 : 0);
@@ -754,9 +859,12 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                               : fi < ap.finalCount ? ap.finals[fi]
                                                    : kPassthrough;
 
-      // Bind texture + sampler + texgen on every emitted stage of this GX
-      // stage (any of them may reference D3DTA_TEXTURE).
-      if (hasTexture) {
+      // Bind texture + sampler + texgen only on the emitted stages that
+      // actually sample it. Binding it on the others too would cost nothing in
+      // raster, but Remix treats every stage with a texture bound as a
+      // candidate and keeps only two per draw, so duplicates can crowd out a
+      // second real texture.
+      if (hasTexture && (op_reads(colorOp, D3DTA_TEXTURE) || op_reads(alphaOp, D3DTA_TEXTURE))) {
         IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId);
         set_texture(d3dStage, tex);
         if (tex != nullptr) {
@@ -853,10 +961,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_TEXTUREFACTOR, consts.tfactor);
   }
 
-  // Terminate the stage chain.
-  if (d3dStage < MaxStages) {
-    set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+  // Terminate the stage chain. Every unused stage is disabled *and* unbound:
+  // D3D9 rasterization stops at the first disabled stage, but Remix's scan
+  // skips stages with no texture rather than stopping, so a texture left over
+  // from an earlier draw on a high stage would still be collected as a
+  // material candidate - and win the albedo slot outright if its stale
+  // texcoord index sorted below this draw's own.
+  for (uint32_t s = d3dStage; s < MaxStages; ++s) {
+    set_texture(s, nullptr);
+    set_tss(s, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    set_tss(s, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
   }
   return d3dStage;
 }

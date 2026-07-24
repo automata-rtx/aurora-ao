@@ -34,8 +34,18 @@ struct Device {
   HWND hwnd = nullptr;
   D3DPRESENT_PARAMETERS pp{};
   D3DCAPS9 caps{};
+  // Backbuffer size: the window's real pixel size.
   uint32_t width = 0;
   uint32_t height = 0;
+  // Render area inside the backbuffer. The shared gx layer scales the GC
+  // logical framebuffer into this, and the game lays its HUD out against the
+  // same size (AuroraGetRenderSize -> AuroraWindowSize::fb_*), which the
+  // viewport policy may letterbox to the game's aspect. Rendering into the
+  // full backbuffer instead would stretch the image and desync HUD placement.
+  uint32_t renderWidth = 0;
+  uint32_t renderHeight = 0;
+  int32_t renderOffsetX = 0;
+  int32_t renderOffsetY = 0;
   bool inScene = false;
   bool deviceLost = false;
   bool perStageConstants = false; // D3DPMISCCAPS_PERSTAGECONSTANT
