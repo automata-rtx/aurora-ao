@@ -33,8 +33,13 @@ path) with no Remix SDK integration.
 
 | Repo | Branch | Role |
 |------|--------|------|
-| `automata-rtx/aurora-ao` | `Fixed-Function` (dev: `claude/dusklight-dx9-fixed-function-6uoy92`) | All D3D9 backend code (`lib/dx9/`), this doc set |
-| `automata-rtx/dusklight-ao` | `Fixed-Function` (dev: same name) | Backend option plumbing (CLI/config/menu), `extern/aurora` submodule bump |
+| `automata-rtx/aurora-ao` | `Fixed-Function` (dev: `Fixed-Function-dev`) | All D3D9 backend code (`lib/dx9/`), this doc set |
+| `automata-rtx/dusklight-ao` | `Fixed-Function` (dev: `Fixed-Function-dev`) | Backend option plumbing (CLI/config/menu), `extern/aurora` submodule bump |
+
+Workflow: commit on `Fixed-Function-dev`; merge into `Fixed-Function` at
+tested checkpoints (aurora first, then dusklight, so the submodule pin on
+dusklight's `Fixed-Function` resolves within aurora's `Fixed-Function`).
+Both lineages are based on each repo's mainline for later backports.
 
 Both branches are based on `claude/gpu-skinning-72pstj` — the functional
 GPU-skinning branch — because Remix requires rest-pose vertices + GPU-side

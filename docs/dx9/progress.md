@@ -8,10 +8,12 @@
 
 1. Read `docs/dx9/README.md`, then `architecture-notes.md`, then
    `gx-to-d3d9-mapping.md` (this is the spec being implemented).
-2. `git log --oneline` on branch `Fixed-Function` (dev branch
-   `claude/dusklight-dx9-fixed-function-6uoy92`) in both repos:
-   `automata-rtx/aurora-ao` and `automata-rtx/dusklight-ao` (aurora is the
-   `extern/aurora` submodule of dusklight).
+2. `git log --oneline` on branch `Fixed-Function-dev` (working branch;
+   `Fixed-Function` is the integration branch it merges into at tested
+   checkpoints) in both repos: `automata-rtx/aurora-ao` and
+   `automata-rtx/dusklight-ao` (aurora is the `extern/aurora` submodule of
+   dusklight). The old dev branch `claude/dusklight-dx9-fixed-function-*`
+   is retired.
 3. Check "Next steps" of the newest entry below; the code lives in
    `aurora-ao/lib/dx9/`.
 4. Build target is Windows (MinGW or MSVC). This work is developed in a Linux
@@ -23,6 +25,21 @@
    use tools that require an approval prompt (work around them instead).
 
 ---
+
+## Checkpoint 3.6 — branch consolidation (2026-07-24)
+
+Owner reorganized both repos around two branches (same names in each):
+`Fixed-Function` = integration (fast-forwarded to the 3.5 tip, CI green),
+`Fixed-Function-dev` = working branch for all commits, merged into
+`Fixed-Function` at tested checkpoints. Aurora's lineage descends from
+aurora `main` (17 ahead at reorg time, main unmoved); dusklight's shares
+its fork-point ancestry with `ao` (the fork's active line, 12 commits to
+potentially backport at reorg time) and `main` (upstream tracker) — so
+backports are ordinary merges/cherry-picks. The generated dev branch
+`claude/dusklight-dx9-fixed-function-6uoy92` is retired (deletable once no
+session is bound to it). Also: dusklight CI got a vcpkg-install retry loop
+after a transient TLS flake failed the MSVC arm64 job pre-compile
+(dusklight `5807989f06`); run #101 confirmed all 8 jobs green.
 
 ## Checkpoint 3.5 — Remix VRAM leak: D3D9 texture objects must be stable across frames (2026-07-24)
 
