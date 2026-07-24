@@ -20,6 +20,7 @@ Device g_dx9;
 StateCache g_cache;
 SkinState g_skin;
 WorldViewInv g_worldViewInv;
+CameraView g_camera;
 
 static bool s_active = false;
 static absl::flat_hash_set<uint64_t> s_warned;
@@ -183,6 +184,8 @@ void shutdown() noexcept {
     g_dx9.d3d->Release();
     g_dx9.d3d = nullptr;
   }
+  g_skin = {};
+  g_camera = {};
   s_active = false;
 }
 
@@ -487,6 +490,19 @@ void set_skinning(const void* palette, uint32_t jointCount, const void* influenc
 }
 
 void clear_skinning() noexcept { g_skin = {}; }
+
+void set_camera_view(const float* mtx3x4) noexcept {
+  const D3DMATRIX view = to_d3d_3x4(mtx3x4);
+  D3DMATRIX inv;
+  if (mtx_affine_inverse(view, inv)) {
+    g_camera.view = view;
+    g_camera.viewInv = inv;
+    g_camera.valid = true;
+  } else {
+    warn_once(0x9100, "camera view matrix not invertible; keeping fused WORLD*VIEW");
+    g_camera.valid = false;
+  }
+}
 
 } // namespace aurora::dx9
 

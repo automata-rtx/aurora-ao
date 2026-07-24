@@ -62,11 +62,23 @@ translation (m0[3], m1[3], m2[3]) into row 3, last column (0,0,0,1).
   (`shader_info.cpp:408`): `m2 = m2 + m3` → z ∈ [0,1], near=0. Then transpose
   to D3D layout, `SetTransform(D3DTS_PROJECTION)`. **No reversed-Z on D3D9**
   (Remix prefers conventional depth; `depthFunc` maps directly).
-- **Model-view:** GX pos matrices are model→view. Set
-  `D3DTS_VIEW = identity` always; per draw:
-  - No PNMTXIDX attribute: `D3DTS_WORLD = pnMtx[currentPnMtx].pos`.
+- **Model-view / camera split:** GX pos matrices are model→view (no separate
+  camera). The game provides the camera via **`GXSetViewMtx`
+  (`GX_AURORA_SET_VIEW_MTX`)** — dusklight calls it from `J3DSys::setViewMtx`,
+  the funnel for every view change. When the camera is valid
+  (`dx9::g_camera`), each draw uploads `D3DTS_WORLD = pnMtx * view⁻¹` (true
+  model→world) and `D3DTS_VIEW = view`; when absent, `WORLD = pnMtx`,
+  `VIEW = identity`. `WORLD*VIEW == pnMtx` either way, so rasterization is
+  identical — the split exists purely so RTX Remix can reconstruct a camera
+  and stable world space. **This is load-bearing for Remix:** its camera
+  manager rejects draws whose `objectToView == objectToWorld` (exactly the
+  fused/identity-view shape) as `CameraType::Unknown`; with no valid camera,
+  `finalizeSkinningData` never rewrites skinned instance transforms and each
+  skinned draw inherits `WORLDMATRIX(0)` — a different joint matrix per J3D
+  shape packet — scattering character parts. Per draw:
+  - No PNMTXIDX attribute: `D3DTS_WORLD = pnMtx[currentPnMtx].pos * view⁻¹`.
   - With PNMTXIDX (matrix-palette draws): §6.
-  - `GXSetSkinning` active: §6 (VIEW = skinBaseMtx).
+  - `GXSetSkinning` active: §6 (base matrix folded into bones; VIEW = camera).
 - **Normals:** D3D9 FF transforms normals by inverse-transpose of world
   automatically? — No: it uses the world matrix directly and
   `D3DRS_NORMALIZENORMALS = TRUE` handles scale. GX's separate nrm matrix is
@@ -140,8 +152,9 @@ RTX Remix understands natively (rest-pose verts hashed, bones replayed):
 
 **(a) Matrix-palette draws (PNMTXIDX attribute present)** — all normal
 characters:
-- Load `g_gxState.pnMtx[0..9].pos` into `SetTransform(D3DTS_WORLDMATRIX(i))`
-  for the ≤10 palette slots (only when dirty).
+- Load `g_gxState.pnMtx[0..9].pos` (× `view⁻¹` when the camera is set — §3)
+  into `SetTransform(D3DTS_WORLDMATRIX(i))` for the ≤10 palette slots (only
+  when dirty).
 - Vertex gets `BLENDINDICES = UBYTE4(pnmtxidx/3, 0,0,0)` **and one stored
   weight of 1.0**; `D3DRS_VERTEXBLEND = D3DVBF_1WEIGHTS` +
   `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`. Plain fixed-function would accept
@@ -170,10 +183,13 @@ characters:
   indexed enable TRUE. At least one weight is always stored (a hypothetical
   single-influence stream stores its 1.0 weight explicitly) for the same
   Remix blend-weight-buffer requirement as (a).
-- `D3DTS_VIEW = skinBaseMtx` (model→view applied after the blend — matches
+- Base matrix handling: with a camera (§3), `skinBaseMtx * view⁻¹` is folded
+  into every bone (`W(i) = bone(i) * base * view⁻¹`, `VIEW = view`) so the
+  blend output is world-space — the object→world convention Remix's
+  `finalizeSkinningData` assumes. Without a camera, bones stay raw and
+  `D3DTS_VIEW = skinBaseMtx` (model→view applied after the blend — matches
   the WGSL `skin_base_mtx` exactly since FF computes `v*W(i)` then `*VIEW`).
-  Non-skinned draws keep VIEW = identity, so VIEW must be reset when
-  skinning deactivates.
+  VIEW is reset per draw either way.
 - Device must report `MaxVertexBlendMatrixIndex ≥ 8` with HW T&L (all Remix
   targets do; if a real cap issue appears, fall back to
   `D3DCREATE_MIXED_VERTEXPROCESSING` + software vertex processing for skinned
@@ -322,25 +338,29 @@ suffice.
 ## 13. What Remix sees (summary of intentional choices)
 
 - One `IDirect3DDevice9`, single-threaded draws, `DrawIndexedPrimitiveUP`.
-- `SetTransform` WORLD/VIEW/PROJECTION per draw (world-space geometry
-  recoverable; view = identity except skinned ext draws).
+- `SetTransform` WORLD/VIEW/PROJECTION per draw. With the game's
+  `GXSetViewMtx` feed (§3): WORLD = true model→world, VIEW = the real
+  camera — Remix reconstructs a proper camera and stable world space.
+  Fallback without it: fused model→view in WORLD, identity VIEW (raw-D3D9
+  correct, Remix-degraded).
 - Fixed-function skinning via `D3DTS_WORLDMATRIX(i)` + indexed blending —
   Remix hashes rest-pose vertices and replays bones. Every blended draw
   carries an explicit BLENDWEIGHT stream (never bare `D3DVBF_0WEIGHTS`),
   because dxvk-remix's `dispatchSkinning` skips skinning entirely without
   one (§6a).
-- **Bone-space convention caveat:** our blend matrices are model→**view**
-  (GX has no separate view matrix; `D3DTS_VIEW` = identity for palette
-  draws, = `skinBaseMtx` for ext draws). dxvk-remix's `finalizeSkinningData`
-  assumes bones are object→**world** and rebuilds the instance transform
-  from its tracked camera (`objectToView := worldToView; objectToWorld :=
-  cameraViewToWorld × objectToView`). Because Remix derives its camera from
-  our PROJECTION/VIEW state, the composition still lands vertices in the
-  right place on screen, but Remix-side "world space" bone transforms (e.g.
-  the `ReadBoneTransform` graph component) read out camera-relative values.
-  **[later]** if this matters: pass the real game view (j3dSys view mtx)
-  through `D3DTS_VIEW` and re-express pnMtx/palette bones as model→world on
-  the aurora side, so Remix sees a conventional world-space rig.
+- **Bone-space convention:** with the game-supplied camera (§3,
+  `GXSetViewMtx`) our blend bones are true object→**world** and
+  `D3DTS_VIEW` is the real camera — exactly the convention dxvk-remix's
+  `finalizeSkinningData` assumes (`objectToView := worldToView;
+  objectToWorld := cameraViewToWorld × objectToView` → identity for our
+  draws, since the skinned output is already world-space). World-space bone
+  readouts (e.g. the `ReadBoneTransform` graph component) are meaningful.
+  Without the camera call (fused fallback), bones are model→view with
+  identity VIEW — Remix's camera manager then rejects every draw
+  (`objectToView == objectToWorld` ⇒ `CameraType::Unknown`), no camera
+  exists, `finalizeSkinningData` is skipped, and each skinned draw keeps
+  `WORLDMATRIX(0)` (its packet's slot-0 joint) as instance transform —
+  character parts scatter. The fused mode is therefore raw-D3D9-only.
 - `SetTexture(stage 0..n)` with stage 0 = the dominant diffuse map (TEV mapper
   orders stages so the first texture-sampling stage lands on stage 0 —
   important for Remix material capture).

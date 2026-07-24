@@ -93,6 +93,14 @@ void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, 
 
 void GXClearSkinning(void) { GX_WRITE_AURORA(GX_AURORA_CLEAR_SKINNING); }
 
+void GXSetViewMtx(const void* mtx) {
+  const f32* values = reinterpret_cast<const f32*>(mtx);
+  GX_WRITE_AURORA(GX_AURORA_SET_VIEW_MTX);
+  for (int i = 0; i < 12; ++i) {
+    GX_WRITE_F32(values[i]);
+  }
+}
+
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {

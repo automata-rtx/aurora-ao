@@ -2026,6 +2026,18 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       dx9::clear_skinning();
     }
     g_gxState.skinningActive = false;
+  } else if (subCmd == GX_AURORA_SET_VIEW_MTX) {
+    CHECK(pos + 48 <= size, "GX_AURORA_SET_VIEW_MTX read overrun");
+    f32 view[12];
+    for (f32& v : view) {
+      v = read_f32(data + pos, bigEndian);
+      pos += 4;
+    }
+    // Informational camera matrix (GXAurora.h): only the D3D9 backend
+    // consumes it; the wgpu path renders from the combined GX matrices.
+    if (dx9::active()) {
+      dx9::set_camera_view(view);
+    }
   }
 
   else {

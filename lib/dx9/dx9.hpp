@@ -62,6 +62,13 @@ void set_skinning(const void* palette, uint32_t jointCount, const void* influenc
                   uint32_t influenceCount) noexcept;
 void clear_skinning() noexcept;
 
+// Camera view matrix (GX_AURORA_SET_VIEW_MTX): world->view as 12 f32 row-major
+// 3x4. When provided, draws split the GX combined model->view into
+// WORLD = model->world (pnMtx * view^-1) and VIEW = camera - rendering output
+// is identical, but RTX Remix can then reconstruct a camera, keep geometry in
+// stable world space, and replay fixed-function skinning correctly.
+void set_camera_view(const float* mtx3x4) noexcept;
+
 // State relays ----------------------------------------------------------------
 
 // Reads g_gxState.renderViewport / renderScissor and applies immediately.
@@ -97,6 +104,7 @@ inline void draw_prim(GXPrimitive, GXVtxFmt, uint16_t, const uint8_t*, uint32_t,
 inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uint16_t*, uint32_t, bool) noexcept {}
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
+inline void set_camera_view(const float*) noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}

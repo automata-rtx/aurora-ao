@@ -213,9 +213,19 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
 
   g_worldViewInv.valid = false;
   const D3DMATRIX identity{{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
+  // With a camera provided (GX_AURORA_SET_VIEW_MTX), split the GX combined
+  // model->view into WORLD = pnMtx*viewInv (true model->world) and VIEW =
+  // camera. Rasterization is identical (WORLD*VIEW == pnMtx), but RTX Remix
+  // can then derive a real camera - without one its camera manager rejects
+  // every draw (objectToView == objectToWorld), finalizeSkinningData never
+  // runs, and skinned instances inherit WORLDMATRIX(0) as their transform,
+  // scattering body parts. See docs #3/#6/#13.
+  const bool haveCam = g_camera.valid;
+  const D3DMATRIX& view = haveCam ? g_camera.view : identity;
   if (draw.skinned) {
     // Fixed-function indexed vertex blending against the bone palette; the
-    // model->view base matrix rides in VIEW (applied after the blend).
+    // model->skin-space base matrix is folded into every bone so the blend
+    // output lands in world space (camera present) or view space (fused).
     const uint32_t jointCount = std::min<uint32_t>(g_skin.jointCount, MaxWorldPalette);
     if (g_skin.jointCount > MaxWorldPalette) {
       warn_once(0x8000, "skinning: joint count exceeds 256, clamping");
@@ -224,10 +234,22 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     if (jointCount > maxIdx + 1) {
       warn_once(0x8001 | jointCount << 8, "skinning: joint count exceeds device MaxVertexBlendMatrixIndex");
     }
-    for (uint32_t i = 0; i < jointCount; ++i) {
-      set_world_matrix(i, to_d3d_3x4(g_skin.palette + static_cast<size_t>(i) * 12));
+    const D3DMATRIX base = to_d3d_3x4(g_gxState.skinBaseMtx.data());
+    if (haveCam) {
+      const D3DMATRIX baseWorld = mtx_multiply(base, g_camera.viewInv);
+      for (uint32_t i = 0; i < jointCount; ++i) {
+        const D3DMATRIX bone = to_d3d_3x4(g_skin.palette + static_cast<size_t>(i) * 12);
+        set_world_matrix(i, mtx_multiply(bone, baseWorld));
+      }
+      set_view_matrix(view);
+    } else {
+      // Fused path: bones stay as-is, the base matrix rides in VIEW
+      // (applied after the blend).
+      for (uint32_t i = 0; i < jointCount; ++i) {
+        set_world_matrix(i, to_d3d_3x4(g_skin.palette + static_cast<size_t>(i) * 12));
+      }
+      set_view_matrix(base);
     }
-    set_view_matrix(to_d3d_3x4(g_gxState.skinBaseMtx.data()));
     static constexpr DWORD kBlendMode[] = {D3DVBF_0WEIGHTS, D3DVBF_1WEIGHTS, D3DVBF_2WEIGHTS, D3DVBF_3WEIGHTS};
     set_rs(D3DRS_VERTEXBLEND, kBlendMode[draw.weightCount]);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
@@ -238,22 +260,25 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     // equivalent under fixed-function) because RTX Remix's GPU skinning
     // requires a blend-weight stream — see decode_draw.
     for (uint32_t i = 0; i < gx::MaxPnMtx; ++i) {
-      set_world_matrix(i, to_d3d(g_gxState.pnMtx[i].pos));
+      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[i].pos);
+      set_world_matrix(i, haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
     }
-    set_view_matrix(identity);
+    set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else {
-    const D3DMATRIX world = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);
-    set_world_matrix(0, world);
-    set_view_matrix(identity);
+    const D3DMATRIX modelView = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);
+    set_world_matrix(0, haveCam ? mtx_multiply(modelView, g_camera.viewInv) : modelView);
+    set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
     // Camera-space texgen compensation (docs #7): D3D feeds view-space
     // inputs where GX texgen reads model-space; premultiplying the texture
     // matrix with the model-view inverse restores GX semantics (projected
     // shadows/light shafts, env maps). Only well-defined for rigid draws.
-    if (mtx_affine_inverse(world, g_worldViewInv.full)) {
+    // Always derived from the COMBINED model->view - D3D's camera-space
+    // texgen input is WORLD*VIEW, which equals pnMtx on both paths.
+    if (mtx_affine_inverse(modelView, g_worldViewInv.full)) {
       g_worldViewInv.rotation = g_worldViewInv.full;
       g_worldViewInv.rotation.m[3][0] = 0.f;
       g_worldViewInv.rotation.m[3][1] = 0.f;

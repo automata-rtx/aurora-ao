@@ -21,6 +21,82 @@
 
 ---
 
+## Checkpoint 3.4 — Remix root causes: no reconstructable camera (scattered parts) + RIDEV_NOLEGACY input kill (2026-07-24)
+
+**Owner test of 3.3 build:** skinned characters under Remix changed from
+"mangled" to "body parts disconnected and widely separated, still animating
+and following the character" — so the blend-weight fix worked (Remix's
+skinning compute now runs), but the instance transform is wrong. Also new:
+**game input dies under Remix** (can't pass the title sequence) while Remix
+hotkeys (Alt+X) work.
+
+**Root cause A — Remix cannot derive a camera from our stream** (read from
+dxvk-remix source, `rtx_camera_manager.cpp processCameraData`):
+```cpp
+if (objectToView == objectToWorld && !isIdentityExact(objectToView))
+  return CameraType::Unknown;   // <- every draw we submit, VIEW==identity
+```
+With no valid camera: `commitGeometryToRT` passes `lastCamera == nullptr`
+into `finalizePendingFutures` → `finalizeSkinningData` logs
+"[RTX-Compatibility-Warn] Cannot decompose the matrices for a skinned mesh
+because the camera is not set" and leaves `objectToWorld = WORLDMATRIX(0)`
+— **palette slot 0, a different joint matrix for every J3D shape packet**.
+Skinning compute (per-draw staged bones, verified correct) deforms each part
+right, then each part is offset by its packet's slot-0 joint ⇒ scattered
+parts that animate and track the character. Also explains the pre-3.3
+"mangled" look (rest-pose parts placed by single joint matrices). Remix's
+own GUI confirms the class of problem: "The game doesn't set up the View
+Matrix, Anti-Culling is disabled to prevent visual corruption."
+
+**Fix A — real camera via new aurora extension `GXSetViewMtx`
+(`GX_AURORA_SET_VIEW_MTX 0x0052`):**
+- dusklight: `J3DSys::setViewMtx` (TARGET_PC override, the single funnel for
+  every view change incl. frame-interp, item previews, mirrors) now calls
+  `GXSetViewMtx(mViewMtx)`.
+- aurora: command processor parses 12 f32 → `dx9::set_camera_view` (stores
+  D3D view + affine inverse in `g_camera`; wgpu ignores the command).
+- `apply_transforms`: when camera valid — rigid `WORLD = pnMtx*view⁻¹`,
+  palette `WORLDMATRIX(i) = pnMtx[i]*view⁻¹`, ext-skinning
+  `WORLDMATRIX(i) = bone(i)*skinBase*view⁻¹`; `VIEW = view` in all paths.
+  `WORLD*VIEW == pnMtx` exactly, so raw-D3D9 rendering is unchanged; Remix
+  now sees a real camera, world-space geometry, and object→world bones (its
+  `finalizeSkinningData` convention — instance transform becomes identity).
+  Texgen compensation (`g_worldViewInv`) still derives from the COMBINED
+  model→view (camera-space texgen input is WORLD*VIEW — unchanged).
+  Without the call (prelaunch, boot), behavior is exactly the old fused
+  mode.
+
+**Root cause B — input:** Remix's new GUI input sink
+(`rtx_overlay_window.cpp`, enabled by default via
+`rtx.useNewGuiInputMethod = True`) creates an invisible topmost overlay
+window at first frame and calls `RegisterRawInputDevices` for the keyboard
+with **`RIDEV_NOLEGACY`** — which suppresses legacy `WM_KEYDOWN/UP/CHAR`
+for the whole process. SDL3's window never sees another key message; Remix
+itself reads its own WM_INPUT sink + `GetKeyState` (why Alt+X works).
+**Fix B (config, not code):** set `rtx.useNewGuiInputMethod = False` in
+`rtx.conf` — the old input path routes through dxvk's window-proc hook,
+which always forwards to the game's proc (`d3d9_swapchain.cpp
+D3D9WindowProc` → `CallWindowProc`). Documented in
+`dusklight-ao/docs/dx9-fixed-function.md`. No aurora/dusklight code change
+can cleanly fix this (raw-input registration is last-writer-wins
+process-wide; fighting Remix for it would break the Remix overlay instead).
+
+**Verification state:** all touched aurora TUs pass the MinGW harness (d3d9
+on+off configs). NOT yet built/run on Windows. This build now stacks THREE
+untested fix sets: 3.2 TEV/terrain, 3.3 blend weights, 3.4 camera split.
+
+**Next run checklist:**
+- Raw D3D9 (no Remix): everything must look IDENTICAL to the last good run
+  (camera split is a mathematical no-op) — terrain/TEV items from 3.2,
+  characters, UI, minimap.
+- Under Remix + `rtx.useNewGuiInputMethod = False` in rtx.conf: input works
+  (can pass title); characters intact (no scattering, no mangling);
+  Remix log should NOT contain "Cannot decompose the matrices for a skinned
+  mesh" nor "draw call has bones but no blend weight buffer"; Anti-Culling
+  GUI note about missing View Matrix should be gone.
+- If skinned meshes look right but lighting/shadows swim on characters,
+  check `rtx.conf` skinning-related options next (bone-count limits).
+
 ## Checkpoint 3.3 — RTX Remix skinning disfigurement: blend-weight buffer required (2026-07-23)
 
 **Owner report:** running the D3D9 build under RTX Remix (dxvk-remix

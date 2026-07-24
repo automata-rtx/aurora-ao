@@ -110,6 +110,15 @@ extern "C" {
  */
 #define GX_AURORA_CLEAR_SKINNING 0x0051
 
+/**
+ * Provides the current world->view (camera) matrix to the backend. Must be followed
+ * by twelve f32 values (row-major 3x4). Purely informational: backends that split
+ * WORLD and VIEW transforms (D3D9) use it to present true world-space geometry and
+ * a real camera to capture tools such as RTX Remix; the wgpu backend ignores it
+ * (GX position matrices already fold the view in).
+ */
+#define GX_AURORA_SET_VIEW_MTX 0x0052
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -185,6 +194,16 @@ void GXSetSkinning(const void* palette, u32 jointCount, const void* influences, 
  * Disable GPU vertex skinning for subsequent draws.
  */
 void GXClearSkinning(void);
+
+/**
+ * Provide the current world->view (camera) matrix (3x4, 12 f32 row-major - e.g.
+ * J3DSys::mViewMtx). Rendering output is unchanged on every backend; the D3D9
+ * backend uses it to split the GX combined model->view into WORLD (model->world)
+ * and VIEW (camera), which RTX Remix requires to reconstruct a camera, place
+ * geometry in stable world space, and correctly replay fixed-function skinning.
+ * Call whenever the view matrix changes (per frame / per view).
+ */
+void GXSetViewMtx(const void* mtx);
 
 /**
  * Enable or disable the GPU-skinning debug view. When enabled, matrix-palette-skinned draws (those

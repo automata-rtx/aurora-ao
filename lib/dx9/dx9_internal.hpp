@@ -59,6 +59,19 @@ struct WorldViewInv {
 };
 extern WorldViewInv g_worldViewInv;
 
+// Camera (GX_AURORA_SET_VIEW_MTX). When valid, apply_transforms uploads
+// WORLD = pnMtx * viewInv (true model->world) and VIEW = view, so RTX Remix
+// sees a real camera, world-space geometry, and object->world blend bones
+// (its assumed convention). When absent, WORLD carries the GX combined
+// model->view and VIEW stays identity - rasterization-identical, but Remix
+// cannot reconstruct a camera (skinned draws break there; docs #6/#13).
+struct CameraView {
+  D3DMATRIX view{};
+  D3DMATRIX viewInv{};
+  bool valid = false;
+};
+extern CameraView g_camera;
+
 // ---------------------------------------------------------------------------
 // Redundant-state filtering. D3D9 SetRenderState & co. are cheap but Remix
 // benefits from a quiet stream; the mirrors also let the FIFO's fine-grained
