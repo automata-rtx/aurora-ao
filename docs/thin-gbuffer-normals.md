@@ -1,7 +1,7 @@
 # Thin G-Buffer for Authored Normals — Feasibility & Design
 
 **Status:** implemented on branch `claude/thin-gbuffer-authored-normals-wgqupt` — **pending on-device validation** (builds against Dawn/WebGPU; not runnable in the investigation environment). See §12 for the change list and validation checklist.
-**Scope:** Aurora (`aurora-ao`) renderer + Dusklight (`dusklight-ao`) mod SDK, `ao_mod`, `shadow_mod`.
+**Scope:** Aurora (`aurora-ao`) renderer + Dusklight (`dusklight-ao`) mod SDK. The mods that *consume* the buffer live in the separate `automata-rtx/dusklight-mods` repo; the demo mods checked into `dusklight-ao/mods/` are upstream's and are deliberately **left untouched** on this branch.
 **Goal:** Let screen-space modded effects (e.g. GTAO ambient occlusion) consume the game's **authored, interpolated vertex normals** instead of normals reconstructed from the depth buffer, eliminating faceting without an expensive normal-smoothing pass.
 
 > This document lives in both `aurora-ao` and `dusklight-ao` on branch
@@ -284,23 +284,25 @@ This design has been **implemented** on `claude/thin-gbuffer-authored-normals-wg
 
 **The one non-obvious constraint discovered during implementation:** a render pass with two color attachments requires **every** pipeline drawing into it to declare two targets. So the **clear** pipeline gained a write-masked second target (`clear.*`, `GXFrameBuffer.cpp`), and `DrawContext::normalFormat` is exposed so **custom mod draws** recorded into the EFB pass can add a matching (masked) target. RmlUi (its own layer passes), imgui (its own present pass), and the palette/copy conversions (outside the EFB pass) are unaffected.
 
-### Dusklight (`dusklight-ao`) — commit "mods: consume authored normals via Aurora thin g-buffer"
+### Dusklight (`dusklight-ao`) — commit "gfx service: expose the thin g-buffer normal target to mods"
 - SDK ABI: `GfxResolveDesc::normal`, `GfxResolvedTargets::{normal,normal_format}`, `GfxDeviceInfo::normal_format`, `GfxDrawContext::normal_format` (all appended, `struct_size`-guarded); bridge maps them in `src/dusk/mods/svc/gfx.cpp`.
 - `m_Do_main.cpp` sets `config.enableNormalBuffer = true` (could be gated on a video setting).
-- `ao_mod`: requests the normal snapshot, binds it in the GTAO group (`@binding(5)`), and `gtao.wgsl` samples the authored normal (per-pixel fallback to the 5-tap reconstruction where validity = 0). Its composite pipeline adds the masked 2nd target.
-- `shadow_mod`: composite pipeline adds the masked 2nd target (so it stays valid when the buffer is enabled).
+- `extern/aurora` is repointed to the matching aurora-ao branch (`claude/thin-gbuffer-authored-normals-wgqupt`).
+- **`mods/` is untouched.** The demo `ao_mod`/`shadow_mod` in this repo are upstream's and must keep matching upstream; the real consumers live in `automata-rtx/dusklight-mods`. Any mod that records a **custom draw into the scene pass** (e.g. a `SCENE_AFTER_OPAQUE` composite) must, when `GfxDrawContext::normal_format != Undefined`, declare a second color target of that format with its write mask off — otherwise the pipeline's attachment count won't match the pass.
+
+### Getting a build to test against
+Pushes to this branch publish a **`platform-gbuffer-test`** prerelease (game zips + per-arch SDK link stubs), alongside the stable `platform-v2-test` published from `main`. To test in `dusklight-mods`, point `DUSKLIGHT_VERSION` at this branch's commit and `DUSKLIGHT_SDK_STUB_URL` at the `platform-gbuffer-test` release, and install the matching `win32-msvc-x86_64` game build. Revert both knobs to `platform-v2-test` when done.
 
 ### On-device validation checklist
 1. **Build** Aurora + Dusklight (all three graphics backends: D3D12, Vulkan, Metal).
 2. **Baseline (buffer off):** temporarily set `enableNormalBuffer = false`; confirm rendering is byte-for-byte unchanged (default-off path).
-3. **Buffer on, no MSAA:** confirm the scene renders normally; enable `ao_mod` and use its **Debug View → Normals** to confirm smooth (non-faceted) normals, and **Staircase** to confirm the quantization artifact is gone.
+3. **Buffer on, no MSAA:** confirm the scene renders normally; then in `dusklight-mods` have **Graphics Hub → Depth to Normal** write the resolved authored normal into its `rgba32float` output instead of reconstructing, and use its debug view to confirm smooth (non-faceted) normals.
 4. **MSAA on (2×/4×):** confirm no validation errors and that the normal snapshot resolves (normals are renormalized on read; slight silhouette error is expected/acceptable).
 5. **Pass-break paths:** exercise `GXCopyTex`/`GXCopyDisp` clears and any mid-frame EFB copies (the clear pipeline's 2nd target); confirm no "attachment count" validation errors.
-6. **Mods drawing into the scene pass:** enable `ao_mod` and `shadow_mod` (together) — confirm both composites work with the buffer on.
+6. **Mods drawing into the scene pass:** enable VBAO/SSILVB, Realtime Sun Shadows and Graphics Hub's Deferred Fog together — each records a composite draw into the scene pass, so this is where a missing second color target shows up as a WebGPU validation error.
 7. **Precision:** if RGBA8 banding shows on smooth surfaces under strong AO, switch `NormalBufferFormat` to `RGB10A2Unorm` (keeps the validity channel) or RG16F octahedral (needs a separate validity signal).
 8. **Perf:** compare frame time with the authored-normal path vs. the old reconstruction/normal-blur path.
 
 ### Follow-ups
-- Optionally show authored normals in `composite.wgsl`'s debug "Normals" view (currently still reconstructs, useful as an A/B).
-- Consider gating `enableNormalBuffer` on whether a normal-consuming effect is active, to avoid the extra target's cost when unused.
-- Feed the normal buffer to `shadow_mod`'s contact shadows and any future SSR/rim-light effects.
+- Consider gating `enableNormalBuffer` on whether a normal-consuming effect is active, to avoid the extra target's cost when unused (or expose it as a Dusklight video setting).
+- In `dusklight-mods`: switch **Graphics Hub / Depth to Normal** to the authored normal (rotate view→world with `world_from_view`, keep the 5-tap reconstruction as the per-pixel fallback where validity = 0), then delete `realtime_sun_shadows/res/normal_smooth.wgsl` — it exists only to hide reconstruction faceting.
