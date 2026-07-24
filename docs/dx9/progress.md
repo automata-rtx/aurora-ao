@@ -21,6 +21,78 @@
 
 ---
 
+## Checkpoint 3.5 — Remix VRAM leak: D3D9 texture objects must be stable across frames (2026-07-24)
+
+**Owner test of 3.4 build (major progress):** rigged meshes AND terrain look
+correct under Remix; input fixed by the `rtx.useNewGuiInputMethod = False`
+rtx.conf line. New blocker: **runaway VRAM growth under Remix** — the
+categorize-textures tab shows textures "spamming in and out rapidly", VRAM
+climbs past 32 GB even standing still, performance collapses once the
+budget fills. Raw D3D9 is fine. (Link mouth/armpit still unverified.)
+
+**Root cause — per-frame D3D9 texture object churn.** Remix identifies game
+textures by a content hash computed once per D3D9 texture *object*
+(`d3d9_common_texture.cpp SetupForRtxFrom`, XXH3 over the staging buffer;
+render targets instead get a hash from a **global incrementing counter** at
+creation) and registers/unregisters them in its tracking maps on object
+create/destroy (`ImGUI::AddTexture` / `ClearHash → ReleaseTexture`). Remix
+holds references across frames, so texture objects the game recreates every
+frame accumulate. We churned objects two ways, both keyed to per-frame
+game behavior that webgpu tolerated:
+
+1. **Static textures, id-keyed cache + `GXTexObjRAII`.** Dusklight's PC
+   wrapper (`include/helpers/gx_helper.h`) evicts the texObj in its
+   destructor, and the `dDlst_2D*` drawlist items (`d_drawlist.cpp` — HUD
+   minimap et al.) build a **stack-local texobj per draw, every frame**;
+   every `GXInitTexObj` mints a fresh `texObjId` (`GXTexture.cpp
+   next_tex_obj_id`). Old cache: new id → miss → CreateTexture + upload →
+   draw → RAII evict → Release. One create+destroy per draw per frame ⇒
+   Remix hash registry flickers ("in and out") and Remix-side references
+   pile up the dead objects' VRAM.
+2. **EFB copy targets keyed by dest pointer only.** The classic bloom
+   (`m_Do_graphic.cpp`, `BloomMode::Classic` default) copies into the SAME
+   guest buffer (`zBufferTex`) at width/4 then width/8 **every frame**; the
+   size mismatch made `texture_get_copy_target` destroy + recreate the
+   render target twice per frame — and every new RT gets a fresh
+   counter-based Remix hash, so these can never dedup, ever.
+
+**Fix (aurora `lib/dx9/dx9_texture.cpp`, full rewrite of the cache):**
+- **Content-addressed store**: D3D9 textures owned by a map keyed on
+  dims/format/mips + 64-bit hash of source bytes (+ TLUT bytes/format).
+  `texObjId` entries are now only an alias layer (id+versions → content key)
+  so the hot path skips hashing; `GXDestroyTexObj` drops the alias but NOT
+  the texture — an identical re-init next frame **resurrects the same D3D9
+  object** (stable objects + stable hashes for Remix; zero churn). Source
+  byte size computed GC-tile-accurately (`source_data_size`, mirrors
+  GXGetTexBufferSize + PC formats). Palette anims now cycle a bounded set of
+  stable objects instead of recreating.
+- **LRU aging**: sweep every 32 frames; static content unused ~300 frames is
+  released, copy targets after ~600. Bounds worst-case dynamic content.
+- **Copy targets keyed by (dest, size)**: each copy size keeps its own
+  persistent RT; `texture_find_copy` returns the size most recently copied
+  into (sample-dest = last-copy semantics). Bloom's 1/4-1/8 alternation now
+  reuses two stable RTs.
+- The old `s_byPointer` fallback map (id==0, never invalidated) is gone —
+  id-less objects just take the content-hash path (more correct: stale
+  pointer reuse can no longer serve old pixels).
+
+Docs: `gx-to-d3d9-mapping.md` §5 (content store rationale) and §10
+(rewritten — color copies are real, per-size targets) updated.
+
+**Verification state:** `dx9_texture.cpp` passes the MinGW harness (d3d9
+on+off). NOT yet run on Windows. No dusklight code change needed (fix is
+generic in aurora); dusklight bump is docs + submodule only.
+
+**Next run checklist (Remix):**
+- VRAM stable over minutes standing still (watch the same spot that hit
+  32 GB); categorize-textures tab stops flickering — static texture set.
+- Raw D3D9: unchanged visuals (cache rework must be invisible).
+- Carry-over from 3.4/3.2: Link mouth + left armpit; alpha-compare keys
+  0x7100/0x7101 are the next suspects if still broken.
+- Optional: `game.bloomMode = Off` for Remix runs — the classic bloom's
+  screen-space filter quads are meaningless under a path tracer; with the
+  fix they no longer leak, but Off removes them entirely.
+
 ## Checkpoint 3.4 — Remix root causes: no reconstructable camera (scattered parts) + RIDEV_NOLEGACY input kill (2026-07-24)
 
 **Owner test of 3.3 build:** skinned characters under Remix changed from

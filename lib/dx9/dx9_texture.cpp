@@ -5,20 +5,71 @@
 #include "../gfx/texture_convert.hpp"
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/hash/hash.h>
 
 #include <algorithm>
 #include <cstring>
+#include <string_view>
+#include <vector>
 
 namespace aurora::dx9 {
 static Module Log("aurora::dx9::tex");
 
 namespace {
 
-struct CachedTexture {
+// Frame counter driven by texture_cache_begin_frame(); used to age out cache
+// entries that stopped being referenced.
+uint32_t s_frameIndex = 0;
+constexpr uint32_t kSweepInterval = 32;
+// Static textures: how long an unused content entry stays alive. The window
+// only matters for content that genuinely changes (palette animations etc.);
+// stable content is re-referenced every frame and never ages out.
+constexpr uint32_t kKeepStaticFrames = 300;
+// EFB copy render targets are tiny in count; keep them longer so effects that
+// run intermittently (bloom variants, senses, warps) don't thrash targets.
+constexpr uint32_t kKeepCopyFrames = 600;
+
+// --------------------------------------------------------------------------
+// Static textures.
+//
+// RTX Remix identifies game textures by a content hash and keeps references
+// to the underlying D3D9 texture objects across frames, so texture *objects*
+// must be stable even though the game re-creates GXTexObj wrappers freely
+// (dusklight's dDlst 2D lists build a stack-local texobj per draw, every
+// frame, each with a fresh texObjId whose RAII wrapper evicts it right after
+// the draw). Keying D3D9 textures by texObjId therefore caused a
+// create+destroy cycle per draw per frame under Remix - its texture list
+// churned ("textures spamming in and out") and every recreated object's
+// VRAM piled up in Remix-side caches.
+//
+// Instead, the textures themselves are owned by a content-addressed store:
+// key = dims/format/mips + hash of the source bytes (+ TLUT bytes for
+// palette formats). texObjId entries are just an alias layer that lets the
+// per-draw hot path skip hashing; evicting an id (GXDestroyTexObj) never
+// destroys the D3D9 texture, so the next identical GXInitTexObj resurrects
+// the same object. Unused content entries age out via kKeepStaticFrames.
+// --------------------------------------------------------------------------
+
+struct ContentKey {
+  uint64_t contentHash = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+  uint32_t mips = 0;
+
+  bool operator==(const ContentKey& rhs) const {
+    return contentHash == rhs.contentHash && width == rhs.width && height == rhs.height && format == rhs.format &&
+           mips == rhs.mips;
+  }
+  template <typename H>
+  friend H AbslHashValue(H h, const ContentKey& key) {
+    return H::combine(std::move(h), key.contentHash, key.width, key.height, key.format, key.mips);
+  }
+};
+
+struct ContentEntry {
   IDirect3DTexture9* tex = nullptr;
-  uint32_t texDataVersion = 0;
-  uint32_t tlutObjId = 0;
-  uint32_t tlutDataVersion = 0;
+  uint32_t lastUsedFrame = 0;
 
   void release() noexcept {
     if (tex != nullptr) {
@@ -28,36 +79,136 @@ struct CachedTexture {
   }
 };
 
-// Static textures keyed by texObjId; textures without an object id (rare)
-// fall back to a pointer+dims key in a second map.
-absl::flat_hash_map<uint32_t, CachedTexture> s_byObjId;
+// Owns the D3D9 textures.
+absl::flat_hash_map<ContentKey, ContentEntry> s_byContent;
 
-struct PtrKey {
-  const void* data;
-  uint32_t width;
-  uint32_t height;
-  uint32_t format;
-
-  bool operator==(const PtrKey& rhs) const {
-    return data == rhs.data && width == rhs.width && height == rhs.height && format == rhs.format;
-  }
-  template <typename H>
-  friend H AbslHashValue(H h, const PtrKey& key) {
-    return H::combine(std::move(h), key.data, key.width, key.height, key.format);
-  }
+// Alias layer: texObjId -> content key + the versions it was resolved with.
+struct IdEntry {
+  ContentKey key;
+  uint32_t texDataVersion = 0;
+  uint32_t tlutObjId = 0;
+  uint32_t tlutDataVersion = 0;
+  uint32_t lastUsedFrame = 0;
 };
-absl::flat_hash_map<PtrKey, CachedTexture> s_byPointer;
+absl::flat_hash_map<uint32_t, IdEntry> s_byObjId;
+
+uint64_t hash_bytes(const void* data, size_t size) noexcept {
+  return absl::Hash<std::string_view>{}(std::string_view(static_cast<const char*>(data), size));
+}
+
+// boost::hash_combine-style mixer; inputs are already absl hashes.
+constexpr uint64_t combine_hash(uint64_t seed, uint64_t value) noexcept {
+  return seed ^ (value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2));
+}
+
+// Byte size of the source mip chain, mirroring the GC tile layout
+// (GXGetTexBufferSize) plus the direct-upload PC formats.
+size_t source_data_size(uint32_t format, uint32_t width, uint32_t height, uint32_t mips) noexcept {
+  uint32_t shiftX = 0;
+  uint32_t shiftY = 0;
+  uint32_t tileBytes = 32;
+  uint32_t pcBytesPerTexel = 0;
+  switch (format) {
+  case GX_TF_I4:
+  case GX_TF_C4:
+  case GX_TF_CMPR:
+    shiftX = 3;
+    shiftY = 3;
+    break;
+  case GX_TF_I8:
+  case GX_TF_IA4:
+  case GX_TF_C8:
+    shiftX = 3;
+    shiftY = 2;
+    break;
+  case GX_TF_IA8:
+  case GX_TF_RGB565:
+  case GX_TF_RGB5A3:
+  case GX_TF_C14X2:
+    shiftX = 2;
+    shiftY = 2;
+    break;
+  case GX_TF_RGBA8:
+    shiftX = 2;
+    shiftY = 2;
+    tileBytes = 64;
+    break;
+  case GX_TF_R8_PC:
+    pcBytesPerTexel = 1;
+    break;
+  case GX_TF_RG8_PC:
+    pcBytesPerTexel = 2;
+    break;
+  case GX_TF_RGBA8_PC:
+    pcBytesPerTexel = 4;
+    break;
+  case GX_TF_BC1_PC: {
+    size_t total = 0;
+    for (uint32_t mip = 0; mip < mips; ++mip) {
+      total += static_cast<size_t>((width + 3) / 4) * ((height + 3) / 4) * 8;
+      width = std::max(width / 2, 1u);
+      height = std::max(height / 2, 1u);
+    }
+    return total;
+  }
+  default:
+    // Unknown format: fall back to a conservative 32bpp estimate.
+    pcBytesPerTexel = 4;
+    break;
+  }
+
+  size_t total = 0;
+  for (uint32_t mip = 0; mip < mips; ++mip) {
+    if (pcBytesPerTexel != 0) {
+      total += static_cast<size_t>(width) * height * pcBytesPerTexel;
+    } else {
+      const uint32_t tileX = (width + (1u << shiftX) - 1) >> shiftX;
+      const uint32_t tileY = (height + (1u << shiftY) - 1) >> shiftY;
+      total += static_cast<size_t>(tileX) * tileY * tileBytes;
+    }
+    width = std::max(width / 2, 1u);
+    height = std::max(height / 2, 1u);
+  }
+  return total;
+}
+
+ContentKey make_content_key(const GXTexObj_& obj, const GXTlutObj_* tlut) noexcept {
+  const uint32_t mips = obj.mip_count();
+  const size_t srcSize = source_data_size(obj.format(), obj.width(), obj.height(), mips);
+  uint64_t hash = hash_bytes(obj.data, srcSize);
+  if (tlut != nullptr) {
+    hash = combine_hash(hash, hash_bytes(tlut->data, static_cast<size_t>(tlut->numEntries) * 2));
+    hash = combine_hash(hash, static_cast<uint64_t>(tlut->format));
+  }
+  return ContentKey{
+      .contentHash = hash,
+      .width = obj.width(),
+      .height = obj.height(),
+      .format = obj.format(),
+      .mips = mips,
+  };
+}
+
+// --------------------------------------------------------------------------
+// EFB copies.
+// --------------------------------------------------------------------------
 
 // EFB-copy destinations stubbed with the shared neutral placeholder
 // (depth/unsupported formats; see docs/dx9/gx-to-d3d9-mapping.md #10).
 absl::flat_hash_map<const void*, bool> s_copyDests;
 IDirect3DTexture9* s_copyPlaceholder = nullptr;
 
-// Real EFB copy targets, keyed by the guest destination pointer.
+// Real EFB copy targets, keyed by guest destination pointer AND copy size.
+// The same destination is commonly copied to at several sizes per frame
+// (the bloom filter downsamples into the same buffer at 1/4 then 1/8), so
+// each size keeps its own persistent render target - recreating one target
+// per size change would hand RTX Remix a stream of brand-new render targets
+// (each with a fresh internal hash) every frame.
 struct CopyTarget {
   IDirect3DTexture9* tex = nullptr;
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t lastUsedFrame = 0;
 
   void release() noexcept {
     if (tex != nullptr) {
@@ -66,7 +217,14 @@ struct CopyTarget {
     }
   }
 };
-absl::flat_hash_map<const void*, CopyTarget> s_copyTargets;
+
+struct CopyDest {
+  std::vector<CopyTarget> sizes;
+  // Size most recently copied into; sampling the destination reads this one.
+  uint32_t activeWidth = 0;
+  uint32_t activeHeight = 0;
+};
+absl::flat_hash_map<const void*, CopyDest> s_copyTargets;
 
 // Offscreen render targets cached by size (like the wgpu offscreen cache).
 absl::flat_hash_map<uint64_t, OffscreenTarget> s_offscreenTargets;
@@ -180,19 +338,49 @@ IDirect3DTexture9* build_palette(const GXTexObj_& obj, const GXTlutObj_& tlut) n
   return create_from_rgba8(converted.data.data(), obj.width(), obj.height(), obj.mip_count(), "palette texture");
 }
 
+void sweep_caches() noexcept {
+  for (auto it = s_byContent.begin(); it != s_byContent.end();) {
+    if (s_frameIndex - it->second.lastUsedFrame > kKeepStaticFrames) {
+      it->second.release();
+      s_byContent.erase(it++);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = s_byObjId.begin(); it != s_byObjId.end();) {
+    if (s_frameIndex - it->second.lastUsedFrame > kKeepStaticFrames) {
+      s_byObjId.erase(it++);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = s_copyTargets.begin(); it != s_copyTargets.end();) {
+    auto& sizes = it->second.sizes;
+    std::erase_if(sizes, [](CopyTarget& t) {
+      if (s_frameIndex - t.lastUsedFrame > kKeepCopyFrames) {
+        t.release();
+        return true;
+      }
+      return false;
+    });
+    if (sizes.empty()) {
+      s_copyTargets.erase(it++);
+    } else {
+      ++it;
+    }
+  }
+}
+
 } // namespace
 
 void texture_cache_initialize() noexcept { s_copyPlaceholder = create_placeholder(); }
 
 void texture_cache_shutdown() noexcept {
-  for (auto& [_, entry] : s_byObjId) {
+  for (auto& [_, entry] : s_byContent) {
     entry.release();
   }
+  s_byContent.clear();
   s_byObjId.clear();
-  for (auto& [_, entry] : s_byPointer) {
-    entry.release();
-  }
-  s_byPointer.clear();
   s_copyDests.clear();
   texture_cache_release_default_pool();
   if (s_copyPlaceholder != nullptr) {
@@ -201,13 +389,20 @@ void texture_cache_shutdown() noexcept {
   }
 }
 
-void texture_cache_begin_frame() noexcept {}
+void texture_cache_begin_frame() noexcept {
+  ++s_frameIndex;
+  if (s_frameIndex % kSweepInterval == 0) {
+    sweep_caches();
+  }
+}
 
 void texture_cache_release_default_pool() noexcept {
   // Copy targets and offscreen targets are D3DPOOL_DEFAULT; they must be
   // released ahead of a device Reset and are recreated lazily afterwards.
-  for (auto& [_, entry] : s_copyTargets) {
-    entry.release();
+  for (auto& [_, dest] : s_copyTargets) {
+    for (auto& target : dest.sizes) {
+      target.release();
+    }
   }
   s_copyTargets.clear();
   release_offscreen_targets();
@@ -217,28 +412,38 @@ void texture_register_copy_placeholder(const void* dest) noexcept { s_copyDests[
 
 IDirect3DTexture9* texture_get_copy_target(const void* dest, uint32_t width, uint32_t height) noexcept {
   auto& entry = s_copyTargets[dest];
-  if (entry.tex != nullptr && (entry.width != width || entry.height != height)) {
-    entry.release();
-  }
-  if (entry.tex == nullptr) {
-    IDirect3DTexture9* tex = nullptr;
-    const HRESULT hr = g_dx9.dev->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
-                                                D3DPOOL_DEFAULT, &tex, nullptr);
-    if (FAILED(hr)) {
-      Log.warn("dx9: copy target {}x{} creation failed ({:#x})", width, height, static_cast<uint32_t>(hr));
-      s_copyTargets.erase(dest);
-      return nullptr;
+  for (auto& target : entry.sizes) {
+    if (target.width == width && target.height == height) {
+      target.lastUsedFrame = s_frameIndex;
+      entry.activeWidth = width;
+      entry.activeHeight = height;
+      return target.tex;
     }
-    entry.tex = tex;
-    entry.width = width;
-    entry.height = height;
   }
-  return entry.tex;
+  IDirect3DTexture9* tex = nullptr;
+  const HRESULT hr = g_dx9.dev->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+                                              D3DPOOL_DEFAULT, &tex, nullptr);
+  if (FAILED(hr)) {
+    Log.warn("dx9: copy target {}x{} creation failed ({:#x})", width, height, static_cast<uint32_t>(hr));
+    if (entry.sizes.empty()) {
+      s_copyTargets.erase(dest);
+    }
+    return nullptr;
+  }
+  entry.sizes.push_back(CopyTarget{tex, width, height, s_frameIndex});
+  entry.activeWidth = width;
+  entry.activeHeight = height;
+  return tex;
 }
 
 IDirect3DBaseTexture9* texture_find_copy(const void* data) noexcept {
   if (const auto it = s_copyTargets.find(data); it != s_copyTargets.end()) {
-    return it->second.tex;
+    for (auto& target : it->second.sizes) {
+      if (target.width == it->second.activeWidth && target.height == it->second.activeHeight) {
+        target.lastUsedFrame = s_frameIndex;
+        return target.tex;
+      }
+    }
   }
   return nullptr;
 }
@@ -308,41 +513,48 @@ IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
     }
   }
 
+  // Fast path: id alias with matching data/TLUT versions skips hashing.
   if (obj.texObjId != 0) {
     if (const auto it = s_byObjId.find(obj.texObjId); it != s_byObjId.end()) {
       auto& entry = it->second;
       const bool tlutOk = !isPalette || (entry.tlutObjId == tlut->tlutObjId &&
                                          entry.tlutDataVersion == tlut->tlutDataVersion);
-      if (entry.tex != nullptr && entry.texDataVersion == obj.texDataVersion && tlutOk) {
-        return entry.tex;
+      if (entry.texDataVersion == obj.texDataVersion && tlutOk) {
+        if (const auto cit = s_byContent.find(entry.key); cit != s_byContent.end()) {
+          entry.lastUsedFrame = s_frameIndex;
+          cit->second.lastUsedFrame = s_frameIndex;
+          return cit->second.tex;
+        }
       }
-      entry.release();
+      // Stale versions or content entry aged out: drop the alias, re-resolve.
       s_byObjId.erase(it);
     }
-  } else {
-    const PtrKey key{obj.data, obj.width(), obj.height(), obj.format()};
-    if (const auto it = s_byPointer.find(key); it != s_byPointer.end()) {
-      return it->second.tex;
+  }
+
+  // Content lookup: identical source bytes resurrect the same D3D9 texture
+  // no matter how many GXTexObj wrappers the game churns through.
+  const ContentKey key = make_content_key(obj, tlut);
+  auto cit = s_byContent.find(key);
+  if (cit == s_byContent.end()) {
+    IDirect3DTexture9* tex = isPalette ? build_palette(obj, *tlut) : build_static(obj);
+    if (tex == nullptr) {
+      return nullptr;
     }
-  }
-
-  IDirect3DTexture9* tex = isPalette ? build_palette(obj, *tlut) : build_static(obj);
-  if (tex == nullptr) {
-    return nullptr;
-  }
-
-  CachedTexture entry{
-      .tex = tex,
-      .texDataVersion = obj.texDataVersion,
-      .tlutObjId = isPalette ? tlut->tlutObjId : 0,
-      .tlutDataVersion = isPalette ? tlut->tlutDataVersion : 0,
-  };
-  if (obj.texObjId != 0 && !obj.no_cache()) {
-    s_byObjId.emplace(obj.texObjId, entry);
+    cit = s_byContent.emplace(key, ContentEntry{tex, s_frameIndex}).first;
   } else {
-    s_byPointer.emplace(PtrKey{obj.data, obj.width(), obj.height(), obj.format()}, entry);
+    cit->second.lastUsedFrame = s_frameIndex;
   }
-  return tex;
+
+  if (obj.texObjId != 0 && !obj.no_cache() && (!isPalette || !tlut->no_cache())) {
+    s_byObjId.insert_or_assign(obj.texObjId, IdEntry{
+                                                 .key = key,
+                                                 .texDataVersion = obj.texDataVersion,
+                                                 .tlutObjId = isPalette ? tlut->tlutObjId : 0,
+                                                 .tlutDataVersion = isPalette ? tlut->tlutDataVersion : 0,
+                                                 .lastUsedFrame = s_frameIndex,
+                                             });
+  }
+  return cit->second.tex;
 }
 
 void apply_sampler(uint32_t stage, GXTexMapID id) noexcept {
@@ -420,16 +632,15 @@ void apply_sampler(uint32_t stage, GXTexMapID id) noexcept {
 }
 
 void on_evict_texture(uint32_t texObjId) noexcept {
-  if (const auto it = s_byObjId.find(texObjId); it != s_byObjId.end()) {
-    it->second.release();
-    s_byObjId.erase(it);
-  }
+  // Only the id alias dies with the GXTexObj; the D3D9 texture stays in the
+  // content store so an identical re-init reuses it (stable objects for
+  // Remix). Unclaimed content ages out in sweep_caches().
+  s_byObjId.erase(texObjId);
 }
 
 void on_evict_tlut(uint32_t tlutObjId) noexcept {
   for (auto it = s_byObjId.begin(); it != s_byObjId.end();) {
     if (it->second.tlutObjId == tlutObjId) {
-      it->second.release();
       s_byObjId.erase(it++);
     } else {
       ++it;
@@ -440,7 +651,9 @@ void on_evict_tlut(uint32_t tlutObjId) noexcept {
 void on_evict_copy_texture(const void* dest) noexcept {
   s_copyDests.erase(dest);
   if (const auto it = s_copyTargets.find(dest); it != s_copyTargets.end()) {
-    it->second.release();
+    for (auto& target : it->second.sizes) {
+      target.release();
+    }
     s_copyTargets.erase(it);
   }
 }

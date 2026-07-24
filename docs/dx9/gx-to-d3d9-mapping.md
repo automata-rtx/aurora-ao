@@ -129,9 +129,25 @@ for the skinned/unskinned cases. Layout (present-only fields, in this order):
 
 ## 5. Texture objects & samplers [v1] — `lib/dx9/dx9_texture.*`
 
-- Cache key: `texObjId` + `texDataVersion` (+ TLUT id/version for palette
-  formats) — same identity scheme as `resolve_sampled_textures`
-  (`gx.cpp:438`). Eviction hooks: `evict_texture_object/evict_tlut_object`.
+- **Content-addressed store (load-bearing for RTX Remix).** D3D9 textures are
+  owned by a map keyed on dims/format/mips + a 64-bit hash of the source
+  bytes (+ TLUT bytes/format for palette formats). `texObjId` entries are a
+  thin alias layer on top (id + data/TLUT versions → content key) so the
+  per-draw hot path skips hashing. Rationale: Remix identifies game textures
+  by content hash and holds references to the D3D9 texture *objects* across
+  frames, but dusklight recreates `GXTexObj` wrappers freely — the `dDlst_2D*`
+  drawlist items (minimap etc.) build a stack-local texobj **per draw, every
+  frame**, each with a fresh `texObjId` that the PC `GXTexObjRAII` wrapper
+  evicts right after the draw. With the old `texObjId`-keyed cache that meant
+  one D3D9 texture created + destroyed per draw per frame: Remix's texture
+  list churned ("textures spamming in and out" in the categorize-textures
+  tab) and recreated objects piled up VRAM without bound. With the content
+  store, an identical re-init resurrects the **same** D3D9 texture object.
+- Eviction: `GXDestroyTexObj` (`evict_texture_object`) only drops the id
+  alias; the D3D9 texture stays in the content store. Unused content entries
+  age out after ~300 frames (`sweep_caches`, every 32 frames), which also
+  bounds genuinely dynamic content (palette animations cycle through a small
+  set of stable entries instead of recreating textures).
 - Conversion: reuse `convert_texture` (`texture_convert.cpp`) → RGBA8 buffer
   (all GC formats incl. CMPR→RGBA8) → swizzle to BGRA → `D3DFMT_A8R8G8B8`
   managed-pool texture, upload every mip (`LockRect` per level).
@@ -143,7 +159,7 @@ for the skinned/unskinned cases. Layout (present-only fields, in this order):
   struct): wrap S/T → `D3DSAMP_ADDRESSU/V` (CLAMP/REPEAT/MIRROR); min/mag
   filters → `D3DTEXF_POINT/LINEAR` (+ `MIPFILTER` from mipmap flag,
   LOD bias via `D3DSAMP_MIPMAPLODBIAS`, max aniso from config).
-- EFB-copy textures: separate map keyed by dest pointer (§10).
+- EFB-copy textures: separate map keyed by dest pointer + copy size (§10).
 
 ## 6. Skinning [v1 — flagship feature]
 
@@ -285,24 +301,25 @@ COLOR1A1 → SPECULAR (D3DTA_SPECULAR arg), COLOR_ZERO → constant black
 (TFACTOR 0 if free, else D3DTA_TEMP trickery avoided in v1 — use
 `D3DTA_DIFFUSE` with baked black vertex color case).
 
-## 10. EFB copies & offscreen passes [v1 = stubbed, correctness-first]
+## 10. EFB copies & offscreen passes [v1 = color copies real]
 
-- `copy_tex(dest, clear)`: v1 renders nothing into the copy — it registers a
-  **1x1 opaque-black placeholder** D3D9 texture for `dest` so later samples
-  bind something valid; `clear=true` still executes the GX clear semantics on
-  the main target via `Clear()` with `clearColor/clearDepth` scoped to
-  `texCopySrc` rect (matching game expectations that the EFB region resets).
-  Consequence: shadow silhouettes, minimap ripples, heat distortion sources
-  render black/absent — acceptable per project rules; listed in unsupported
-  doc with the Remix-side compensation notes.
-- **[later]** real implementation: `StretchRect` from the backbuffer/depth to
-  a render-target texture per copy (fmt→ARGB8), honoring `texCopySrc` and
-  half-scale flags; palette-format copy textures (shadow RGB5A3 packing)
-  CPU-converted only if ever needed.
-- `begin/end_offscreen` (`GXCreateFrameBuffer`): v1 **skips all draws inside
-  offscreen passes** (cheap: set a `discardDraws` flag; shadowReal silhouettes
-  are the main user). This avoids corrupting the backbuffer and avoids Remix
-  seeing phantom geometry. Listed.
+- `copy_tex(dest, clear)`: **color-format copies are real** — `StretchRect`
+  from the current render target into a `D3DPOOL_DEFAULT` render-target
+  texture (ARGB8), honoring `texCopySrc` and the logical→render scale.
+  Depth-format copies (and StretchRect failures) register a **1x1
+  white/alpha-0 placeholder** instead. `clear=true` executes the GX clear
+  semantics on the main target scoped to the `texCopySrc` rect.
+- **Copy targets are cached per (dest pointer, copy size)** — not per dest
+  alone. The classic bloom filter copies into the *same* guest buffer at 1/4
+  and then 1/8 size every frame; a per-dest cache destroyed + recreated the
+  render target on every size flip (2x per frame), and RTX Remix stamps every
+  new render target with a fresh internal hash — its texture list spammed new
+  entries every frame and VRAM grew without bound. Each size now keeps its
+  own persistent target; `texture_find_copy` returns the size most recently
+  copied into (matching "sample dest = last copy to dest" semantics). Stale
+  sizes age out after ~600 frames.
+- `begin/end_offscreen` (`GXCreateFrameBuffer`): real offscreen passes via
+  render-target + depth surfaces cached by size (`texture_get_offscreen`).
 - `resolve_pass`/`create_pass` (mods API): mods are wgpu-only and disabled in
   d3d9 mode (Dusklight side gates them).
 
