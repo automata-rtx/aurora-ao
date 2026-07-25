@@ -28,6 +28,9 @@ static absl::flat_hash_set<uint64_t> s_warned;
 // offscreen passes can restore them.
 static IDirect3DSurface9* s_backbufferColor = nullptr;
 static IDirect3DSurface9* s_backbufferDepth = nullptr;
+// Window size seen last frame, used to wait out a resize drag before acting.
+static uint32_t s_pendingWidth = 0;
+static uint32_t s_pendingHeight = 0;
 
 static void release_backbuffer_surfaces() noexcept {
   if (s_backbufferColor != nullptr) {
@@ -145,21 +148,9 @@ static void update_render_rect() noexcept {
   g_dx9.renderOffsetY = static_cast<int32_t>((g_dx9.height - h) / 2);
 }
 
-bool initialize() noexcept {
-  g_dx9.hwnd = window_hwnd();
-  if (g_dx9.hwnd == nullptr) {
-    Log.error("dx9: no Win32 HWND available");
-    return false;
-  }
-  g_dx9.d3d = Direct3DCreate9(D3D_SDK_VERSION);
-  if (g_dx9.d3d == nullptr) {
-    Log.error("dx9: Direct3DCreate9 failed (d3d9.dll missing?)");
-    return false;
-  }
-
-  uint32_t width = 0;
-  uint32_t height = 0;
-  current_window_size(width, height);
+// Creates the device and everything hanging off it. Shared by startup and by
+// the resize path, which recreates rather than resets (see recreate_device).
+static bool create_device_for(uint32_t width, uint32_t height) noexcept {
   fill_present_params(width, height);
 
   // FPU_PRESERVE: the game relies on standard FPU behavior. MULTITHREADED as
@@ -176,8 +167,7 @@ bool initialize() noexcept {
   }
   if (FAILED(hr)) {
     Log.error("dx9: CreateDevice failed ({:#x})", static_cast<uint32_t>(hr));
-    g_dx9.d3d->Release();
-    g_dx9.d3d = nullptr;
+    g_dx9.dev = nullptr;
     return false;
   }
 
@@ -190,14 +180,72 @@ bool initialize() noexcept {
   g_dx9.inScene = false;
   g_dx9.inOffscreen = false;
   update_render_rect();
+  apply_default_state();
+  cache_backbuffer_surfaces();
+  texture_cache_initialize();
+  return true;
+}
+
+// Window resizes recreate the device instead of resetting it. RTX Remix does
+// not re-derive its UI overlay from a mid-run Reset: the HUD keeps the scale
+// and placement it had at device-creation size, which is why launching
+// straight into the final resolution looked correct while every resized run
+// did not - raw D3D9 follows the Reset correctly either way. Recreating costs
+// a texture-cache rebuild and a Remix renderer restart, but resizes are rare
+// and user-driven.
+static bool recreate_device(uint32_t width, uint32_t height) noexcept {
+  if (g_dx9.dev != nullptr) {
+    if (g_dx9.inOffscreen) {
+      end_offscreen();
+    }
+    if (g_dx9.inScene) {
+      g_dx9.dev->EndScene();
+      g_dx9.inScene = false;
+    }
+    for (uint32_t stage = 0; stage < MaxStages; ++stage) {
+      g_dx9.dev->SetTexture(stage, nullptr);
+    }
+    release_backbuffer_surfaces();
+    // Every cached texture belongs to the outgoing device.
+    texture_cache_shutdown();
+    g_dx9.dev->Release();
+    g_dx9.dev = nullptr;
+  }
+  g_cache.invalidate();
+  if (!create_device_for(width, height)) {
+    Log.warn("dx9: device recreation failed; retrying next frame");
+    return false;
+  }
+  Log.info("dx9: device recreated {}x{} (render {}x{}+{}+{})", g_dx9.width, g_dx9.height, g_dx9.renderWidth,
+           g_dx9.renderHeight, g_dx9.renderOffsetX, g_dx9.renderOffsetY);
+  return true;
+}
+
+bool initialize() noexcept {
+  g_dx9.hwnd = window_hwnd();
+  if (g_dx9.hwnd == nullptr) {
+    Log.error("dx9: no Win32 HWND available");
+    return false;
+  }
+  g_dx9.d3d = Direct3DCreate9(D3D_SDK_VERSION);
+  if (g_dx9.d3d == nullptr) {
+    Log.error("dx9: Direct3DCreate9 failed (d3d9.dll missing?)");
+    return false;
+  }
+
+  uint32_t width = 0;
+  uint32_t height = 0;
+  current_window_size(width, height);
+  if (!create_device_for(width, height)) {
+    g_dx9.d3d->Release();
+    g_dx9.d3d = nullptr;
+    return false;
+  }
   s_active = true;
 
   Log.info("dx9: device created {}x{} (render {}x{}+{}+{}, maxBlendMtxIdx={}, perStageConstants={}, tssTemp={})",
            g_dx9.width, g_dx9.height, g_dx9.renderWidth, g_dx9.renderHeight, g_dx9.renderOffsetX, g_dx9.renderOffsetY,
            g_dx9.caps.MaxVertexBlendMatrixIndex, g_dx9.perStageConstants, g_dx9.tssTemp);
-  apply_default_state();
-  cache_backbuffer_surfaces();
-  texture_cache_initialize();
   return true;
 }
 
@@ -255,8 +303,18 @@ static bool reset_device(uint32_t width, uint32_t height) noexcept {
 }
 
 bool begin_frame() noexcept {
-  if (g_dx9.dev == nullptr) {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  current_window_size(width, height);
+  if (width == 0 || height == 0) {
+    // Minimized: there is nothing to present, and sizing a backbuffer to 0
+    // would fail. Skip the frame and pick the size up on restore.
     return false;
+  }
+
+  if (g_dx9.dev == nullptr) {
+    // A previous recreation failed; keep retrying rather than going dark.
+    return s_active && g_dx9.d3d != nullptr && create_device_for(width, height);
   }
 
   // Device-loss / resize handling.
@@ -265,15 +323,24 @@ bool begin_frame() noexcept {
     g_dx9.deviceLost = true;
     return false;
   }
-  uint32_t width = 0;
-  uint32_t height = 0;
-  current_window_size(width, height);
-  if (width == 0 || height == 0) {
-    // Minimized: there is nothing to present, and resetting to a 0-sized
-    // backbuffer would fail. Skip the frame and pick the size up on restore.
-    return false;
-  }
-  if (coop == D3DERR_DEVICENOTRESET || g_dx9.deviceLost || width != g_dx9.width || height != g_dx9.height) {
+  if (width != g_dx9.width || height != g_dx9.height) {
+    // Wait for the size to settle before acting: dragging a window edge
+    // reports a new size every frame, and recreating the device (and with it
+    // Remix's renderer) per frame would be unusable. One stable frame is
+    // enough, and the interim frames just present at the old size.
+    if (width == s_pendingWidth && height == s_pendingHeight) {
+      s_pendingWidth = 0;
+      s_pendingHeight = 0;
+      if (!recreate_device(width, height)) {
+        return false;
+      }
+    } else {
+      s_pendingWidth = width;
+      s_pendingHeight = height;
+      update_render_rect();
+    }
+  } else if (coop == D3DERR_DEVICENOTRESET || g_dx9.deviceLost) {
+    // Same size, so a plain Reset is enough to recover a lost device.
     if (!reset_device(width, height)) {
       return false;
     }

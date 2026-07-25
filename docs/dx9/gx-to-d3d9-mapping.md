@@ -16,12 +16,22 @@ expressed at all lives in `unsupported-effects.md`.
   - Present params: `D3DSWAPEFFECT_DISCARD`, backbuffer `D3DFMT_X8R8G8B8`,
     `AutoDepthStencilFormat = D3DFMT_D24S8`, windowed, vsync from config
     (`D3DPRESENT_INTERVAL_ONE/IMMEDIATE`). Backbuffer size = window client
-    size (`native_fb_*`); on resize → `Reset` with rebuilt pp. Before Reset:
-    end any offscreen pass, end the scene, **unbind every texture** (a
-    resource still bound to the device survives our Release and makes Reset
-    fail), then release all pool-default resources; managed textures survive.
-    A failed Reset marks the device lost and retries next frame; a minimized
-    window (0x0) skips the frame entirely.
+    size (`native_fb_*`).
+  - **Resize → full device recreation, not `Reset`** (`recreate_device`).
+    RTX Remix does not re-derive its UI overlay from a mid-run `Reset`: the
+    HUD keeps the scale and placement it had at device-creation size, so every
+    resized run had a mis-scaled HUD while launching straight into the final
+    resolution was correct. Raw D3D9 follows a `Reset` correctly either way, so
+    this is purely a Remix workaround. Recreation rebuilds the texture cache
+    (every cached texture belongs to the outgoing device) and restarts Remix's
+    renderer, so it is **debounced by one stable frame** — a resize drag would
+    otherwise recreate every frame. A failed recreation retries each frame
+    instead of going dark; a minimized window (0x0) skips the frame.
+  - `Reset` is still used for **same-size device-loss recovery** (alt-tab),
+    where it is correct and much cheaper. Before Reset: end any offscreen
+    pass, end the scene, **unbind every texture** (a resource still bound to
+    the device survives our Release and makes Reset fail), then release all
+    pool-default resources; managed textures survive.
   - **Render rect (letterbox).** The backbuffer is the full window, but
     drawing targets a centered rect of `AuroraWindowSize::fb_*`
     (`renderWidth/Height` + `renderOffsetX/Y`) — the same size the game lays

@@ -26,6 +26,38 @@
 
 ---
 
+## Checkpoint 3.15 — eyes confirmed fixed; resize recreates the device (2026-07-25)
+
+**Owner test of 3.14 (build `6a7922c289`): eyes are fixed** on Link and every
+other character checked — the colour-texture albedo preference was the answer.
+**And the config-only HUD experiment came back positive:** launching directly
+at full display resolution in fullscreen gives correct HUD placement and
+scaling under Remix.
+
+**That confirms the device Reset is what breaks the HUD under Remix.** Remix
+does not re-derive its UI overlay from a mid-run `Reset` — the HUD keeps the
+scale and placement it had at device-creation size — while raw D3D9 follows
+the Reset correctly, which is exactly the asymmetry seen all along. Every
+earlier run created the device at the initial window size (1216x896) and Reset
+afterwards, including the "fullscreen from the get-go" case, because the
+window is resized *after* device creation.
+
+**Workaround implemented:** size changes now **recreate** the device rather
+than resetting it (`recreate_device`), so Remix restarts its renderer at the
+new size and re-derives the overlay. Device creation moved into a shared
+`create_device_for` used by both startup and resize. The old `reset_device`
+path is kept for same-size device-loss recovery (alt-tab), where Reset is
+correct and cheaper.
+
+Two details worth keeping in mind:
+- **Resizes are debounced by one stable frame.** Dragging a window edge
+  reports a new size every frame; recreating the device (and Remix's renderer
+  with it) per frame would be unusable. Interim frames present at the old size.
+- **The texture cache is rebuilt** on recreation, since every cached texture
+  belongs to the outgoing device. That is a one-time cost per resize.
+- A failed recreation leaves `g_dx9.dev == nullptr`; `begin_frame` now retries
+  creation each frame rather than going permanently dark.
+
 ## Checkpoint 3.14 — eyes identified: albedo must be the colour texture (2026-07-25)
 
 **The eye material, from the 3.12 diagnostic** (build `28bb251f24`, two
