@@ -357,61 +357,62 @@ inline Operand white_operand() noexcept {
 // --- RTX Remix material reconstruction -------------------------------------
 //
 // Remix rebuilds a draw call's material from exactly ONE texture stage - the
-// first stage bound to the lowest D3DTSS_TEXCOORDINDEX - and decodes only a
-// small subset of fixed-function state (d3d9_rtx_utils.cpp,
-// convertTextureOp/convertTextureArg): ops MODULATE, SELECTARG1, SELECTARG2,
-// MODULATE2X, MODULATE4X and ADD (anything else is read as MODULATE), and arg
-// sources DIFFUSE, CURRENT, TEXTURE, TFACTOR and SPECULAR *with no modifier
-// bits*. Everything else - D3DTA_TEMP, D3DTA_CONSTANT, and any arg carrying
-// D3DTA_COMPLEMENT or D3DTA_ALPHAREPLICATE - decodes to
-// RtTextureArgSource::None, which drops the texture out of the material and
-// renders the surface black under Remix even though the texture is resident
-// and correctly bound (it still shows up in Remix's texture list). TEV
-// reductions reach for all of those routinely - TEMP for the split-stage
-// decomposition, ALPHAREPLICATE for GX's TEXA/RASA-as-color operands - so when
-// the leading stage isn't decodable we prepend a plain MODULATE(TEXTURE,
-// DIFFUSE) stage purely for Remix to read. It writes CURRENT, which the real
-// chain then overwrites, so the rasterized result is unchanged.
+// first stage bound to the lowest D3DTSS_TEXCOORDINDEX
+// (D3D9Rtx::processTextures) - and that stage's color/alpha op and args become
+// the surface's entire albedo and opacity (d3d9_rtx_utils.cpp
+// setTextureStageState -> opaque_surface_material_interaction.slangh).
+//
+// Args it cannot decode (D3DTA_TEMP, D3DTA_CONSTANT, anything carrying
+// D3DTA_COMPLEMENT/D3DTA_ALPHAREPLICATE) become RtTextureArgSource::None,
+// which the shader resolves to *identity* - vec3(1.0) for color, the sampled
+// opacity for alpha arg1 - so those are harmless on their own.
+//
+// The damage comes from the single-stage view itself: a GX material's first
+// TEV stage is rarely the finished albedo. When it computes, say,
+// `texture x konst` with a dark konst (which we route through TFACTOR), Remix
+// takes that partial result as the whole albedo and the surface renders black
+// or near-black - while the texture is resident and correctly bound, so it
+// still appears in Remix's texture list. The same applies to alpha: that one
+// stage's alpha becomes the whole opacity, so alpha-tested cutouts lose their
+// shape (foliage cards render as full quads) or vanish entirely (grass) when
+// the first stage's alpha is a blend weight rather than the texture's alpha.
+//
+// So unless the leading stage already presents the texture the way Remix will
+// read it, prepend a stage that does: color = TEXTURE * DIFFUSE, alpha =
+// TEXTURE. It writes CURRENT, which the real chain then overwrites, and is
+// only emitted when nothing in that GX stage reads CURRENT - so the
+// rasterized result is unchanged. (A draw with no vertex colors resolves
+// DIFFUSE to None = identity on both sides, so the modulate is a no-op there.)
 constexpr DWORD arg_base(DWORD ta) noexcept { return ta & ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE); }
 
-bool remix_decodable_op(const PassOp& op) noexcept {
-  switch (op.op) {
-  case D3DTOP_SELECTARG1:
-  case D3DTOP_SELECTARG2:
-  case D3DTOP_MODULATE:
-  case D3DTOP_MODULATE2X:
-  case D3DTOP_MODULATE4X:
-  case D3DTOP_ADD:
-    break;
-  default:
+// True when this op hands Remix the texture as-is, optionally modulated by
+// vertex color - i.e. exactly what the hint stage below would say, so emitting
+// the hint would only cost a stage.
+bool op_is_plain_texture(const PassOp& op) noexcept {
+  if (op.op != D3DTOP_SELECTARG1 && op.op != D3DTOP_MODULATE) {
     return false;
   }
   if (op.complementArg2 || op.usesArg0) {
-    // Remix reads arg1/arg2 only; arg0 (LERP/MULTIPLYADD) is dropped.
     return false;
   }
-  // The first constant of a draw claims TFACTOR (decodable); a second distinct
-  // one falls back to the per-stage constant, which does not decode.
-  int constCount = 0;
-  const auto decodable = [&constCount](const Operand& o) {
-    if (o.isConst) {
-      return ++constCount <= 1;
-    }
-    if (o.ta != arg_base(o.ta)) {
+  bool sawTexture = false;
+  const auto plain = [&sawTexture](const Operand& o) {
+    if (o.isConst || o.ta != arg_base(o.ta)) {
       return false;
     }
-    switch (o.ta) {
-    case D3DTA_DIFFUSE:
-    case D3DTA_CURRENT:
-    case D3DTA_TEXTURE:
-    case D3DTA_TFACTOR:
-    case D3DTA_SPECULAR:
+    if (o.ta == D3DTA_TEXTURE) {
+      sawTexture = true;
       return true;
-    default:
-      return false;
     }
+    return o.ta == D3DTA_DIFFUSE;
   };
-  return decodable(op.arg1) && (!op.usesArg2 || decodable(op.arg2));
+  if (!plain(op.arg1)) {
+    return false;
+  }
+  if (op.usesArg2 && !plain(op.arg2)) {
+    return false;
+  }
+  return sawTexture;
 }
 
 bool op_reads(const PassOp& op, DWORD source) noexcept {
@@ -822,15 +823,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
 
     static const PassOp kPassthrough{};
 
-    // Give Remix a decodable leading stage when this one isn't (see the
-    // remix_decodable_op comment). Only worth doing for the very first stage
-    // of the draw - that is the one Remix reconstructs the material from - and
-    // only when nothing in this GX stage reads CURRENT, so seeding CURRENT
-    // here cannot change the rasterized result.
+    // Hand Remix an albedo/opacity stage it can read as the finished material
+    // (see the comment on op_is_plain_texture). Only for the very first stage
+    // of the draw - that is the one Remix reconstructs from - and only when
+    // nothing in this GX stage reads CURRENT, so seeding CURRENT here cannot
+    // change the rasterized result.
     if (d3dStage == 0 && hasTexture && d3dStage + need < MaxStages) {
-      const PassOp& lead = (anyTemp && cp.hasTemp) ? cp.tempOp : cp.finals[0];
-      if (!(remix_decodable_op(lead) && op_reads(lead, D3DTA_TEXTURE)) &&
-          !pass_reads(cp, D3DTA_CURRENT) && !pass_reads(ap, D3DTA_CURRENT)) {
+      const PassOp& colorLead = (anyTemp && cp.hasTemp) ? cp.tempOp : cp.finals[0];
+      const PassOp& alphaLead = (anyTemp && ap.hasTemp) ? ap.tempOp : ap.finals[0];
+      const bool alreadyPlain = op_is_plain_texture(colorLead) && op_is_plain_texture(alphaLead);
+      if (!alreadyPlain && !pass_reads(cp, D3DTA_CURRENT) && !pass_reads(ap, D3DTA_CURRENT)) {
         if (IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId); tex != nullptr) {
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, stage.texMapId);
@@ -838,9 +840,11 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
           set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
           set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-          set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+          // Opacity must be the texture's own alpha: it is what Remix
+          // alpha-tests against, and it is what gives foliage cards and grass
+          // blades their cutout shape.
+          set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
           set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-          set_tss(d3dStage, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
           if (g_dx9.tssTemp) {
             set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_CURRENT);
           }

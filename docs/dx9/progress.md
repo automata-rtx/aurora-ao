@@ -26,6 +26,62 @@
 
 ---
 
+## Checkpoint 3.8 — correction: `None` is identity; the single-stage view is the bug (2026-07-24)
+
+**3.7 did not fix the black assets** (owner retest). Its premise was wrong and
+is corrected here — future sessions should not re-derive it.
+
+**What 3.7 got wrong:** it assumed undecodable args
+(`D3DTA_TEMP`/`CONSTANT`/`COMPLEMENT`/`ALPHAREPLICATE` →
+`RtTextureArgSource::None`) render black. They do not.
+`opaque_surface_material_interaction.slangh` resolves `None` to **identity**:
+```glsl
+chooseTextureArgument(textureArg1, surface.textureColorArg1Source, albedo,
+                      surfaceInteraction.vertexColor.rgb, tFactor.rgb, vec3(1.0));
+// alpha arg1's None fallback is `opacity` (the sampled texture alpha), arg2's is 1.0
+```
+That also explains why the 3.7 hint stage never fired on the broken draws: a
+stage like `MODULATE(TEXTURE, TFACTOR)` is perfectly *decodable*, so the
+"decodable?" test passed and no hint was emitted.
+
+**Actual mechanism:** Remix takes ONE stage's color op as the entire albedo
+and its alpha op as the entire opacity. A GX material's first TEV stage is
+rarely the finished albedo — commonly `texture × konst` with a dark konst
+(which we route through TFACTOR), giving a black/near-black albedo — and its
+alpha is often a blend weight rather than the texture's alpha, which destroys
+alpha-test cutouts. This single mechanism covers all three owner symptoms:
+black assets world-wide, canopy foliage as **opaque black quads** (albedo from
+a dark partial result + opacity stuck at 1 → no cutout), and grass
+**invisible** (opacity from a blend weight → 0), reappearing as **plain
+quads** when Remix's transparency handling is disabled for that texture.
+
+**Fix (`dx9_tev.cpp`):** replace the "decodable?" test with "does the leading
+stage already present the texture plainly?" (`op_is_plain_texture`:
+`SELECTARG1`/`MODULATE` over `TEXTURE`/`DIFFUSE` only, no constants, no
+modifier bits). If not, prepend `color = MODULATE(TEXTURE, DIFFUSE)`,
+`alpha = SELECTARG1(TEXTURE)`. Alpha deliberately selects the texture's own
+alpha — that is what Remix alpha-tests and what gives foliage/grass their
+cutout shape. Same CURRENT-safety guard as 3.7, so raster is unchanged.
+
+**Still unresolved / needs data:**
+- **HUD.** 3.7's letterbox only engages when "Lock 4:3 Aspect Ratio" is ON
+  (`AURORA_VIEWPORT_FIT` → `fb_*` aspect-fit). With it OFF the policy is
+  `AURORA_VIEWPORT_STRETCH`, `fb_* == native_fb_*`, the render rect is the
+  whole backbuffer and the stretch is by design — matching the wgpu path.
+  Owner reports the HUD still doesn't re-lay-out on resize. Need: the
+  dusklight log (it prints `Using framebuffer size WxH scale S` and
+  `dx9: device created WxH (render WxH+X+Y ...)`) plus the state of that
+  setting, to tell a sizing bug from the game's own widescreen HUD path.
+- **Whether the black/foliage symptoms also occur in raw D3D9** (no Remix).
+  Everything above assumes Remix-only; if raw D3D9 shows them too, the bug is
+  in our TEV reduction, not Remix's reconstruction.
+- **Link's iris.** Owner confirms the eye uses two textures; hovering the iris
+  texture in Remix highlights no geometry, and a third texture fills the
+  socket. Remix binds at most 2 textures per draw and only `colorTextures[0]`
+  is albedo for normal materials, so a second-texture iris is unrepresentable
+  by design. `vertexColorIsBakedLighting` (default **true**) was checked and
+  is not implicated.
+
 ## Checkpoint 3.7 — Remix reads ONE texture stage: black materials, HUD scale, resize reset (2026-07-24)
 
 **Owner report (Remix run):** VRAM leak fixed. New: (a) many assets across

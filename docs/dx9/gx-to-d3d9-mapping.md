@@ -260,19 +260,34 @@ wholesale and the game bakes most world lighting into vertex colors:
 
 > **Remix constraint (load-bearing).** Remix reconstructs a draw's material
 > from **one** texture stage — the first bound to the lowest
-> `D3DTSS_TEXCOORDINDEX` — and decodes only ops
-> `MODULATE/SELECTARG1/SELECTARG2/MODULATE2X/MODULATE4X/ADD` (anything else
-> reads as MODULATE) and arg sources `DIFFUSE/CURRENT/TEXTURE/TFACTOR/
-> SPECULAR` **with no modifier bits** (`convertTextureOp`/`convertTextureArg`,
-> d3d9_rtx_utils.cpp). `D3DTA_TEMP`, `D3DTA_CONSTANT`, and anything carrying
-> `D3DTA_COMPLEMENT`/`D3DTA_ALPHAREPLICATE` decode to
-> `RtTextureArgSource::None`, which drops the texture from the material and
-> renders the surface **black** under Remix while the texture still appears in
-> Remix's texture list. Consequences, all implemented in `dx9_tev.cpp`:
-> - When the leading stage of a textured draw isn't decodable, a plain
->   `MODULATE(TEXTURE, DIFFUSE)` stage is prepended for Remix to read; it
->   writes CURRENT which the real chain overwrites, and it is only emitted
->   when nothing in that GX stage reads CURRENT, so raster is unchanged.
+> `D3DTSS_TEXCOORDINDEX` (`D3D9Rtx::processTextures`) — and that stage's
+> color/alpha op and args become the surface's **entire albedo and opacity**
+> (`setTextureStageState` → `opaque_surface_material_interaction.slangh`).
+> It decodes ops `MODULATE/SELECTARG1/SELECTARG2/MODULATE2X/MODULATE4X/ADD`
+> (anything else reads as MODULATE) and arg sources
+> `DIFFUSE/CURRENT/TEXTURE/TFACTOR/SPECULAR` with no modifier bits.
+>
+> Args it can't decode (`D3DTA_TEMP`, `D3DTA_CONSTANT`, anything carrying
+> `D3DTA_COMPLEMENT`/`D3DTA_ALPHAREPLICATE`) become
+> `RtTextureArgSource::None`, which the shader resolves to **identity** —
+> `vec3(1.0)` for color, the sampled opacity for alpha arg1 — so they are
+> harmless on their own. (An earlier revision of this doc claimed `None`
+> rendered black; it does not.)
+>
+> The real hazard is the single-stage view: a GX material's first TEV stage is
+> rarely the finished albedo. `texture × dark konst` (konst routed through
+> TFACTOR) is taken as the whole albedo → the surface renders **black** while
+> its texture is resident and still listed in Remix's texture list; and that
+> stage's alpha becomes the whole opacity → alpha-tested cutouts lose their
+> shape (foliage cards become full quads) or vanish (grass). Consequences, all
+> implemented in `dx9_tev.cpp`:
+> - Unless the leading stage already presents the texture plainly
+>   (`SELECTARG1/MODULATE` over `TEXTURE`/`DIFFUSE` only), a hint stage is
+>   prepended: `color = MODULATE(TEXTURE, DIFFUSE)`, `alpha =
+>   SELECTARG1(TEXTURE)`. It writes CURRENT which the real chain overwrites,
+>   and is only emitted when nothing in that GX stage reads CURRENT, so raster
+>   is unchanged. A draw without vertex colors resolves `DIFFUSE` to `None` =
+>   identity on both sides, so the modulate is a no-op there.
 > - The texture is bound only on emitted stages that actually reference
 >   `D3DTA_TEXTURE` — Remix keeps two texture candidates per draw, so
 >   duplicates from a split stage crowd out a real second texture.
