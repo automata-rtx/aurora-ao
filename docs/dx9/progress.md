@@ -26,6 +26,45 @@
 
 ---
 
+## Checkpoint 3.13 — HUD: no camera split on ortho draws; mods off in D3D9 (2026-07-25)
+
+**Two owner corrections to 3.12, both important:**
+1. **Remix auto-detects orthographic draws as UI** and rasterizes them as a
+   screen overlay — no manual `rtx.uiTextures` tagging needed. The "HUD is
+   path-traced as world geometry" conclusion was wrong.
+2. The two hashes in `rtx.ignoreTextures` are **not** eye-related, so the
+   rtx.conf pollution does not explain the eyes (still worth clearing, but it
+   is not the cause).
+
+**HUD — revised cause.** If Remix already treats our HUD as UI, the remaining
+difference is what we hand that path. The 3.4 camera split applies to *every*
+draw, so a 2D draw arrives as `WORLD = pnMtx x view⁻¹` with `VIEW =` the 3D
+camera. Remix's UI overlay is then derived from a world-space camera rather
+than the flat 2D setup a classic ortho draw presents — matching "too large,
+stretched incorrectly", constant across window sizes and unrelated to resize,
+while raw D3D9 stays correct (the product `WORLD * VIEW` is unchanged).
+
+**Fix:** `apply_transforms` now gates the split on
+`g_gxState.projType != GX_ORTHOGRAPHIC`. 2D draws revert to the pre-3.4 fused
+form (`VIEW = identity`), exactly what they looked like before the split
+existed and when the HUD last behaved under Remix; 3D draws keep the camera.
+Rasterization is unaffected on both paths.
+
+**Mods are now skipped on the D3D9 backend** (dusklight `m_Do_main.cpp`).
+Carrying a modded `config.json` over to a D3D9 build crashed it instantly —
+mod graphics stages are inert here (no WebGPU device) and a native mod that
+touches the renderer takes the process down at load. All mod search dirs are
+dropped when `auroraInfo.backend == BACKEND_D3D9`, landing on the same "no
+mods found" path a clean install takes. **`config.json` is deliberately not
+rewritten**, so the same config can move between a modded build and a D3D9
+test build untouched.
+
+**Still open — the eyes.** The 3.12 diagnostic showed the material layout but
+not which texmap is `al_eyeball`; dimensions/format were added to the log for
+exactly that, and a face-on-screen log from build `ad4b9f54bd` or later should
+identify it. The lever is which texmap the hint stage binds (all stages share
+texcoord 0, so the earliest stage wins), *not* UV ordering.
+
 ## Checkpoint 3.12 — material diagnostic read; rtx.conf pollution; quad layout (2026-07-25)
 
 Owner supplied both a dusklight log (build `9f374d2361`) **and Remix's own

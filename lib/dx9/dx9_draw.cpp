@@ -220,7 +220,18 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
   // every draw (objectToView == objectToWorld), finalizeSkinningData never
   // runs, and skinned instances inherit WORLDMATRIX(0) as their transform,
   // scattering body parts. See docs #3/#6/#13.
-  const bool haveCam = g_camera.valid;
+  //
+  // Orthographic draws are excluded. They are the game's 2D work - HUD, menus,
+  // fullscreen filter quads - and Remix classifies ortho draws as UI, then
+  // rasterizes them as a screen overlay. Handing that path a 3D view matrix
+  // with the 2D transform folded into WORLD leaves the overlay derived from a
+  // world-space camera instead of the flat 2D setup it expects, which is why
+  // the HUD came out oversized and stretched under Remix while raw D3D9 was
+  // correct at every window size. 2D draws therefore keep the pre-camera-split
+  // fused form (VIEW = identity), which is also what they looked like before
+  // the split existed. Rasterization is unaffected either way, since
+  // WORLD * VIEW is the same product.
+  const bool haveCam = g_camera.valid && g_gxState.projType != GX_ORTHOGRAPHIC;
   const D3DMATRIX& view = haveCam ? g_camera.view : identity;
   if (draw.skinned) {
     // Fixed-function indexed vertex blending against the bone palette; the
