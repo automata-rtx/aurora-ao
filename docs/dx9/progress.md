@@ -28,9 +28,13 @@
 
 ## Checkpoint 3.9 — raw-D3D9 comparison: matrix palette exceeded the hardware blend-index cap (2026-07-24)
 
-**Owner ran the D3D9 build WITHOUT Remix** (log: build `13f4e4699d`, i.e. the
-3.4-era build — predates 3.5/3.7/3.8, but the skinning path is unchanged
-since). Findings, and how they differ from the Remix run:
+**Owner ran the D3D9 build WITHOUT Remix.** (Log corrected after the fact: the
+first log attached to this report was a stale file from build `13f4e4699d`;
+the real one is build **`beea767eee`** = checkpoint 3.7. Conclusions below are
+from the correct log. The build stamp is trustworthy —
+`cmake/DetectVersion.cmake` takes it from `git rev-parse HEAD` at configure
+time with a `CMAKE_CONFIGURE_DEPENDS` on the git HEAD file, and CI configures
+fresh per run.) Findings, and how they differ from the Remix run:
 
 | | raw D3D9 | under Remix |
 |---|---|---|
@@ -58,18 +62,31 @@ device can index folds the excess onto slot 0 with a one-shot warning
 (key 0x3100) instead of emitting an out-of-range index.
 
 **Ground textures white in raw D3D9 (not fixed — diagnosis only).** Remix
-shows the ground correctly *because* it only reads one texture stage; raw
-D3D9 executes the whole chain, so this is our TEV reduction losing the
-terrain material. The prime suspect is the logged
-`tev: non-PREV output register treated as PREV` (keys 0x6100/0x6101): GX has
-four TEV output registers (PREV + REG0/1/2) and D3D9 fixed-function has two
-usable ones (CURRENT + TEMP, the latter gated on `D3DPMISCCAPS_TSSARGTEMP`,
-which this device has). We currently collapse every non-PREV output to PREV,
-so a terrain stage that stashes a value in REG0 and reads it back later gets
-the wrong value. A real fix means allocating REG0 to TEMP and reserving the
-intra-stage decomposition's TEMP use around it — a contained but genuinely
-risky change, kept separate from this one. Secondary suspect: the
-`more than two distinct constants in one stage` collapse (9 hits).
+shows the ground correctly *because* it only reads one texture stage (so the
+base texture, which is the first stage, is what it sees); raw D3D9 executes
+the whole chain, so a **later** stage is saturating the result. Suspects from
+the correct log, most-likely first:
+1. `tev: compare-mode op approximated as always-true (d + c)` — **4** distinct
+   stages. GX compare ops are `d + (cond ? c : 0)`; D3D9 fixed-function has no
+   comparison, and we currently take the always-true branch, so a conditional
+   highlight/detail term is added *unconditionally* and can saturate to white.
+   This is the only suspect that explains white specifically. Flipping the
+   approximation to always-**false** (just `d`, dropping the conditional term)
+   is a one-line, easily-reverted change and the obvious next experiment.
+2. `tev: more than two distinct constants in one stage` — **28** distinct
+   stages, by far the most frequent unsupported case. Per stage we only have
+   TFACTOR (one value per draw) + `D3DTSS_CONSTANT` (per stage) = 2 constants;
+   a third falls back to TFACTOR and silently takes the wrong value. Raising
+   this ceiling means splitting the stage to claim another constant slot.
+3. `tev: non-PREV output register treated as PREV` — only **2** stages. GX has
+   four TEV output registers (PREV + REG0/1/2) vs D3D9's two usable ones
+   (CURRENT + TEMP, the latter gated on `D3DPMISCCAPS_TSSARGTEMP`, which this
+   device has). Collapsing REG0 onto PREV corrupts chains that stash and
+   re-read. Lower frequency than the above, and the fix (allocate REG0 to
+   TEMP, reserving the intra-stage decomposition's TEMP use) is the riskiest.
+
+Texture creation is healthy in this log — no `CreateTexture` failures, no
+unhandled formats — so the white is a TEV result, not a missing texture.
 
 **Verification state:** all dx9 TUs pass the MinGW harness (d3d9 on+off). The
 palette fix is untested on Windows.
@@ -119,14 +136,18 @@ alpha — that is what Remix alpha-tests and what gives foliage/grass their
 cutout shape. Same CURRENT-safety guard as 3.7, so raster is unchanged.
 
 **Still unresolved / needs data:**
-- **HUD.** 3.7's letterbox only engages when "Lock 4:3 Aspect Ratio" is ON
-  (`AURORA_VIEWPORT_FIT` → `fb_*` aspect-fit). With it OFF the policy is
-  `AURORA_VIEWPORT_STRETCH`, `fb_* == native_fb_*`, the render rect is the
-  whole backbuffer and the stretch is by design — matching the wgpu path.
-  Owner reports the HUD still doesn't re-lay-out on resize. Need: the
-  dusklight log (it prints `Using framebuffer size WxH scale S` and
-  `dx9: device created WxH (render WxH+X+Y ...)`) plus the state of that
-  setting, to tell a sizing bug from the game's own widescreen HUD path.
+- **HUD.** Settled by the 3.9 log: `dx9: device created 1216x896 (render
+  1216x896+0+0, …)` with `Using framebuffer size 1216x896 scale 1`. Render
+  rect == backbuffer at offset 0, so `g_frameBufferAspectFit` is false →
+  **"Lock 4:3 Aspect Ratio" is OFF** → policy is `AURORA_VIEWPORT_STRETCH`,
+  where filling the window is by design and 3.7's letterbox is inert. Also
+  `fb_* == native_fb_*`, so `internalResolutionScale` is not in play. That run
+  logged only one `device created` and no resets — **it never resized**, so it
+  cannot show the resize behavior at all. To go further: a log from a run that
+  actually resizes, plus the same window size on a WebGPU backend for
+  comparison. If wgpu re-lays-out the HUD where D3D9 doesn't at identical
+  size, it is our bug; if both stretch, what the owner wants is the aspect
+  lock (or the game's own widescreen HUD path).
 - **Whether the black/foliage symptoms also occur in raw D3D9** (no Remix).
   Everything above assumes Remix-only; if raw D3D9 shows them too, the bug is
   in our TEV reduction, not Remix's reconstruction.
