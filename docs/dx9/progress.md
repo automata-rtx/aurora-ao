@@ -26,6 +26,61 @@
 
 ---
 
+## Checkpoint 3.9 — raw-D3D9 comparison: matrix palette exceeded the hardware blend-index cap (2026-07-24)
+
+**Owner ran the D3D9 build WITHOUT Remix** (log: build `13f4e4699d`, i.e. the
+3.4-era build — predates 3.5/3.7/3.8, but the skinning path is unchanged
+since). Findings, and how they differ from the Remix run:
+
+| | raw D3D9 | under Remix |
+|---|---|---|
+| rigged characters | **vertex explosions**, all toward ~one distant point | correct |
+| grass patches | visible | invisible |
+| canopy foliage | visible | black quads |
+| Link's eyes | visible | white |
+| ground textures | **pure white** | correct |
+
+**Root cause (explosions) — the GX matrix palette is deeper than D3D9's
+indexed-blending cap.** GX has 10 position matrices; `pnmtxidx` is already
+divided by 3 on decode (`dx9_vertex.cpp`), so blend indices ran 0..9. But the
+device reports `MaxVertexBlendMatrixIndex = 8` (see the `dx9: device created`
+log line), so index 9 is out of range and reads an undefined matrix — every
+vertex using `GX_PNMTX9` lands at the same wrong place. **This is invisible
+under Remix**, which ignores the fixed-function cap entirely: it reads the
+`D3DTS_WORLDMATRIX` state directly and skins on the GPU. That asymmetry is
+why the models looked correct in every Remix test while raw D3D9 exploded.
+
+**Fix:** compact the palette per draw. `decode_draw` assigns D3D9 blend
+indices in first-use order and records the GX slot for each
+(`DecodedDraw::pnMtxSlots/pnMtxCount`); `apply_transforms` uploads only those
+matrices, in that order. A draw referencing more distinct matrices than the
+device can index folds the excess onto slot 0 with a one-shot warning
+(key 0x3100) instead of emitting an out-of-range index.
+
+**Ground textures white in raw D3D9 (not fixed — diagnosis only).** Remix
+shows the ground correctly *because* it only reads one texture stage; raw
+D3D9 executes the whole chain, so this is our TEV reduction losing the
+terrain material. The prime suspect is the logged
+`tev: non-PREV output register treated as PREV` (keys 0x6100/0x6101): GX has
+four TEV output registers (PREV + REG0/1/2) and D3D9 fixed-function has two
+usable ones (CURRENT + TEMP, the latter gated on `D3DPMISCCAPS_TSSARGTEMP`,
+which this device has). We currently collapse every non-PREV output to PREV,
+so a terrain stage that stashes a value in REG0 and reads it back later gets
+the wrong value. A real fix means allocating REG0 to TEMP and reserving the
+intra-stage decomposition's TEMP use around it — a contained but genuinely
+risky change, kept separate from this one. Secondary suspect: the
+`more than two distinct constants in one stage` collapse (9 hits).
+
+**Verification state:** all dx9 TUs pass the MinGW harness (d3d9 on+off). The
+palette fix is untested on Windows.
+
+**Next run checklist:**
+- Raw D3D9 first: rigged characters should have no stray vertices. This is
+  the primary check — Remix cannot show this bug either way.
+- Then Remix: characters should still be correct (the compacted palette is
+  what Remix's `finalizeSkinningData` reads), plus the 3.8 albedo/opacity
+  stage for the black assets, foliage cutouts and grass.
+
 ## Checkpoint 3.8 — correction: `None` is identity; the single-stage view is the bug (2026-07-24)
 
 **3.7 did not fix the black assets** (owner retest). Its premise was wrong and

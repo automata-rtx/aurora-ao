@@ -259,8 +259,15 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     // store an explicit 1.0 weight (D3DVBF_1WEIGHTS rather than 0WEIGHTS,
     // equivalent under fixed-function) because RTX Remix's GPU skinning
     // requires a blend-weight stream — see decode_draw.
-    for (uint32_t i = 0; i < gx::MaxPnMtx; ++i) {
-      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[i].pos);
+    // Only the matrices this draw actually references, renumbered into a dense
+    // range by decode_draw: GX has 10 position matrices but fixed-function
+    // indexed blending only reaches D3DCAPS9::MaxVertexBlendMatrixIndex (8
+    // here), and an out-of-range blend index reads an undefined matrix, which
+    // scatters those vertices far across the world. Remix is unaffected by the
+    // cap - it reads the transform state directly and skins on the GPU - so
+    // this only ever showed up in raw D3D9.
+    for (uint32_t i = 0; i < draw.pnMtxCount; ++i) {
+      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[draw.pnMtxSlots[i]].pos);
       set_world_matrix(i, haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
     }
     set_view_matrix(view);

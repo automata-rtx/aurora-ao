@@ -180,10 +180,19 @@ RTX Remix understands natively (rest-pose verts hashed, bones replayed):
 
 **(a) Matrix-palette draws (PNMTXIDX attribute present)** — all normal
 characters:
-- Load `g_gxState.pnMtx[0..9].pos` (× `view⁻¹` when the camera is set — §3)
-  into `SetTransform(D3DTS_WORLDMATRIX(i))` for the ≤10 palette slots (only
-  when dirty).
-- Vertex gets `BLENDINDICES = UBYTE4(pnmtxidx/3, 0,0,0)` **and one stored
+- Load `g_gxState.pnMtx[…].pos` (× `view⁻¹` when the camera is set — §3) into
+  `SetTransform(D3DTS_WORLDMATRIX(i))` (only when dirty).
+- **The palette is compacted per draw.** GX has 10 position matrices, but
+  fixed-function indexed blending only reaches
+  `D3DCAPS9::MaxVertexBlendMatrixIndex` — **8** on the reference hardware — and
+  an out-of-range blend index reads an undefined matrix, scattering every
+  vertex that uses `GX_PNMTX9` to the same wrong place. So `decode_draw`
+  assigns blend indices in first-use order and records the GX slot behind each
+  (`DecodedDraw::pnMtxSlots/pnMtxCount`), and only those matrices are uploaded.
+  Excess beyond the cap folds onto slot 0 with a one-shot warning.
+  **Remix never showed this**: it ignores the cap, reading the world-matrix
+  state directly and skinning on the GPU — the bug is raw-D3D9 only.
+- Vertex gets `BLENDINDICES = UBYTE4(compactedIndex, 0,0,0)` **and one stored
   weight of 1.0**; `D3DRS_VERTEXBLEND = D3DVBF_1WEIGHTS` +
   `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`. Plain fixed-function would accept
   the terser `D3DVBF_0WEIGHTS` with indices alone (one matrix, implicit

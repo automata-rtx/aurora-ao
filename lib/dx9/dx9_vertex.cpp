@@ -232,6 +232,13 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   uint8_t* dstBase = t_scratch.data();
   out.verts = dstBase;
 
+  // GX position-matrix slot -> D3D9 blend index, assigned in first-use order
+  // so a draw only ever needs as many blend indices as it has distinct
+  // matrices (see DecodedDraw::pnMtxSlots).
+  std::array<int8_t, gx::MaxPnMtx> pnMtxRemap{};
+  pnMtxRemap.fill(-1);
+  const auto maxBlendIndex = static_cast<uint32_t>(g_dx9.caps.MaxVertexBlendMatrixIndex);
+
   const uint8_t* src = data;
   for (uint32_t v = 0; v < vtxCount; ++v, src += vtxSize) {
     uint8_t* dst = dstBase + static_cast<size_t>(v) * out.stride;
@@ -335,7 +342,21 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
     } else if (out.hasPnMtxIdx) {
       const float one = 1.0f;
       std::memcpy(dst + weightsOffset, &one, 4);
-      const uint32_t indices = pnmtxidx;
+      const uint32_t slot = pnmtxidx < gx::MaxPnMtx ? pnmtxidx : 0;
+      if (pnMtxRemap[slot] < 0) {
+        if (out.pnMtxCount <= maxBlendIndex) {
+          pnMtxRemap[slot] = static_cast<int8_t>(out.pnMtxCount);
+          out.pnMtxSlots[out.pnMtxCount] = static_cast<uint8_t>(slot);
+          ++out.pnMtxCount;
+        } else {
+          // More distinct matrices than the device can index; the GX palette
+          // is 10 deep and hardware commonly stops at 9, so fold the excess
+          // onto slot 0 rather than emitting an out-of-range index.
+          warn_once(0x3100, "matrix palette larger than MaxVertexBlendMatrixIndex; excess folded to slot 0");
+          pnMtxRemap[slot] = 0;
+        }
+      }
+      const uint32_t indices = static_cast<uint32_t>(pnMtxRemap[slot]);
       std::memcpy(dst + indicesOffset, &indices, 4);
     }
   }
