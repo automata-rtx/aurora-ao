@@ -187,15 +187,46 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   dstOffset += 4;
   const uint32_t specularOffset = dstOffset;
   dstOffset += out.hasSpecular ? 4 : 0;
+  // UV sets are emitted with the material's base texture first. D3D texcoord
+  // indices come from this assignment (apply_texgen returns texSlot[attr]), and
+  // Remix reconstructs a draw's material from whichever stage carries the
+  // *lowest* D3DTSS_TEXCOORDINDEX - so on a multi-texture material (character
+  // eyes composite an eyeball, a highlight and an eye shadow) whichever UV set
+  // happened to come first in GX order decided the albedo. Putting the base
+  // texture's UV set in slot 0 makes the intended texture win that pick. The UV
+  // data moves with the slot, so rasterization is unchanged.
+  int preferredAttr = -1;
+  for (uint32_t s = 0; s < g_gxState.numTevStages && preferredAttr < 0; ++s) {
+    const auto& stage = g_gxState.tevStages[s];
+    if (stage.texMapId == GX_TEXMAP_NULL || stage.texCoordId == GX_TEXCOORD_NULL ||
+        stage.texCoordId >= static_cast<int>(gx::MaxTexCoord)) {
+      continue;
+    }
+    const auto src = g_gxState.tcgs[stage.texCoordId].src;
+    if (src >= GX_TG_TEX0 && src <= GX_TG_TEX7) {
+      const int attr = src - GX_TG_TEX0;
+      if (plan[GX_VA_TEX0 + attr].attrType != GX_NONE) {
+        preferredAttr = attr;
+      }
+    }
+  }
+
   uint32_t uvOffsets[8];
+  const auto assign_uv = [&](int t) {
+    out.texSlot[t] = static_cast<int8_t>(out.uvCount);
+    uvOffsets[t] = dstOffset;
+    dstOffset += 8;
+    ++out.uvCount;
+  };
   for (int t = 0; t < 8; ++t) {
-    if (plan[GX_VA_TEX0 + t].attrType != GX_NONE) {
-      out.texSlot[t] = static_cast<int8_t>(out.uvCount);
-      uvOffsets[t] = dstOffset;
-      dstOffset += 8;
-      ++out.uvCount;
-    } else {
-      uvOffsets[t] = 0;
+    uvOffsets[t] = 0;
+  }
+  if (preferredAttr >= 0) {
+    assign_uv(preferredAttr);
+  }
+  for (int t = 0; t < 8; ++t) {
+    if (t != preferredAttr && plan[GX_VA_TEX0 + t].attrType != GX_NONE) {
+      assign_uv(t);
     }
   }
   out.stride = dstOffset;

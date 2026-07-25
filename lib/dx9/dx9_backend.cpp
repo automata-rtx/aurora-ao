@@ -59,6 +59,12 @@ static int32_t target_offset_y() noexcept { return g_dx9.inOffscreen ? 0 : g_dx9
 
 bool active() noexcept { return s_active; }
 
+void info_once(uint64_t key, const char* what) noexcept {
+  if (s_warned.insert(key).second) {
+    Log.info("dx9: {}", what);
+  }
+}
+
 void warn_once(uint64_t key, const char* what) noexcept {
   if (s_warned.insert(key).second) {
     Log.warn("dx9: unsupported: {} (key={:#x})", what, key);

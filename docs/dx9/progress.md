@@ -26,6 +26,65 @@
 
 ---
 
+## Checkpoint 3.11 — eyes: multi-texture materials vs Remix's single albedo (2026-07-25)
+
+**Owner test of 3.10:** **vertex explosions fixed**, and under Remix **most/all
+previously-black meshes now show their textures, including the forest
+canopy**. Two open items: character eyes/iris, and the HUD under Remix.
+
+**Eyes — root cause.** Adult Link's face model carries **three** eye textures:
+`al_eyeball`, `highlight02`, `eye_kage01` (named in
+`src/d/actor/d_a_alink_wolf.inc`, where the PC port already clamps their
+`maxLOD` "to prevent the eyes from disappearing"). They are composited in a
+single draw's TEV chain, and **Remix takes exactly one texture per draw as the
+albedo** — so two of the three are dropped no matter what. Owner's Remix
+observations line up exactly: hovering `al_eyeball` (the iris) highlights no
+geometry, a third texture fills the socket, and hiding it leaves a hole.
+
+**Fix (partial, and deliberately so): make the intended texture win the pick.**
+Remix reconstructs from the stage with the lowest `D3DTSS_TEXCOORDINDEX`, and
+those indices come from *our* UV-slot assignment (`apply_texgen` returns
+`draw.texSlot[attr]`). Previously the slot order followed GX attribute order,
+so whichever UV set happened to come first decided the albedo. `decode_draw`
+now emits the base texture's UV set (the one sampled by the first
+texture-bearing TEV stage) in slot 0, so our albedo hint sits in the lowest
+bin and reliably wins. The UV data moves with the slot, so raster is
+unchanged.
+
+Whether "first texture-bearing stage" is the *right* choice for the eye is not
+yet known — hence the diagnostic below. If the eye's first stage turns out to
+be the highlight or the shadow rather than the eyeball, the preference needs
+to change, and this is the one knob that decides it.
+
+**New diagnostic.** Multi-texture materials now log their layout once per
+distinct configuration:
+`dx9: multi-texture material (N textured stages): [gx0 map1 coord0 uv0] …`,
+via a new `info_once`. A Remix run's log will now name exactly which
+texmap/texcoord each eye stage samples and which UV slot it landed in, which
+is what is needed to pick correctly instead of guessing.
+
+**What a real fix would require.** Showing all three eye layers under Remix
+means the composite cannot stay in one draw: it would need multi-pass
+splitting (base pass, then the overlay stages re-emitted as blended decal
+draws with their own albedo). That is raster-equivalent for the common
+`lerp(base, overlay, alpha)` shape but is a substantial change to the draw
+path, so it is not attempted until the diagnostic confirms the material's
+structure.
+
+**HUD under Remix — new information.** Owner reports it is wrong **even when
+launching fullscreen with no resize**, while raw D3D9 is correct in every
+case. That rules out the mid-run-Reset theory from 3.10. The likely
+explanation is that Remix has no reason to treat these draws as UI: it
+identifies UI by texture hash (`rtx.uiTextures`, plus
+`rtx.worldSpaceUiTextures`), and our HUD arrives as ordinary geometry with an
+orthographic projection, so it is path-traced as world geometry. Tagging the
+HUD textures in the Remix runtime is the standard per-game step and is worth
+trying before any code change. A second, cheaper suspect: our HUD draws still
+carry the 3D camera in `D3DTS_VIEW` (the 3.4 camera split applies to every
+draw), so an ortho HUD draw is presented to Remix as world geometry seen
+through the 3D camera — restricting the camera split to non-orthographic
+projections is a small, contained experiment if tagging does not resolve it.
+
 ## Checkpoint 3.10 — palette overflow split; hint stage reaches later stages (2026-07-25)
 
 **Owner test of 3.9 (build `9489acaa25`), raw + Remix logs both supplied.**

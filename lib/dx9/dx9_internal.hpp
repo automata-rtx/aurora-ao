@@ -309,6 +309,8 @@ inline T read_val(const uint8_t* p, bool be) noexcept {
 
 // One-shot warning per distinct reason hash, to keep play sessions readable.
 void warn_once(uint64_t key, const char* what) noexcept;
+// Same de-duplication, logged at info level (diagnostics, not problems).
+void info_once(uint64_t key, const char* what) noexcept;
 
 } // namespace aurora::dx9
 

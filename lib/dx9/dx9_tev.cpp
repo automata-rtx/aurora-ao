@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace aurora::dx9 {
 static Module Log("aurora::dx9::tev");
@@ -764,6 +765,45 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
 uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   const uint32_t numStages = std::max<uint32_t>(g_gxState.numTevStages, 1);
   ConstAlloc consts;
+
+  // Diagnostic for multi-texture materials: Remix can only take one of their
+  // textures as the surface albedo, so when a character's eye composites an
+  // eyeball, a highlight and an eye shadow in one draw, only one survives.
+  // Log each distinct layout once so a run's log identifies exactly which
+  // texmap/texcoord each stage samples and which one we hand Remix.
+  {
+    uint64_t layoutKey = 0xD1A6;
+    uint32_t textured = 0;
+    for (uint32_t i = 0; i < numStages; ++i) {
+      const auto& s = g_gxState.tevStages[i];
+      if (s.texMapId == GX_TEXMAP_NULL || s.texCoordId == GX_TEXCOORD_NULL) {
+        continue;
+      }
+      ++textured;
+      layoutKey = layoutKey * 1315423911u + (static_cast<uint64_t>(s.texMapId) << 8) +
+                  static_cast<uint64_t>(s.texCoordId) + i;
+    }
+    if (textured > 1) {
+      char buf[256];
+      int off = std::snprintf(buf, sizeof(buf), "multi-texture material (%u textured stages):", textured);
+      for (uint32_t i = 0; i < numStages && off > 0 && off < static_cast<int>(sizeof(buf)); ++i) {
+        const auto& s = g_gxState.tevStages[i];
+        if (s.texMapId == GX_TEXMAP_NULL || s.texCoordId == GX_TEXCOORD_NULL) {
+          continue;
+        }
+        const int attr = (s.texCoordId < static_cast<int>(gx::MaxTexCoord) &&
+                          g_gxState.tcgs[s.texCoordId].src >= GX_TG_TEX0 &&
+                          g_gxState.tcgs[s.texCoordId].src <= GX_TG_TEX7)
+                             ? g_gxState.tcgs[s.texCoordId].src - GX_TG_TEX0
+                             : -1;
+        const int uv = attr >= 0 ? draw.texSlot[attr] : -1;
+        off += std::snprintf(buf + off, sizeof(buf) - static_cast<size_t>(off), " [gx%u map%d coord%d uv%d]", i,
+                             static_cast<int>(s.texMapId), static_cast<int>(s.texCoordId), uv);
+      }
+      info_once(layoutKey, buf);
+    }
+  }
+
   uint32_t d3dStage = 0;
   // The Remix albedo/opacity hint is considered once per draw, at the first
   // GX stage that samples a texture.
