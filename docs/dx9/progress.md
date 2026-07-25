@@ -26,6 +26,46 @@
 
 ---
 
+## Checkpoint 3.14 — eyes identified: albedo must be the colour texture (2026-07-25)
+
+**The eye material, from the 3.12 diagnostic** (build `28bb251f24`, two
+affected characters on screen):
+```
+multi-texture material (3 textured stages):
+  [gx0 map2 coord2 32x32 fmt1]   <- I8,   intensity-only mask (highlight)
+  [gx1 map0 coord0 64x64 fmt14]  <- CMPR, the eyeball colour texture
+  [gx2 map1 coord1 32x32 fmt0]   <- I4,   intensity-only mask (eye shadow)
+```
+GX formats: 0 = I4, 1 = I8, 14 = CMPR. So the **first** textured stage samples
+a 32x32 grayscale mask and the actual eyeball is two stages later. Since the
+hint stage advertised the first textured stage's texmap, Remix was handed the
+highlight mask as the eye's albedo — precisely the owner's "third texture that
+fills the socket", with `al_eyeball` never selected by any draw (hovering it
+highlighted nothing).
+
+**Fix:** `preferred_albedo_stage()` picks the first stage sampling a *colour*
+texture, falling back to the first textured stage when a material has none.
+Intensity-only formats (I4/I8/IA4/IA8) are masks — highlights, shadows,
+gradient ramps — never albedo. Checked against every material in the log: only
+the eye's selection changes; all others already had a colour texture on their
+first textured stage, or none at all (two IA8 stages), so they keep exactly
+the texture they had.
+
+**HUD under Remix — still unresolved.** The ortho camera-split fix (3.13) did
+not change it. Remaining information: raw D3D9 is correct at every size; the
+game-side layout is identical under Remix (same `AuroraGetRenderSize`); Remix
+rasterizes ortho draws as a UI overlay by its own heuristics; and Remix's log
+shows it *does* follow `ResetSwapChain` to the new size. The device is always
+created at the initial window size (1216x896 in every log so far) and Reset
+when the window changes — including the "fullscreen from the get-go" case,
+since the window is resized after device creation. **The next thing to test is
+whether a Reset is what breaks it**, which costs no build: set the window size
+in `config.json` (`video.lastWindowWidth/Height`, or `video.enableFullscreen`)
+so the device is created at the final size and no Reset happens. If the HUD is
+then correct, the workaround is to recreate the device instead of resetting it
+on size change; if it is still wrong, Reset is exonerated and the cause is in
+how Remix rasterizes the UI overlay itself.
+
 ## Checkpoint 3.13 — HUD: no camera split on ortho draws; mods off in D3D9 (2026-07-25)
 
 **Two owner corrections to 3.12, both important:**

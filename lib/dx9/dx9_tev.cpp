@@ -416,6 +416,44 @@ bool op_is_plain_texture(const PassOp& op) noexcept {
   return sawTexture;
 }
 
+// Intensity-only GX formats carry no colour: they are masks - eye highlights,
+// eye shadows, gradient ramps. When a material mixes them with a colour
+// texture, the colour one is the albedo Remix should be shown. Character eyes
+// are the case that forced this: their first textured stage samples a 32x32 I8
+// highlight mask, with the actual eyeball (64x64 CMPR) two stages later, so
+// taking the first textured stage handed Remix a grey blob for the eye.
+bool is_color_texture_format(uint32_t fmt) noexcept {
+  switch (fmt) {
+  case GX_TF_I4:
+  case GX_TF_I8:
+  case GX_TF_IA4:
+  case GX_TF_IA8:
+    return false;
+  default:
+    return true;
+  }
+}
+
+// GX stage whose texture should become the albedo: the first one sampling a
+// colour texture, else simply the first textured stage.
+int preferred_albedo_stage() noexcept {
+  int firstTextured = -1;
+  for (uint32_t i = 0; i < g_gxState.numTevStages; ++i) {
+    const auto& s = g_gxState.tevStages[i];
+    if (s.texMapId == GX_TEXMAP_NULL || s.texMapId >= static_cast<int>(gx::MaxTextures) ||
+        s.texCoordId == GX_TEXCOORD_NULL) {
+      continue;
+    }
+    if (firstTextured < 0) {
+      firstTextured = static_cast<int>(i);
+    }
+    if (is_color_texture_format(g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)].format())) {
+      return static_cast<int>(i);
+    }
+  }
+  return firstTextured;
+}
+
 bool op_reads(const PassOp& op, DWORD source) noexcept {
   const auto is = [source](const Operand& o) { return !o.isConst && arg_base(o.ta) == source; };
   return is(op.arg1) || (op.usesArg2 && is(op.arg2)) || (op.usesArg0 && is(op.arg0));
@@ -877,7 +915,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     // (see the comment on op_is_plain_texture). It goes at the first GX stage
     // that samples a texture, whatever D3D stage that lands on: Remix scans
     // stages in order and bins by texcoord, so the hint reaches its texcoord's
-    // slot before the real stage does.
+    // slot before the real stage does. The texture it advertises is the
+    // material's *colour* texture (preferred_albedo_stage), which is not
+    // necessarily this stage's - see is_color_texture_format.
     //
     // Writing TEMP rather than CURRENT keeps the running chain intact, so the
     // hint is raster-neutral wherever it is placed - TEMP is only ever live
@@ -887,16 +927,22 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     // nothing in this GX stage reads CURRENT back.
     if (!remixHintConsidered && hasTexture && d3dStage + need < MaxStages) {
       remixHintConsidered = true;
+      const int albedoIdx = preferred_albedo_stage();
+      const auto& albedoStage =
+          albedoIdx >= 0 ? g_gxState.tevStages[static_cast<size_t>(albedoIdx)] : stage;
       const PassOp& colorLead = (anyTemp && cp.hasTemp) ? cp.tempOp : cp.finals[0];
       const PassOp& alphaLead = (anyTemp && ap.hasTemp) ? ap.tempOp : ap.finals[0];
-      const bool alreadyPlain = op_is_plain_texture(colorLead) && op_is_plain_texture(alphaLead);
+      // A stage that already presents its texture plainly still needs the hint
+      // when the colour texture lives on a different stage.
+      const bool alreadyPlain = op_is_plain_texture(colorLead) && op_is_plain_texture(alphaLead) &&
+                                albedoStage.texMapId == stage.texMapId;
       const bool currentSafe = g_dx9.tssTemp || (d3dStage == 0 && !pass_reads(cp, D3DTA_CURRENT) &&
                                                  !pass_reads(ap, D3DTA_CURRENT));
       if (!alreadyPlain && currentSafe) {
-        if (IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId); tex != nullptr) {
+        if (IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId); tex != nullptr) {
           set_texture(d3dStage, tex);
-          apply_sampler(d3dStage, stage.texMapId);
-          set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, stage.texCoordId, draw));
+          apply_sampler(d3dStage, albedoStage.texMapId);
+          set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, albedoStage.texCoordId, draw));
           set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
           set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
           set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
