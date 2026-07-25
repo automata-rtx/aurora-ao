@@ -301,9 +301,14 @@ uint32_t build_indices(GXPrimitive prim, uint16_t vtxCount, std::vector<uint16_t
   out.clear();
   switch (prim) {
   case GX_QUADS:
+    // Fan order (0,1,2 / 0,2,3) rather than (0,1,2 / 2,3,0): identical
+    // triangles and winding, but it is the layout Remix's billboard detection
+    // expects - it logs "detected unsupported quad index layout for billboard
+    // creation" otherwise and falls back to treating particle quads as plain
+    // geometry.
     for (uint16_t v = 0; v + 3 < vtxCount; v += 4) {
-      out.insert(out.end(), {v, static_cast<uint16_t>(v + 1), static_cast<uint16_t>(v + 2),
-                             static_cast<uint16_t>(v + 2), static_cast<uint16_t>(v + 3), v});
+      out.insert(out.end(), {v, static_cast<uint16_t>(v + 1), static_cast<uint16_t>(v + 2), v,
+                             static_cast<uint16_t>(v + 2), static_cast<uint16_t>(v + 3)});
     }
     break;
   case GX_TRIANGLESTRIP:

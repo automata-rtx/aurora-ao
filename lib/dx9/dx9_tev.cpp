@@ -791,14 +791,21 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
         if (s.texMapId == GX_TEXMAP_NULL || s.texCoordId == GX_TEXCOORD_NULL) {
           continue;
         }
-        const int attr = (s.texCoordId < static_cast<int>(gx::MaxTexCoord) &&
-                          g_gxState.tcgs[s.texCoordId].src >= GX_TG_TEX0 &&
-                          g_gxState.tcgs[s.texCoordId].src <= GX_TG_TEX7)
-                             ? g_gxState.tcgs[s.texCoordId].src - GX_TG_TEX0
-                             : -1;
-        const int uv = attr >= 0 ? draw.texSlot[attr] : -1;
-        off += std::snprintf(buf + off, sizeof(buf) - static_cast<size_t>(off), " [gx%u map%d coord%d uv%d]", i,
-                             static_cast<int>(s.texMapId), static_cast<int>(s.texCoordId), uv);
+        // Dimensions/format identify which texture each stage samples, so a
+        // log can be matched against Remix's texture list - the stage order
+        // decides which one becomes the albedo, and picking the right one for
+        // e.g. an eye needs to know which map is the eyeball.
+        uint32_t w = 0;
+        uint32_t h = 0;
+        uint32_t fmt = 0;
+        if (s.texMapId < static_cast<int>(gx::MaxTextures)) {
+          const auto& obj = g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)];
+          w = obj.width();
+          h = obj.height();
+          fmt = obj.format();
+        }
+        off += std::snprintf(buf + off, sizeof(buf) - static_cast<size_t>(off), " [gx%u map%d coord%d %ux%u fmt%u]",
+                             i, static_cast<int>(s.texMapId), static_cast<int>(s.texCoordId), w, h, fmt);
       }
       info_once(layoutKey, buf);
     }

@@ -26,6 +26,64 @@
 
 ---
 
+## Checkpoint 3.12 — material diagnostic read; rtx.conf pollution; quad layout (2026-07-25)
+
+Owner supplied both a dusklight log (build `9f374d2361`) **and Remix's own
+log** (`rtx-remix/logs/`, remix-1.5.2). Findings:
+
+**The 3.11 UV reordering is a no-op for these materials — correction.** The
+diagnostic shows every stage of every multi-texture material reporting `uv0`:
+```
+multi-texture material (3 textured stages): [gx0 map2 coord2 uv0] [gx1 map0 coord0 uv0] [gx2 map1 coord1 uv0]
+multi-texture material (8 textured stages): [gx0 map1 coord0 uv0] … [gx7 map1 coord7 uv0]
+```
+Different *texcoords* (coord0..7), same *UV attribute* — these materials use
+several texgens reading `GX_TG_TEX0` with different texture matrices (the
+8-stage ones are the bloom filter, `m_Do_graphic.cpp`). So there is only one
+UV set, it is already slot 0, and reordering changes nothing. Remix bins every
+stage into texcoord 0, which means **the earliest stage wins** — i.e. the
+albedo is decided by our hint stage, which binds the first texture-bearing GX
+stage's texmap. That, not the UV order, is the knob for the eye.
+
+Which texmap should win is still unknown, so the diagnostic now prints each
+stage's texture dimensions and format (`[gx0 map2 coord2 64x64 fmt5]`) so a
+log can be matched against Remix's texture list.
+
+**Remix's rtx.conf has accumulated experiment tags — actively breaking
+things.** Two texture hashes are listed in `rtx.ignoreTextures`, so Remix
+renders neither, and one of them (`-0x06111A95F200FAF1`) additionally appears
+in *every* category list — `uiTextures`, `skyBoxTextures`, `particleTextures`,
+`playerModelTextures`, `decalTextures`, `terrainTextures`, `ignoreLights`,
+`worldSpaceUiTextures`, … This is almost certainly left over from the owner's
+own experiments (they described ignoring the eye-socket texture, and toggling
+transparency on the grass texture — `ignoreTransparencyLayerTextures` holds
+the other hash). **Any eye conclusion is unsafe until those lists are
+cleared.**
+
+**HUD under Remix — answered.** `rtx.uiTextures` contains only that stray
+hash, so the HUD is not tagged as UI and Remix path-traces it as world
+geometry, which is why it is wrong from the first frame and unrelated to
+resizing. Remix's log also shows it *does* follow the resize correctly
+(`ResetSwapChain … 3440x1417`), ruling out presentation. Tagging the HUD
+textures as UI in the Remix runtime is the standard per-game step.
+
+**Quad index layout (fixed).** Remix logs `InstanceManager: detected
+unsupported quad index layout for billboard creation`. `build_indices` emitted
+quads as `(0,1,2)(2,3,0)`; Remix expects the fan order `(0,1,2)(0,2,3)`. Same
+triangles, same winding — just a rotation of the second triangle's start — so
+this is safe, and it lets Remix's billboard path recognise particle quads.
+
+**Other Remix-log items, not yet acted on:**
+- `Trying to bind a texture to a mesh without UVs` — matches the `uv-1` stages
+  in our diagnostic (camera-space texgen, no TEX attribute). Harmless-looking
+  but worth confirming.
+- `Use of texture transform element counts beyond 2 … clamped to 2` and
+  `Use of projected texture transform … not supported` — our projected
+  camera-space texgen (`GX_TG_MTX3x4`) cannot survive into Remix; projected
+  shadows/env maps will be wrong there by design.
+- `Attempted invert a non-invertible matrix` (once), `[41] common device
+  objects were not disposed of` at exit — low priority.
+
 ## Checkpoint 3.11 — eyes: multi-texture materials vs Remix's single albedo (2026-07-25)
 
 **Owner test of 3.10:** **vertex explosions fixed**, and under Remix **most/all
