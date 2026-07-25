@@ -21,6 +21,9 @@ struct AttrPlan {
 };
 
 thread_local std::vector<uint8_t> t_scratch;
+// GX position-matrix slot per decoded vertex; only filled for matrix-palette
+// draws, and only read by draw_palette_split before the next decode.
+thread_local std::vector<uint8_t> t_vtxSlots;
 
 inline float read_comp(const uint8_t* p, uint8_t compType, uint8_t frac, bool be) noexcept {
   const float scale = 1.0f / static_cast<float>(1u << frac);
@@ -197,6 +200,7 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   }
   out.stride = dstOffset;
   out.vtxCount = vtxCount;
+  out.blendIndexOffset = indicesOffset;
 
   // FVF code.
   DWORD fvf;
@@ -238,6 +242,10 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   std::array<int8_t, gx::MaxPnMtx> pnMtxRemap{};
   pnMtxRemap.fill(-1);
   const auto maxBlendIndex = static_cast<uint32_t>(g_dx9.caps.MaxVertexBlendMatrixIndex);
+  if (out.hasPnMtxIdx) {
+    t_vtxSlots.resize(vtxCount);
+    out.pnMtxPerVertex = t_vtxSlots.data();
+  }
 
   const uint8_t* src = data;
   for (uint32_t v = 0; v < vtxCount; ++v, src += vtxSize) {
@@ -343,16 +351,18 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
       const float one = 1.0f;
       std::memcpy(dst + weightsOffset, &one, 4);
       const uint32_t slot = pnmtxidx < gx::MaxPnMtx ? pnmtxidx : 0;
+      t_vtxSlots[v] = static_cast<uint8_t>(slot);
       if (pnMtxRemap[slot] < 0) {
         if (out.pnMtxCount <= maxBlendIndex) {
           pnMtxRemap[slot] = static_cast<int8_t>(out.pnMtxCount);
           out.pnMtxSlots[out.pnMtxCount] = static_cast<uint8_t>(slot);
           ++out.pnMtxCount;
         } else {
-          // More distinct matrices than the device can index; the GX palette
-          // is 10 deep and hardware commonly stops at 9, so fold the excess
-          // onto slot 0 rather than emitting an out-of-range index.
-          warn_once(0x3100, "matrix palette larger than MaxVertexBlendMatrixIndex; excess folded to slot 0");
+          // More distinct matrices than the device can index (GX's palette is
+          // 10 deep, hardware commonly stops at 9). The index written here is
+          // a placeholder: draw_palette_split re-emits this draw as per-palette
+          // groups and rewrites it.
+          out.pnMtxOverflow = true;
           pnMtxRemap[slot] = 0;
         }
       }

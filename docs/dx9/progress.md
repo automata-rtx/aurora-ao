@@ -26,6 +26,67 @@
 
 ---
 
+## Checkpoint 3.10 — palette overflow split; hint stage reaches later stages (2026-07-25)
+
+**Owner test of 3.9 (build `9489acaa25`), raw + Remix logs both supplied.**
+Fixed: **grass renders correctly under Remix** (the 3.8 albedo/opacity stage
+works), and **the HUD now scales correctly on resize in raw D3D9** (3.7's
+render rect + reset hardening). Remaining: explosions persist but changed
+character — bounded, no longer converging on one point, and now **identical
+between raw and Remix**; black meshes and canopy black quads persist under
+Remix; HUD still doesn't re-lay-out on resize *under Remix only*.
+
+**Root cause (remaining explosions) — confirmed by the log.** Both runs log
+`matrix palette larger than MaxVertexBlendMatrixIndex; excess folded to
+slot 0` (key 0x3100). 3.9 stopped emitting out-of-range indices but folded
+the excess onto slot 0, so those vertices are transformed by the wrong joint.
+That also explains the new raw/Remix agreement: the bad index is baked into
+the vertex data, so Remix skins with it too — whereas before 3.9 raw D3D9 got
+hardware garbage while Remix used the real matrix 9.
+
+**Fix:** `draw_palette_split` (`dx9_draw.cpp`). When a draw needs more
+matrices than `MaxVertexBlendMatrixIndex + 1`, its triangles are partitioned
+greedily into groups that each fit, and every group is re-emitted with its own
+palette and group-local blend indices (vertices shared across groups are
+duplicated). `decode_draw` now records each vertex's GX slot
+(`pnMtxPerVertex`) and the blend-index offset so the split can regroup, and
+flags `pnMtxOverflow` instead of warning. Draws within the cap are untouched.
+
+**Fix (black meshes / canopy) — hint stage placement.** 3.8's albedo/opacity
+hint only fired when the texture was in the *first emitted* D3D stage, and was
+additionally blocked whenever the GX stage read CURRENT. Materials whose first
+TEV stage does untextured setup, with the texture arriving in a later stage,
+never got a hint — which fits grass being fixed while the canopy stayed black.
+The hint now fires at the first *texture-bearing* GX stage wherever it lands,
+and writes **TEMP** instead of CURRENT (`D3DTSS_RESULTARG`), which Remix
+ignores when reconstructing but which leaves the running chain untouched, so
+it is raster-neutral at any position. TEMP is only ever live within one GX
+stage's own decomposition, never across stages, so clobbering it there is
+safe. The CURRENT-writing form is kept only for devices without
+`D3DPMISCCAPS_TSSARGTEMP`, where it stays restricted to the head of the chain.
+
+**HUD under Remix — not our bug, most likely.** Neither log contains
+`Reset failed` or a skipped frame, so the device Reset succeeds under Remix
+too, and the game-side layout path is identical in both runs (same SDL window
+size → same `AuroraGetRenderSize`). Since raw D3D9 now re-lays-out correctly
+with the same game code, the remaining difference is most likely Remix's own
+presentation/upscaling not following a mid-run device Reset. Test that
+distinguishes it: launch under Remix already at the target window size — if
+the HUD is correct at startup and only wrong after a live resize, it is
+Remix's swapchain handling, not our layout.
+
+**Verification state:** all dx9 TUs pass the MinGW harness (d3d9 on+off).
+Untested on Windows.
+
+**Next run checklist:**
+- Raw D3D9: no stray vertices at all now (the split removes the last
+  wrong-joint case). This is still the only place the geometry can be judged.
+- Remix: black meshes and canopy foliage should pick up their textures and
+  alpha cutouts; grass should stay correct.
+- If meshes are still black, the next lever is the white-ground work below
+  (compare-mode approximation / constant ceiling), since both come from the
+  same TEV reduction gaps.
+
 ## Checkpoint 3.9 — raw-D3D9 comparison: matrix palette exceeded the hardware blend-index cap (2026-07-24)
 
 **Owner ran the D3D9 build WITHOUT Remix.** (Log corrected after the fact: the

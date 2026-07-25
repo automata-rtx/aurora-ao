@@ -27,6 +27,15 @@ struct DecodedDraw {
   // scatters those vertices across the world.
   std::array<uint8_t, gx::MaxPnMtx> pnMtxSlots{};
   uint32_t pnMtxCount = 0;
+  // Set when the draw references more distinct matrices than the device can
+  // index. The stored per-vertex indices are then placeholders: the draw is
+  // split into per-palette groups at submit time (draw_palette_split), which
+  // rewrites them. pnMtxPerVertex keeps the original GX slot of every vertex
+  // so the split can regroup; valid only while the decode scratch lives, i.e.
+  // until the next decode_draw call.
+  bool pnMtxOverflow = false;
+  const uint8_t* pnMtxPerVertex = nullptr;
+  uint32_t blendIndexOffset = 0; // byte offset of BLENDINDICES within a vertex
   // GX texcoord attr (VA_TEXn) -> uv slot in the decoded vertex, -1 if absent.
   std::array<int8_t, 8> texSlot{-1, -1, -1, -1, -1, -1, -1, -1};
   uint8_t uvCount = 0;

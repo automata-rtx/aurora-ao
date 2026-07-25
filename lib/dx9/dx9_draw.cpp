@@ -328,6 +328,100 @@ uint32_t build_indices(GXPrimitive prim, uint16_t vtxCount, std::vector<uint16_t
   return static_cast<uint32_t>(out.size());
 }
 
+// Draws a matrix-palette mesh that references more distinct matrices than the
+// device can index (D3DCAPS9::MaxVertexBlendMatrixIndex + 1 — 9 against GX's
+// 10) by partitioning its triangles into groups that each fit, giving every
+// group its own palette. Folding the excess onto one slot instead, as the
+// first version of the cap fix did, leaves those vertices transformed by the
+// wrong joint — a bounded explosion that (unlike an out-of-range index) looks
+// identical under Remix, since the bad index is baked into the vertex data.
+void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32_t indexCount) noexcept {
+  const auto limit = static_cast<uint32_t>(g_dx9.caps.MaxVertexBlendMatrixIndex) + 1;
+  const uint8_t* slots = draw.pnMtxPerVertex;
+  if (slots == nullptr || limit < 3 || indexCount < 3) {
+    return;
+  }
+
+  static thread_local std::vector<uint8_t> s_verts;
+  static thread_local std::vector<uint16_t> s_indices;
+  static thread_local std::vector<int32_t> s_vtxMap;
+
+  set_fvf(draw.fvf);
+  const uint32_t triCount = indexCount / 3;
+  uint32_t tri = 0;
+  while (tri < triCount) {
+    std::array<int8_t, gx::MaxPnMtx> localOf{};
+    localOf.fill(-1);
+    std::array<uint8_t, gx::MaxPnMtx> groupSlots{};
+    uint32_t used = 0;
+    s_vtxMap.assign(draw.vtxCount, -1);
+    s_verts.clear();
+    s_indices.clear();
+
+    // Take triangles until the next one would not fit this group's palette.
+    while (tri < triCount) {
+      const uint16_t* t = indices + static_cast<size_t>(tri) * 3;
+      std::array<uint8_t, 3> triSlots{};
+      bool valid = true;
+      uint32_t added = 0;
+      for (int k = 0; k < 3; ++k) {
+        if (t[k] >= draw.vtxCount) {
+          valid = false;
+          break;
+        }
+        const uint8_t s = slots[t[k]] < gx::MaxPnMtx ? slots[t[k]] : 0;
+        triSlots[k] = s;
+        if (localOf[s] < 0) {
+          bool dup = false;
+          for (int j = 0; j < k; ++j) {
+            dup = dup || triSlots[j] == s;
+          }
+          added += dup ? 0 : 1;
+        }
+      }
+      if (!valid) {
+        ++tri;
+        continue;
+      }
+      if (used + added > limit) {
+        break;
+      }
+      for (int k = 0; k < 3; ++k) {
+        if (localOf[triSlots[k]] < 0) {
+          localOf[triSlots[k]] = static_cast<int8_t>(used);
+          groupSlots[used] = triSlots[k];
+          ++used;
+        }
+      }
+      for (int k = 0; k < 3; ++k) {
+        const uint16_t vi = t[k];
+        if (s_vtxMap[vi] < 0) {
+          const auto newIndex = static_cast<uint32_t>(s_verts.size() / draw.stride);
+          s_vtxMap[vi] = static_cast<int32_t>(newIndex);
+          const uint8_t* srcV = draw.verts + static_cast<size_t>(vi) * draw.stride;
+          s_verts.insert(s_verts.end(), srcV, srcV + draw.stride);
+          const auto localIndex = static_cast<uint32_t>(localOf[triSlots[k]]);
+          std::memcpy(s_verts.data() + static_cast<size_t>(newIndex) * draw.stride + draw.blendIndexOffset,
+                      &localIndex, 4);
+        }
+        s_indices.push_back(static_cast<uint16_t>(s_vtxMap[vi]));
+      }
+      ++tri;
+    }
+
+    if (s_indices.size() < 3) {
+      break;
+    }
+    for (uint32_t i = 0; i < used; ++i) {
+      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[groupSlots[i]].pos);
+      set_world_matrix(i, g_camera.valid ? mtx_multiply(m, g_camera.viewInv) : m);
+    }
+    g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(s_verts.size() / draw.stride),
+                                      static_cast<UINT>(s_indices.size() / 3), s_indices.data(), D3DFMT_INDEX16,
+                                      s_verts.data(), draw.stride);
+  }
+}
+
 bool can_draw() noexcept { return g_dx9.dev != nullptr && g_dx9.inScene; }
 
 void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
@@ -389,6 +483,22 @@ void draw_prim(GXPrimitive prim, GXVtxFmt fmt, uint16_t vtxCount, const uint8_t*
   }
   apply_transforms(draw);
   apply_tev(draw);
+  if (draw.pnMtxOverflow) {
+    // Needs per-group palettes; build a triangle list for the topology first.
+    if (prim == GX_TRIANGLES) {
+      t_indexScratch.clear();
+      for (uint16_t v = 0; v + 2 < vtxCount; v += 3) {
+        t_indexScratch.insert(t_indexScratch.end(),
+                              {v, static_cast<uint16_t>(v + 1), static_cast<uint16_t>(v + 2)});
+      }
+    } else {
+      build_indices(prim, static_cast<uint16_t>(draw.vtxCount), t_indexScratch);
+    }
+    if (t_indexScratch.size() >= 3) {
+      draw_palette_split(draw, t_indexScratch.data(), static_cast<uint32_t>(t_indexScratch.size()));
+      return;
+    }
+  }
   submit(draw, prim);
 }
 
@@ -406,6 +516,10 @@ void draw_indexed(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* vtxData, uint3
   }
   apply_transforms(draw);
   apply_tev(draw);
+  if (draw.pnMtxOverflow) {
+    draw_palette_split(draw, indices, indexCount);
+    return;
+  }
   set_fvf(draw.fvf);
   g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, draw.vtxCount, indexCount / 3, indices, D3DFMT_INDEX16,
                                     draw.verts, draw.stride);

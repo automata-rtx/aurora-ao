@@ -765,6 +765,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   const uint32_t numStages = std::max<uint32_t>(g_gxState.numTevStages, 1);
   ConstAlloc consts;
   uint32_t d3dStage = 0;
+  // The Remix albedo/opacity hint is considered once per draw, at the first
+  // GX stage that samples a texture.
+  bool remixHintConsidered = false;
 
   for (uint32_t i = 0; i < numStages && d3dStage < MaxStages; ++i) {
     const auto& stage = g_gxState.tevStages[i];
@@ -824,15 +827,25 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     static const PassOp kPassthrough{};
 
     // Hand Remix an albedo/opacity stage it can read as the finished material
-    // (see the comment on op_is_plain_texture). Only for the very first stage
-    // of the draw - that is the one Remix reconstructs from - and only when
-    // nothing in this GX stage reads CURRENT, so seeding CURRENT here cannot
-    // change the rasterized result.
-    if (d3dStage == 0 && hasTexture && d3dStage + need < MaxStages) {
+    // (see the comment on op_is_plain_texture). It goes at the first GX stage
+    // that samples a texture, whatever D3D stage that lands on: Remix scans
+    // stages in order and bins by texcoord, so the hint reaches its texcoord's
+    // slot before the real stage does.
+    //
+    // Writing TEMP rather than CURRENT keeps the running chain intact, so the
+    // hint is raster-neutral wherever it is placed - TEMP is only ever live
+    // within a single GX stage's own decomposition, never across stages. Only
+    // when the device has no TEMP register does it fall back to writing
+    // CURRENT, which is safe just at the head of the chain and only when
+    // nothing in this GX stage reads CURRENT back.
+    if (!remixHintConsidered && hasTexture && d3dStage + need < MaxStages) {
+      remixHintConsidered = true;
       const PassOp& colorLead = (anyTemp && cp.hasTemp) ? cp.tempOp : cp.finals[0];
       const PassOp& alphaLead = (anyTemp && ap.hasTemp) ? ap.tempOp : ap.finals[0];
       const bool alreadyPlain = op_is_plain_texture(colorLead) && op_is_plain_texture(alphaLead);
-      if (!alreadyPlain && !pass_reads(cp, D3DTA_CURRENT) && !pass_reads(ap, D3DTA_CURRENT)) {
+      const bool currentSafe = g_dx9.tssTemp || (d3dStage == 0 && !pass_reads(cp, D3DTA_CURRENT) &&
+                                                 !pass_reads(ap, D3DTA_CURRENT));
+      if (!alreadyPlain && currentSafe) {
         if (IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId); tex != nullptr) {
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, stage.texMapId);
@@ -846,7 +859,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
           set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
           if (g_dx9.tssTemp) {
-            set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_CURRENT);
+            set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_TEMP);
           }
           ++d3dStage;
         }
