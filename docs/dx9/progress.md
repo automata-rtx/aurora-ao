@@ -26,6 +26,49 @@
 
 ---
 
+## Checkpoint 3.16 — resize workaround confirmed; state of the backend (2026-07-25)
+
+**Owner test of 3.15 (build `3f2eca46d4`): resizing works under Remix.** The
+HUD comes back correctly placed and scaled at the new size. As expected from
+device recreation there is **a delay with a black screen** before visuals
+return — Remix restarts its renderer and the texture cache rebuilds. Owner
+accepts this; it is the cost of the workaround (see unsupported-effects R4).
+Owner also notes **a number of original-game visual effects are broken**, to
+be pursued later — nothing specific triaged yet.
+
+### Where the backend stands
+
+Working: world/actor geometry, diffuse textures, terrain, alpha-tested
+foliage and grass, UI/HUD, skinned characters (both the PNMTXIDX palette path
+and the `GXSetSkinning` extension), EFB colour copies and offscreen passes,
+texture replacement-free static/palette textures, and under Remix: stable
+texture objects (no VRAM growth), a real camera, correct albedo/opacity
+materials, correct eyes, working input, and correct HUD across resizes.
+
+Known open items, roughly by value:
+1. **Ground textures white in raw D3D9** (Remix is correct — it only reads the
+   first stage). Prime suspect is the compare-mode approximation; see
+   `unsupported-effects.md` §"Logging contract" for the ranked suspects. The
+   one-line experiment is flipping the approximation from always-true (`d + c`)
+   to always-false (`d`).
+2. **"A number of visual effects are broken"** (owner, unspecified). Needs a
+   list or screenshots to triage. The multi-texture diagnostic and the
+   distinct-key counts in the log are the tools.
+3. **Multi-texture materials show one layer under Remix** (R1) — inherent
+   unless multi-pass splitting is built.
+4. Lower priority: 3-constants-per-stage ceiling (most frequent warning), TEV
+   register collapse, indirect texturing, projected texgen.
+
+### Doc state at this checkpoint
+
+All four docs are current as of this entry: `README.md` (mission, rules,
+branches), `architecture-notes.md`, `gx-to-d3d9-mapping.md` (the spec —
+sections 1/3/5/6/9/10/13 all reflect shipped behavior), and
+`unsupported-effects.md`, which now carries a dedicated **RTX Remix runtime
+limitations** table (R1-R9) separating Remix's constraints from
+fixed-function ones, plus the real logging contract. `Fixed-Function` was
+advanced to this checkpoint in both repos.
+
 ## Checkpoint 3.15 — eyes confirmed fixed; resize recreates the device (2026-07-25)
 
 **Owner test of 3.14 (build `6a7922c289`): eyes are fixed** on Link and every
