@@ -472,6 +472,8 @@ const AuroraEvent* aurora_update() { return aurora::update(); }
 bool aurora_begin_frame() { return aurora::begin_frame(); }
 void aurora_end_frame() { aurora::end_frame(); }
 AuroraBackend aurora_get_backend() { return aurora::g_config.desiredBackend; }
+
+void* aurora_dx9_get_device(void) { return aurora::dx9::get_device(); }
 const AuroraBackend* aurora_get_available_backends(size_t* count) {
   if (count != nullptr) {
     *count = aurora::PreferredBackendOrder.size();

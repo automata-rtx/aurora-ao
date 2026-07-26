@@ -26,6 +26,21 @@
 
 ---
 
+## Checkpoint 3.18 — expose the D3D9 device for the Remix light API (2026-07-26)
+
+Adds `aurora_dx9_get_device()` (public C API) / `aurora::dx9::get_device()`:
+returns the live `IDirect3DDevice9*` (null on other backends / before
+creation). Dusklight's remix bridge hands it to
+`remixapi dxvk_RegisterD3D9Device` so the bridge can inject a sun/moon
+distant light per frame (see dusklight `docs/kankyo-remix.md`, Phase 4).
+The pointer changes on resize-recreation, so callers poll it — the bridge
+re-registers when it observes a new pointer.
+
+**Verification state:** `dx9_draw.cpp` and the both-config header check pass
+the MinGW harness; the new backend function is a one-line accessor.
+
+---
+
 ## Checkpoint 3.17 — GX fog forwarded as D3D9 fog render states (2026-07-26)
 
 Implements the docs #11 fog mapping that v1 left disabled. `apply_fog_state()`

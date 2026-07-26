@@ -146,6 +146,13 @@ void aurora_set_resampler(AuroraSampler sampler);
 AuroraBackend aurora_get_backend();
 const AuroraBackend* aurora_get_available_backends(size_t* count);
 
+// D3D9 backend only: the live IDirect3DDevice9* driving rendering, or NULL on
+// any other backend (or before device creation). The pointer changes when the
+// backend recreates the device (e.g. on resize) - poll it, don't cache it.
+// Exposed so the game can hand the device to RTX Remix's API
+// (dxvk_RegisterD3D9Device) for light injection; see dusklight's remix bridge.
+void* aurora_dx9_get_device(void);
+
 #ifdef __cplusplus
 }
 #endif

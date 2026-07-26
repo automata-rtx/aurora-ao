@@ -399,6 +399,10 @@ void get_backbuffer_size(uint32_t& width, uint32_t& height) noexcept {
   height = current_target_height();
 }
 
+void* get_device() noexcept {
+  return g_dx9.dev;
+}
+
 // ---------------------------------------------------------------------------
 // Transforms
 // ---------------------------------------------------------------------------

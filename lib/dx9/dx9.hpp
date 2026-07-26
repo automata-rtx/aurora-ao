@@ -41,6 +41,10 @@ void end_frame() noexcept;
 // Backbuffer size in pixels (used for logical->render viewport mapping).
 void get_backbuffer_size(uint32_t& width, uint32_t& height) noexcept;
 
+// The live IDirect3DDevice9*, or nullptr before creation. Changes across
+// device recreation (resize) - callers must poll, not cache.
+void* get_device() noexcept;
+
 // Draw path (called from gx::fifo command processing) ------------------------
 
 // Draw vtxCount vertices of the current vertex descriptor/format. `data`
@@ -100,6 +104,7 @@ inline void shutdown() noexcept {}
 inline bool begin_frame() noexcept { return false; }
 inline void end_frame() noexcept {}
 inline void get_backbuffer_size(uint32_t& width, uint32_t& height) noexcept { width = height = 0; }
+inline void* get_device() noexcept { return nullptr; }
 inline void draw_prim(GXPrimitive, GXVtxFmt, uint16_t, const uint8_t*, uint32_t, bool) noexcept {}
 inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uint16_t*, uint32_t, bool) noexcept {}
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
