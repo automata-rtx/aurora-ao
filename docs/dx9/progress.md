@@ -26,6 +26,45 @@
 
 ---
 
+## Checkpoint 3.17 — GX fog forwarded as D3D9 fog render states (2026-07-26)
+
+Implements the docs #11 fog mapping that v1 left disabled. `apply_fog_state()`
+in `dx9_draw.cpp` decodes `g_gxState.fog` (the reconstructed SDK A/B/C
+coefficients) back to view-space start/end — the scale ambiguity is resolved
+with the projection near plane, `near = m23/(m22 − 1)` from the GX projection
+matrix — and sets `D3DRS_FOGENABLE/FOGCOLOR/FOGTABLEMODE/FOGSTART/FOGEND`
+per draw (EXP/EXP2 approximated via `FOGDENSITY = 8·ln2/(end−start)`; REVEXP
+and ortho projections stay fog-off; `near`/`far` identifiers avoided — windef
+macros).
+
+Why now: RTX Remix's per-draw capture reads `D3DRS_FOG*` and re-applies the
+exact `D3DFOG_LINEAR` ramp in its composite (radial distance — which matches
+TP-with-range-adjust better than plain view-Z), or remaps it into volumetrics.
+This makes dusklight's kankyo fog (colour + near/far per palette, per time of
+day, per weather) reach Remix with no Remix-side changes. See dusklight
+`docs/kankyo-remix.md` Phase 2. Caveat for testing: with Remix defaults
+(`rtx.volumetrics.enable = True`, `enableFogRemap = False`) captured fog is
+consumed by NEITHER path — the rtx.conf template must pick a mode (see that
+doc).
+
+**Verification state:** `dx9_draw.cpp`, `dx9_tev.cpp`, `dx9_texture.cpp`,
+`dx9_vertex.cpp` pass the MinGW harness (d3d9 on; headers also pass in the
+off config). `dx9_backend.cpp` untouched (harness SDL3 stubs not rebuilt in
+this container). Not yet run on Windows.
+
+**Next run checklist:**
+- Remix dev menu: fog state should appear (mode LINEAR, palette colour,
+  plausible start/end in game units) when standing in a foggy stage.
+- Faithful mode: `rtx.volumetrics.enable = False` → distance haze in the
+  palette colour, fading in over `mFogNear..mFogFar`; tune
+  `rtx.fogColorScale` (start ~1.0 with auto exposure off).
+- Volumetric mode: `rtx.volumetrics.enableFogRemap = True` +
+  `enableFogColorRemap = True` → kankyo-coloured participating medium.
+- Raw D3D9 (no Remix): fog now rasterizes too; verify no fog on HUD/menus
+  (ortho draws are excluded by design).
+
+---
+
 ## Checkpoint 3.16 — resize workaround confirmed; state of the backend (2026-07-25)
 
 **Owner test of 3.15 (build `3f2eca46d4`): resizing works under Remix.** The

@@ -162,6 +162,79 @@ void apply_alpha_compare() noexcept {
   set_rs(D3DRS_ALPHAREF, ref & 0xFF);
 }
 
+// GX fog -> D3D9 fog render states (docs #11).
+//
+// The BP registers hold the SDK-computed curve f(zs) = A/(B - zs) - C, which for a
+// perspective projection collapses to f(ze) = (ze - start)/(end - start) in view units.
+// A/B/C alone leave (start, end) scaled by the projection near plane, so it is recovered
+// from the current projection matrix: with m22 = -n/(f-n) and m23 = -fn/(f-n) (GX NDC z in
+// [-1,0]), near = m23/(m22 - 1).
+//
+// The point of forwarding these is RTX Remix: its per-draw capture reads D3DRS_FOG* and
+// reapplies the exact D3DFOG_LINEAR ramp in its composite (or remaps it into volumetrics),
+// which restores the game's environment-driven fog under the path tracer. Raw D3D9 also
+// rasterizes with it, which matches the GX output for the linear modes the game uses.
+//
+// GX range adjust (GXSetFogRangeAdj) is not forwarded: Remix's composite already fogs by
+// radial distance, which is what range adjust approximates. Backwards (REVEXP) fog is not
+// representable in D3D9 and stays disabled.
+void apply_fog_state() noexcept {
+  const aurora::gx::FogState& fog = g_gxState.fog;
+
+  // Aurora's BP round trip keeps only the 3-bit function select, so ortho types alias onto
+  // the perspective ones. Ortho projections are the game's 2D work and are excluded below,
+  // which also keeps Remix from seeing fog on draws it classifies as UI.
+  const uint32_t fsel = static_cast<uint32_t>(fog.type) & 7u;
+
+  if (fsel == 0 || g_gxState.projType == GX_ORTHOGRAPHIC) {
+    set_rs(D3DRS_FOGENABLE, FALSE);
+    return;
+  }
+
+  if (fsel == (GX_FOG_PERSP_REVEXP & 7) || fsel == (GX_FOG_PERSP_REVEXP2 & 7)) {
+    warn_once(0x7110, "fog: backwards (REVEXP) fog unsupported, disabling");
+    set_rs(D3DRS_FOGENABLE, FALSE);
+    return;
+  }
+
+  // near/far are (empty) legacy macros in windef.h, hence projNear.
+  const float m22 = g_gxState.proj.m2[2];
+  const float m23 = g_gxState.proj.m2[3];
+  const float projNear = m23 / (m22 - 1.0f);
+  const float k = fog.b * projNear != 0.0f ? fog.a / (fog.b * projNear) : 0.0f;
+
+  // A degenerate curve (the SDK encodes A=0 for far==near or end==start) fogs nothing.
+  if (!(k > 0.0f) || !(projNear > 0.0f)) {
+    set_rs(D3DRS_FOGENABLE, FALSE);
+    return;
+  }
+
+  const float start = fog.c / k;
+  const float end = (1.0f + fog.c) / k;
+
+  set_rs(D3DRS_FOGENABLE, TRUE);
+  set_rs(D3DRS_FOGCOLOR,
+         D3DCOLOR_COLORVALUE(fog.color.x(), fog.color.y(), fog.color.z(), fog.color.w()));
+  set_rs(D3DRS_FOGVERTEXMODE, D3DFOG_NONE);
+
+  if (fsel == (GX_FOG_PERSP_LIN & 7)) {
+    set_rs(D3DRS_FOGTABLEMODE, D3DFOG_LINEAR);
+    set_rs(D3DRS_FOGSTART, std::bit_cast<DWORD>(start));
+    set_rs(D3DRS_FOGEND, std::bit_cast<DWORD>(end));
+  } else {
+    // EXP/EXP2. GX computes visibility = 2^(-8*f) (squared for EXP2); D3D uses
+    // e^(-density*d) with d unshifted by start. Matching the slopes gives
+    // density = 8*ln2/(end-start); the missing start offset makes this an approximation,
+    // which is acceptable - the game's own fog is exclusively GX_FOG_PERSP_LIN and only
+    // model material fog blocks could reach this path.
+    constexpr float kLn2Times8 = 5.5452f;
+    const float density = kLn2Times8 * k;
+
+    set_rs(D3DRS_FOGTABLEMODE, fsel == (GX_FOG_PERSP_EXP & 7) ? D3DFOG_EXP : D3DFOG_EXP2);
+    set_rs(D3DRS_FOGDENSITY, std::bit_cast<DWORD>(density));
+  }
+}
+
 // Returns false when the draw should be skipped entirely (GX_CULL_ALL).
 bool apply_pixel_state() noexcept {
   switch (g_gxState.cullMode) {
@@ -203,8 +276,7 @@ bool apply_pixel_state() noexcept {
   set_rs(D3DRS_DEPTHBIAS, std::bit_cast<DWORD>(offset / 16777215.0f));
   set_rs(D3DRS_SLOPESCALEDEPTHBIAS, std::bit_cast<DWORD>(scale));
 
-  // Fog: disabled in v1 (Remix replaces atmospherics; docs #11).
-  set_rs(D3DRS_FOGENABLE, FALSE);
+  apply_fog_state();
   return true;
 }
 
