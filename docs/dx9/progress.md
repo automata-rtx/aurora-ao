@@ -26,6 +26,27 @@
 
 ---
 
+## Note — no aurora changes since 3.18 (2026-07-27)
+
+All work since has been on the dusklight and dxvk-remix sides: the kankyo
+bridge, the Remix-hosted settings tab, the bloom fidelity pass, and two
+game-side switches (frustum culling, sky billboards). Aurora is unchanged at
+`a7b47ac` and dusklight's submodule pin still points there — nothing to bump.
+
+Two aurora behaviours were re-examined during that work and both were found
+correct, recorded here so they are not re-investigated:
+
+- **World space.** `world = modelView · viewInv` (`dx9_draw.cpp:354/361/505`)
+  gives Remix the game's true world space, with the inverse guarded by a
+  determinant check that logs `camera view matrix not invertible` on failure.
+  It has not fired.
+- **GX lighting is not evaluated** (`D3DRS_LIGHTING = FALSE`,
+  `dx9_backend.cpp:83`), so the game's own Link-following light reaches
+  neither the vertex colours nor the albedo. That is why the sun/moon has to
+  be injected through the Remix light API rather than captured.
+
+---
+
 ## Checkpoint 3.18 — expose the D3D9 device for the Remix light API (2026-07-26)
 
 Adds `aurora_dx9_get_device()` (public C API) / `aurora::dx9::get_device()`:
