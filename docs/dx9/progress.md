@@ -30,8 +30,9 @@
 
 All work since has been on the dusklight and dxvk-remix sides: the kankyo
 bridge, the Remix-hosted settings tab, the bloom fidelity pass, and two
-game-side switches (frustum culling, sky billboards). Aurora is unchanged at
-`a7b47ac` and dusklight's submodule pin still points there — nothing to bump.
+game-side switches (frustum culling, sky billboards). Aurora's last code change is
+`a7b47ac`; anything newer here is documentation only, so a stale pin costs
+nothing but is bumped anyway to keep the two repos honest.
 
 Two aurora behaviours were re-examined during that work and both were found
 correct, recorded here so they are not re-investigated:
