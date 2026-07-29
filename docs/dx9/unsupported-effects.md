@@ -100,13 +100,21 @@ torch-lit areas. Observations from the owner:
   reliably even then — it depended on player and camera position.
 - Under shadow the arrow goes dim, i.e. it is being **lit as ordinary world
   geometry** when it is meant to read as unlit UI.
-- **Neither appears in Remix's texture categorization screen at all.** That is
-  the part that makes this an aurora question rather than a Remix tagging
-  question: a draw Remix never categorises is a draw it did not capture the way
-  we think it did, so no amount of dev-menu tagging can reach it.
+- **Neither appears in Remix's texture categorization screen at all.**
 
-Nothing diagnosed yet. The first thing to establish is which submission path
-these two share and whether they are going out as ortho/2D draws (which are
-deliberately excluded from fog, and may be excluded from more than that) or as
-world draws with an unusual state vector. Full context in
-`dusklight-ao/docs/kankyo-remix.md` open issue 6.
+**Investigated 2026-07-29 — this is NOT an aurora defect.** An earlier revision
+of this entry concluded that "a draw Remix never categorises is a draw it did
+not capture the way we think it did, so this is an aurora question." That was
+wrong, and it is left recorded rather than deleted because it is the second time
+on this project that a plausible recon conclusion has pointed at the wrong repo.
+
+The mechanism is Remix's **RTX injection boundary**: the first orthographic,
+z-write-disabled draw on the primary render target ends the raytraced scene for
+that frame, and every draw after it is rasterized-only and never categorised.
+Aurora submits these draws correctly — they arrive on the wrong side of a line
+Remix draws. Full write-up in `dusklight-ao/docs/kankyo-remix.md` open issue 6.
+
+**What is still worth checking here:** nothing urgent. Aurora is where the
+ortho and z-write state for the letterbox and fade quads is applied, so if the
+eventual fix involves moving that boundary, the state vector aurora emits for
+those quads is the thing to confirm.
