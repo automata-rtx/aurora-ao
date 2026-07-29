@@ -71,6 +71,7 @@ void copy_tex(const void* dest, GXBool clear) noexcept {
             .clearColor = false,
             .clearAlpha = true,
             .clearDepth = false,
+            .normalTarget = gfx::pass_has_normal_target(),
         }),
         .color = wgpu::Color{0.f, 0.f, 0.f, g_gxState.dstAlpha / 255.f},
     });

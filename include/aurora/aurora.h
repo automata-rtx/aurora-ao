@@ -116,6 +116,16 @@ typedef struct {
    * This can be set to 0 to disable allocating this region.
    */
   uint32_t mem2Size;
+
+  /*
+   * Enable the optional screen-space normal buffer ("thin g-buffer"): a
+   * view-space normal target written alongside EFB color from the game's
+   * authored vertex normals, retrievable via aurora::gfx::resolve_pass with
+   * ResolveDesc::normal (or the mod SDK's GfxResolveDesc::normal). Off by
+   * default; when enabled it adds one RGBA8 render target plus a second
+   * fragment output to EFB pipelines.
+   */
+  bool enableNormalBuffer;
 } AuroraConfig;
 
 typedef struct {

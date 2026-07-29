@@ -11,14 +11,14 @@ struct DrawData {
   float depth = 0.f;
 };
 
-constexpr uint32_t ClearPipelineConfigVersion = 2;
+constexpr uint32_t ClearPipelineConfigVersion = 3;
 struct PipelineConfig {
   uint32_t version = ClearPipelineConfigVersion;
   uint32_t msaaSamples = 1;
   bool clearColor = true;
   bool clearAlpha = true;
   bool clearDepth = true;
-  uint8_t _pad = 0;
+  bool normalTarget = false; // pass carries the thin-g-buffer normal attachment; add a masked 2nd target
 };
 static_assert(std::has_unique_object_representations_v<PipelineConfig>);
 
