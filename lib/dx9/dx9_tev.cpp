@@ -798,11 +798,77 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
   return tci | index;
 }
 
+// The constant that tints the material's albedo, when it has one.
+//
+// Remix rebuilds a surface from a single stage and, among our two constant
+// slots, understands only D3DTA_TFACTOR - it never reads D3DTSS_CONSTANT
+// anywhere in its capture path. An arg it cannot decode becomes
+// RtTextureArgSource::None, which the shader resolves to *identity*, i.e.
+// white. So a lost tint does not darken a surface, it bleaches it: a rupee is
+// a luminance texture tinted by a konst, and under Remix it renders greyscale
+// while raw D3D9 is correct. Hearts are the same shape of material.
+//
+// Reporting the tint here lets apply_tev claim TFACTOR for it up front, before
+// any other constant can take the slot. That makes the value deterministic
+// rather than "whichever operand happened to ask first", and costs nothing:
+// materialize() already hands back TFACTOR for a matching constant, so the
+// real stage that uses this konst reuses the same slot.
+bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
+  const int idx = preferred_albedo_stage();
+  if (idx < 0) {
+    return false;
+  }
+  const auto& stage = g_gxState.tevStages[static_cast<size_t>(idx)];
+  const auto stageIdx = static_cast<uint32_t>(idx);
+  const uint64_t cfgHash = xxh3_hash(stage, 0);
+  const Operand a = color_operand(stage.colorPass.a, stage, stageIdx, true, draw);
+  const Operand b = color_operand(stage.colorPass.b, stage, stageIdx, true, draw);
+  const Operand c = color_operand(stage.colorPass.c, stage, stageIdx, true, draw);
+  const Operand d = color_operand(stage.colorPass.d, stage, stageIdx, true, draw);
+  const ReducedPass cp = reduce_pass(a, b, c, d, stage.colorOp, cfgHash, true);
+
+  // Only a plain "texture x constant" lead counts. Anything more elaborate is
+  // not a tint, and advertising a guess would be worse than leaving the albedo
+  // untinted - the failure mode there is a wrong colour rather than a missing
+  // one, which is much harder to spot.
+  const PassOp& lead = cp.hasTemp ? cp.tempOp : cp.finals[0];
+  if (lead.op != D3DTOP_MODULATE || !lead.usesArg2 || lead.usesArg0 || lead.complementArg2) {
+    return false;
+  }
+  const auto isTexture = [](const Operand& o) {
+    return !o.isConst && arg_base(o.ta) == D3DTA_TEXTURE;
+  };
+  // White is the identity here, so it is not worth a stage.
+  const auto isTint = [](const Operand& o) {
+    return o.isConst && (o.constValue & 0x00FFFFFFu) != 0x00FFFFFFu;
+  };
+  if (isTexture(lead.arg1) && isTint(lead.arg2)) {
+    outTint = lead.arg2.constValue;
+    return true;
+  }
+  if (isTexture(lead.arg2) && isTint(lead.arg1)) {
+    outTint = lead.arg1.constValue;
+    return true;
+  }
+  return false;
+}
+
 } // namespace
 
 uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   const uint32_t numStages = std::max<uint32_t>(g_gxState.numTevStages, 1);
   ConstAlloc consts;
+
+  // Claim TFACTOR for the albedo tint before anything else can (see
+  // albedo_tint). Done here rather than at the hint stage below because the
+  // constant slots are allocated as the real stages are emitted, and the hint
+  // is written before any of them have run.
+  uint32_t hintTint = 0;
+  const bool hasHintTint = albedo_tint(draw, hintTint);
+  if (hasHintTint) {
+    consts.tfactor = hintTint;
+    consts.tfactorUsed = true;
+  }
 
   // Diagnostic for multi-texture materials: Remix can only take one of their
   // textures as the surface albedo, so when a character's eye composites an
@@ -955,6 +1021,35 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_TEMP);
           }
           ++d3dStage;
+
+          // Carry the albedo tint, which the hint's TEXTURE x DIFFUSE cannot
+          // express - a modulate takes two args and both are already spoken
+          // for. Remix decodes exactly one extra MODULATE against TFACTOR
+          // (isTextureFactorBlendingEnabled; rtx.enableMultiStageTextureFactor
+          // Blending defaults on), and it matches that against whatever
+          // register the *previous* stage wrote. So this has to sit
+          // immediately after the hint and read the same register the hint
+          // wrote, or it is not recognised.
+          //
+          // Raster-neutral on the same grounds as the hint: with a TEMP
+          // register this only ever touches scratch, and without one the hint
+          // already established that nothing in this GX stage reads CURRENT
+          // back before the real chain overwrites it.
+          if (hasHintTint && d3dStage + need < MaxStages) {
+            const DWORD hintReg = g_dx9.tssTemp ? D3DTA_TEMP : D3DTA_CURRENT;
+            set_texture(d3dStage, nullptr);
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            set_tss(d3dStage, D3DTSS_COLORARG1, hintReg);
+            set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_TFACTOR);
+            // Opacity is still the texture's own alpha the hint selected;
+            // tinting it would eat alpha-tested cutout shapes.
+            set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            set_tss(d3dStage, D3DTSS_ALPHAARG1, hintReg);
+            if (g_dx9.tssTemp) {
+              set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_TEMP);
+            }
+            ++d3dStage;
+          }
         }
       }
     }
