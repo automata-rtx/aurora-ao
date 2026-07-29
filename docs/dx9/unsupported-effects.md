@@ -118,3 +118,133 @@ Remix draws. Full write-up in `dusklight-ao/docs/kankyo-remix.md` open issue 6.
 ortho and z-write state for the letterbox and fade quads is applied, so if the
 eventual fix involves moving that boundary, the state vector aurora emits for
 those quads is the thing to confirm.
+
+### PINNED 2026-07-29 — the torch flame, and how to confirm it later
+
+*Parked deliberately: the owner cannot test for a while. This section is written
+so the investigation can restart cold.*
+
+**The correction that reframed it.** The "bright white circle" seen at a lit
+torch is **not** the animated fire. It is a separate circular sprite. So the
+earlier inference — that flames were already arriving and already emissive — was
+wrong; what was arriving was something else.
+
+**The torch emits three named resources at the same position**
+(`dusklight-ao/src/d/actor/d_a_ep.cpp:423-431`, names from
+`d_particle_name.cpp`):
+
+| ID | Resource | Role |
+| :-- | :-- | :-- |
+| `0x100` | `ZI_J_O_fire_a.jpa` | fire A |
+| `0x101` | `ZI_J_O_fire_b.jpa` | fire B |
+| `0x103` | `ZI_J_O_kagerou.jpa` | 陽炎, heat haze |
+
+(`0x102` / `fire_c` exists but the torch does not use it. The Forest Temple
+candle, `d_a_obj_lv1Candle00`, swaps the fire pair for `0x83a6`/`0x83a7` and
+keeps `0x103`.)
+
+**Two deductions worth keeping:**
+
+1. **The heat haze is expected to be broken and is not the bug.** Kagerou is
+   indirect texturing — entry #1 above, "heat shimmer … ignored, base stages
+   still draw, no warp".
+2. **This is probably not the injection boundary.** `fire_a` and `fire_b` are
+   emitted back to back, same position, same frame, into the same particle
+   system. If they share a draw group they are near-adjacent draws, and an
+   injection boundary cannot stably separate two adjacent draws across a whole
+   session. So the flame's problem is a property of *that draw* — its TEV/blend
+   configuration, its texture, or its group.
+
+**The competing hypothesis, and it has evidence.** The white circle may *be* one
+of the fire sprites, saturated to white by entry **#2** — compare-mode TEV ops
+approximated as always-true (`d + c`). That entry is already the prime suspect
+for the white-ground defect and is noted there as *the only approximation that
+explains white via additive saturation*. If so, "the flame is missing and a glow
+circle shows" and "the flame renders as a white blob" are one bug, and it is
+**this repo's**, not Remix's.
+
+**How to confirm, when testing resumes — cheapest first:**
+
+1. **Read the aurora log stood at a lit torch.** Free, no rebuild. The backend
+   already emits `dx9: unsupported: <reason> (key=0x…)` (`warn_once`) and
+   `dx9: multi-texture material (N textured stages): …` (`info_once`). If the
+   fire's TEV program hits an unsupported case, this names it outright. This is
+   the same instrumentation that identified the 3-constant ceiling at 28 stages
+   and compare-mode at 4.
+2. **A/B raw D3D9 against Remix at the same torch.** Decisive on ownership,
+   because the known white-ground defect has a distinctive signature — wrong in
+   raw D3D9, *correct* under Remix, since Remix only reads the first texture
+   stage and never executes the offending later one.
+
+   | Raw D3D9 | Remix | Reading |
+   | :-- | :-- | :-- |
+   | circle | correct flame | TEV bug, #2 — this repo |
+   | correct flame | circle | capture/categorization — the fork |
+   | circle | circle | the resource itself, or a shared earlier stage |
+3. Only if both are inconclusive, fall back to the draw-call-ID work in
+   `kankyo-remix.md` open issue 6.
+
+### Two more Remix-visible material defects, reported 2026-07-29
+
+Both trace to the same place — `dx9_tev.cpp`'s "RTX Remix material
+reconstruction" section — and both are this repo's to fix.
+
+**Rupees and hearts render greyscale under Remix, correct in raw D3D9.**
+
+The mechanism is exact. Remix rebuilds a draw's material from **one** texture
+stage and a small set of decodable args. It understands `D3DTA_TFACTOR`; it
+**never reads `D3DTSS_CONSTANT` / `D3DTA_CONSTANT` anywhere in its capture
+path** — verified by grep across `d3d9_rtx.cpp` and the material types. Args it
+cannot decode resolve to `RtTextureArgSource::None`, which the shader treats as
+**identity — `vec3(1.0)` for colour**.
+
+Aurora deliberately uses two constant slots per stage (`materialize()`,
+`dx9_tev.cpp:296-322`): the per-draw `TFACTOR` first, then the per-stage
+`D3DTSS_CONSTANT`. **Any GX konst that lands in the second slot is invisible to
+Remix and silently becomes white.** A rupee is a luminance texture tinted by a
+konst; lose the tint and you get exactly the reported greyscale.
+
+There is a second, likelier-still path to the same symptom: the **Remix hint
+stage** (`dx9_tev.cpp:928-960`) advertises `colour = TEXTURE * DIFFUSE`,
+`alpha = TEXTURE`. That is the right shape for foliage, but it deliberately
+carries **no konst term at all** — so where a material's colour comes from a
+konst rather than from vertex colour, the hint itself throws the tint away.
+
+*Fix directions, neither implemented:* have the hint modulate by `TFACTOR` when
+the material's colour is konst-driven and there is no meaningful vertex colour;
+or emit a following `MODULATE(CURRENT|TEMP, TFACTOR)` stage, which Remix
+**does** understand — `enableMultiStageTextureFactorBlending` defaults to
+**true** and `isTextureFactorBlendingEnabled` explicitly matches that pattern
+against `CURRENT` or `TEMP` (`d3d9_rtx.cpp:944-980`). Prefer routing a
+material's albedo tint to TFACTOR over the per-stage constant whenever a choice
+exists, on the grounds that only one of the two survives into Remix.
+
+**Grass patches shade wrongly under Remix, fine in raw D3D9.** Reported
+symptoms: glowing in the dark, being too dark, very delayed lighting response,
+and generally reading as a different material from the rest of the scene. The
+owner also cannot replace the billboard blades with real geometry, because the
+hashes are unstable.
+
+The hash instability has a specific and fixable cause. `dGrass_packet_c::draw`
+has **two** paths:
+
+| Path | How it draws | Hash consequence |
+| :-- | :-- | :-- |
+| **Batched** (the default for standing grass) | one immediate-mode `GXBegin(GX_TRIANGLES, GX_VTXFMT1, GX_AUTO)` stream, `GXLoadPosMtxImm(identity)`, every blade pre-transformed into world space and merged into four buckets | one giant instance whose **vertex positions change whenever any blade moves, is cut, regrows, or changes bucket** → asset hash churns every frame |
+| **Per-blade** (only used for regrowing blades) | `GXCallDisplayList(mp_Mkusa_9q_DL, …)` with a per-blade `GXLoadPosMtxImm(get_model_mtx(...))` | static display-list geometry + a transform → **stable hash**, one instance per blade, taggable and replaceable |
+
+Remix's `rtx.geometryAssetHashRuleString` defaults to
+`positions,indices,geometrydescriptor`, so positions are load-bearing for
+identity. The batching optimisation — good for raster draw-call count — is
+precisely what destroys that identity, and the Remix-friendly path already
+exists in the same function.
+
+*Fix direction, not implemented:* a game-side switch that forces the per-blade
+display-list path while under Remix. It costs exactly what the batching saves,
+which is why it should be a switch rather than a default, and it is the
+prerequisite for everything else the owner wants here — stable hashes make the
+blades taggable, replaceable with real geometry, and temporally stable.
+
+The lighting symptoms are partly separate and are catalogued in
+`dusklight-ao/docs/kankyo-remix.md` open issue 7, since they involve Remix
+options as well as this repo.
