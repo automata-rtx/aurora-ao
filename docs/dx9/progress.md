@@ -8,14 +8,19 @@
 
 1. Read `docs/dx9/README.md`, then `architecture-notes.md`, then
    `gx-to-d3d9-mapping.md` (this is the spec being implemented).
-2. `git log --oneline` on branch `Fixed-Function-dev` (working branch;
-   `Fixed-Function` is the integration branch it merges into at tested
-   checkpoints) in both repos: `automata-rtx/aurora-ao` and
-   `automata-rtx/dusklight-ao` (aurora is the `extern/aurora` submodule of
-   dusklight). The old dev branch `claude/dusklight-dx9-fixed-function-*`
-   is retired.
+2. `git log --oneline` on branch `Fixed-Function-dev` — the working branch in
+   **all three** repos: `automata-rtx/aurora-ao`,
+   `automata-rtx/dusklight-ao` (aurora is its `extern/aurora` submodule) and
+   `automata-rtx/dxvk-remix` (the Remix fork). `Fixed-Function` is the
+   integration branch aurora and dusklight merge into at checkpoints that are
+   CI-green *and* tested in game; it is deliberately behind.
+   All `claude/*` branches are retired and disposable — see `CLAUDE.md`,
+   which carries the standing rule to mirror session branches to
+   `Fixed-Function-dev` on every push.
 3. Check "Next steps" of the newest entry below; the code lives in
-   `aurora-ao/lib/dx9/`.
+   `aurora-ao/lib/dx9/`. **If the task is about how the game *looks* under
+   Remix rather than about the D3D9 backend, you are in the wrong repo** —
+   go to `dusklight-ao/docs/kankyo-remix.md` §"Picking this up cold".
 4. Build target is Windows (MinGW or MSVC). This work is developed in a Linux
    container: compile-verify D3D9 code with
    `x86_64-w64-mingw32-g++ -fsyntax-only` where possible; full builds/testing
@@ -26,13 +31,20 @@
 
 ---
 
-## Note — no aurora changes since 3.18 (2026-07-27)
+## Note — no aurora changes since 3.18 (2026-07-27, still true 2026-07-28)
 
 All work since has been on the dusklight and dxvk-remix sides: the kankyo
-bridge, the Remix-hosted settings tab, the bloom fidelity pass, and two
-game-side switches (frustum culling, sky billboards). Aurora's last code change is
-`a7b47ac`; anything newer here is documentation only, so a stale pin costs
-nothing but is bumped anyway to keep the two repos honest.
+bridge, the Remix-hosted settings tab and overlay, the bloom fidelity pass, the
+atmosphere (fog + sky + sky-light from one medium), warp, the time-of-day
+scrub/freeze, and several game-side switches (frustum culling, sky billboards,
+vrbox, recording mode). Aurora's last code change is `a7b47ac`; anything newer
+here is documentation only, so a stale pin costs nothing but is bumped anyway
+to keep the repos honest.
+
+**If you are looking for the current state of the project as a whole, it is not
+in this file.** This repo has been quiet for two days. Go to
+`dusklight-ao/docs/kankyo-remix.md` §"Picking this up cold" and §"Test session
+playbook".
 
 Two aurora behaviours were re-examined during that work and both were found
 correct, recorded here so they are not re-investigated:
