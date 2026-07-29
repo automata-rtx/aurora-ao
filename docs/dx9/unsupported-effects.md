@@ -86,3 +86,27 @@ D3D9 while Remix shows them correctly (Remix only reads the first stage, so it
 never executes the offending later stage). Suspects, in order: #2
 (compare-mode approximated as always-true — the only one that explains *white*
 via additive saturation), #6 (constant ceiling), #3 (register collapse).
+
+**Open, reported 2026-07-29 — world-space UI billboards reach Remix
+intermittently, and never reach its texture categorization screen.** Two draws
+behave as one group: the **targeting arrow** and the **fire billboards** in
+torch-lit areas. Observations from the owner:
+
+- They appear and disappear together, which is the strongest hint that one draw
+  path owns both.
+- The fire billboards were seen appearing during **room transitions** in the
+  Forest Temple.
+- The targeting arrow rendered correctly only while actively targeting, and not
+  reliably even then — it depended on player and camera position.
+- Under shadow the arrow goes dim, i.e. it is being **lit as ordinary world
+  geometry** when it is meant to read as unlit UI.
+- **Neither appears in Remix's texture categorization screen at all.** That is
+  the part that makes this an aurora question rather than a Remix tagging
+  question: a draw Remix never categorises is a draw it did not capture the way
+  we think it did, so no amount of dev-menu tagging can reach it.
+
+Nothing diagnosed yet. The first thing to establish is which submission path
+these two share and whether they are going out as ortho/2D draws (which are
+deliberately excluded from fog, and may be excluded from more than that) or as
+world draws with an unusual state vector. Full context in
+`dusklight-ao/docs/kankyo-remix.md` open issue 6.
