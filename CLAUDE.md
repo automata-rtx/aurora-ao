@@ -51,13 +51,22 @@ git push -u origin <session-branch>
 git push origin HEAD:Fixed-Function-dev
 ```
 
-Do not wait to be asked. `claude/*` branches are disposable and get deleted;
-`Fixed-Function-dev` is where the work lives. Two have already been retired
-this way with nothing lost (`claude/dusklight-dx9-fixed-function-6uoy92`,
-`claude/dusklight-bloom-remix-3zx834`).
+**REVOKED by the owner on 2026-07-29 — the mirroring instruction above no
+longer applies.** The owner merges to `Fixed-Function-dev` themselves, at
+milestones they choose. Push only the session branch:
+
+```
+git push -u origin <session-branch>        # yes
+git push origin HEAD:Fixed-Function-dev    # NO - the owner does this
+```
+
+If a session branch is about to be deleted and its work is not yet merged,
+**say so and stop** rather than mirroring it.
 
 **Before anyone deletes a branch, verify it is contained:**
 `git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be `0`.
+With auto-mirror off, a non-zero count is now the *normal* state between
+milestones rather than an anomaly, so this check is no longer a formality.
 
 **`claude/thin-gbuffer-authored-normals-wgqupt`** is **unrelated, unmerged
 work** — in neither `main` nor `Fixed-Function-dev`. Do not delete it and do
@@ -98,8 +107,16 @@ materials, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
 fixed-function and 9 Remix runtime limitations, all in
-`docs/dx9/unsupported-effects.md`. The one live defect is **ground textures
-rendering white in raw D3D9** (Remix is correct, because it only reads the
-first texture stage). Prime suspect is the compare-mode approximation; the
-one-line experiment is flipping it from always-true (`d + c`) to always-false
-(`d`).
+`docs/dx9/unsupported-effects.md`. Two live defects:
+
+1. **Ground textures render white in raw D3D9** (Remix is correct, because it
+   only reads the first texture stage). Prime suspect is the compare-mode
+   approximation; the one-line experiment is flipping it from always-true
+   (`d + c`) to always-false (`d`).
+2. **World-space UI billboards reach Remix intermittently** — the targeting
+   arrow and torch fire billboards, reported 2026-07-29. They appear and vanish
+   together, the arrow is lit as world geometry when it should read as unlit,
+   and **neither shows in Remix's texture categorization screen at all**. That
+   last part is why this lands here rather than in the fork: a draw Remix never
+   categorises was not captured the way we assume, so no dev-menu tagging can
+   reach it. See `docs/dx9/unsupported-effects.md`.
