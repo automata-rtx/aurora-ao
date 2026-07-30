@@ -114,10 +114,31 @@ that frame, and every draw after it is rasterized-only and never categorised.
 Aurora submits these draws correctly — they arrive on the wrong side of a line
 Remix draws. Full write-up in `dusklight-ao/docs/kankyo-remix.md` open issue 6.
 
-**What is still worth checking here:** nothing urgent. Aurora is where the
-ortho and z-write state for the letterbox and fade quads is applied, so if the
-eventual fix involves moving that boundary, the state vector aurora emits for
-those quads is the thing to confirm.
+**RESOLVED 2026-07-30 for the targeting arrow — and it needed nothing from this
+repo.** Tagging the two arrow textures as `rtx.uiTextures` in Remix's dev menu
+fixes them completely, in every camera position, with or without the letterbox
+bars. No code, in any of the three repos.
+
+The reason that works is the half of `rtx.uiTextures` this entry (and the fork's
+docs) had missed: `isRenderingUI()` does not only trigger injection, it also
+returns `RtxGeometryStatus::Rasterized`, so a tagged draw is rasterized flat
+over the traced image **every frame**. For a targeting reticle that is the
+wanted look. The arrow was never failing to reach the raytraced scene — it was
+sometimes reaching it, and being path-traced as world geometry when it did.
+
+**A capture hook was added to this repo for this and then removed.** Between
+2026-07-29 and 2026-07-30 `lib/dx9/dx9_world_ui.cpp` and a
+`begin_world_ui_capture` scope existed, to hand `DecodedDraw` triangles to the
+game for resubmission through the Remix API tagged `WORLD_UI`. It built and CI
+was green; it never worked, and `WORLD_UI` was the wrong category anyway (it
+keeps the instance in the traced scene as emissive geometry, which is not what
+an overlay wants). It is gone. Do not reintroduce it for this problem.
+
+**What is still worth checking here:** nothing urgent, and less than before.
+Aurora is where the ortho and z-write state for the letterbox and fade quads is
+applied, so that state vector is still the thing to confirm if anyone ever needs
+to move the boundary deliberately — but the arrow no longer requires it, since
+tagging makes the arrow itself the trigger.
 
 ### PINNED 2026-07-29 — the torch flame, and how to confirm it later
 

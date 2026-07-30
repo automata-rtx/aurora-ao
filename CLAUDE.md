@@ -99,11 +99,11 @@ dusklight's workflow builds with the bumped submodule pin.
 ## Where the backend actually stands
 
 `docs/dx9/progress.md` is authoritative, but the short version: the backend is
-**effectively complete** for its stated priorities and has had no code change
-since `a7b47ac` (2026-07-26). Working under Remix: world/actor geometry,
-textures, terrain, alpha-tested foliage, UI/HUD, skinned characters on both
-paths, EFB colour copies, stable texture hashing, real camera, correct
-materials, working input across resizes.
+**effectively complete** for its stated priorities. Last code change: `389e4d5`
+(2026-07-29), carrying the albedo tint into Remix's material. Working under
+Remix: world/actor geometry, textures, terrain, alpha-tested foliage, UI/HUD,
+skinned characters on both paths, EFB colour copies, stable texture hashing,
+real camera, correct materials, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
 fixed-function and 9 Remix runtime limitations, all in
@@ -113,10 +113,25 @@ fixed-function and 9 Remix runtime limitations, all in
    only reads the first texture stage). Prime suspect is the compare-mode
    approximation; the one-line experiment is flipping it from always-true
    (`d + c`) to always-false (`d`).
-2. **World-space UI billboards reach Remix intermittently** — the targeting
-   arrow and torch fire billboards, reported 2026-07-29. They appear and vanish
-   together, the arrow is lit as world geometry when it should read as unlit,
-   and **neither shows in Remix's texture categorization screen at all**. That
-   last part is why this lands here rather than in the fork: a draw Remix never
-   categorises was not captured the way we assume, so no dev-menu tagging can
-   reach it. See `docs/dx9/unsupported-effects.md`.
+2. **Torch fire billboards reach Remix intermittently** — reported 2026-07-29,
+   still open, and **pinned** pending a test at a lit torch. The suspicion is
+   that the "white circle" is a fire sprite saturated to white by the
+   compare-mode TEV approximation (defect 1 above), not a frame-position
+   problem. See `docs/dx9/unsupported-effects.md` §"PINNED — the torch flame".
+
+   The **targeting arrow** was grouped with this and is **RESOLVED (2026-07-30)
+   by tagging its two textures as `rtx.uiTextures` in Remix's dev menu** — no
+   code, in any repo. They were only ever grouped because they appeared and
+   vanished together; that had one explanation for the arrow (Remix's RTX
+   injection boundary) and does not carry over to the flame.
+
+   *Two conclusions were recorded here and were both wrong; kept because each
+   cost real work.* First, that the categorization-screen absence meant "a draw
+   Remix never categorises was not captured the way we assume, so this lands
+   here rather than in the fork" — it is not an aurora defect, aurora submits
+   these draws correctly. Second, that `rtx.uiTextures` was unusable because it
+   only triggers RTX injection — it **also** forces `Rasterized`, which is the
+   flat unlit overlay a reticle wants, and is the entire fix. Acting on the
+   second belief produced a capture hook in this repo, a mesh-submission path in
+   the game and an overlay toggle in the fork, all removed on 2026-07-30 without
+   ever working.
