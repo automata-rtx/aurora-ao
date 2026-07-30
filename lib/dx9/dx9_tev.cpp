@@ -816,11 +816,19 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
 bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   const int idx = preferred_albedo_stage();
   if (idx < 0) {
+    info_once(0xA1B0, "albedo tint: no preferred albedo stage; material keeps its raw texture");
     return false;
   }
   const auto& stage = g_gxState.tevStages[static_cast<size_t>(idx)];
   const auto stageIdx = static_cast<uint32_t>(idx);
-  const uint64_t cfgHash = xxh3_hash(stage, 0);
+  // Deliberately NOT the same seed the real emission path uses (see apply_tev,
+  // where it is xxh3_hash(stage, 0)). This pass is speculative and runs first,
+  // so sharing the seed made it consume reduce_pass's warn_once dedup keys
+  // before the real path could, and every unsupported-TEV line a run produced
+  // was then attributed to a decode that was thrown away. That cost a full
+  // diagnostic cycle: the log looked populated while saying nothing about what
+  // was actually drawn.
+  const uint64_t cfgHash = xxh3_hash(stage, 0) ^ 0xA1B70000ull;
   const Operand a = color_operand(stage.colorPass.a, stage, stageIdx, true, draw);
   const Operand b = color_operand(stage.colorPass.b, stage, stageIdx, true, draw);
   const Operand c = color_operand(stage.colorPass.c, stage, stageIdx, true, draw);
@@ -831,8 +839,38 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   // not a tint, and advertising a guess would be worse than leaving the albedo
   // untinted - the failure mode there is a wrong colour rather than a missing
   // one, which is much harder to spot.
+  //
+  // Every rejection below is logged. The gate is narrow on purpose, but it was
+  // shipped silent, and a material that renders greyscale under Remix then
+  // looks identical whether it was rejected here, rejected for a different
+  // reason here, or accepted and dropped at one of the emission gates in
+  // apply_tev. Naming the reason is what turns "the fix did not work" into a
+  // decidable question.
   const PassOp& lead = cp.hasTemp ? cp.tempOp : cp.finals[0];
-  if (lead.op != D3DTOP_MODULATE || !lead.usesArg2 || lead.usesArg0 || lead.complementArg2) {
+  if (lead.op != D3DTOP_MODULATE) {
+    // The most likely one to matter: GX output scale. GX_CS_SCALE_2/SCALE_4 on
+    // an otherwise plain texture x konst stage reduce to MODULATE2X/MODULATE4X,
+    // which is still a tint but not this shape.
+    if (lead.op == D3DTOP_MODULATE2X || lead.op == D3DTOP_MODULATE4X) {
+      warn_once(cfgHash ^ 0xA1B1,
+                "albedo tint: lead is MODULATE2X/4X (GX output scale); tint not carried to Remix");
+    } else {
+      warn_once(cfgHash ^ 0xA1B2,
+                "albedo tint: lead op is not MODULATE; tint not carried to Remix");
+    }
+    return false;
+  }
+  if (!lead.usesArg2) {
+    warn_once(cfgHash ^ 0xA1B3, "albedo tint: lead MODULATE has one argument; tint not carried");
+    return false;
+  }
+  if (lead.usesArg0) {
+    warn_once(cfgHash ^ 0xA1B4,
+              "albedo tint: lead has a third (d) term, i.e. multiply-add; tint not carried");
+    return false;
+  }
+  if (lead.complementArg2) {
+    warn_once(cfgHash ^ 0xA1B5, "albedo tint: lead is the a*(1-c) form; tint not carried");
     return false;
   }
   const auto isTexture = [](const Operand& o) {
@@ -844,11 +882,27 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   };
   if (isTexture(lead.arg1) && isTint(lead.arg2)) {
     outTint = lead.arg2.constValue;
+    info_once(cfgHash ^ 0xA1BF, "albedo tint: claimed (texture x const)");
     return true;
   }
   if (isTexture(lead.arg2) && isTint(lead.arg1)) {
     outTint = lead.arg1.constValue;
+    info_once(cfgHash ^ 0xA1BF, "albedo tint: claimed (const x texture)");
     return true;
+  }
+  // Distinguish "the constant is white" from "this was never texture x const".
+  // The first means the material genuinely wants no tint; the second means the
+  // colour is arriving by a route this gate does not model - a vertex colour,
+  // or a lerp between two registers keyed by texture intensity - and is the
+  // case that would need the gate widening rather than a bug fixing.
+  const bool pairing = (isTexture(lead.arg1) && lead.arg2.isConst) ||
+                       (isTexture(lead.arg2) && lead.arg1.isConst);
+  if (pairing) {
+    info_once(cfgHash ^ 0xA1B6, "albedo tint: constant is white; no tint stage needed");
+  } else {
+    warn_once(cfgHash ^ 0xA1B7,
+              "albedo tint: lead is not texture x const (colour may come from a vertex colour or "
+              "a register lerp); tint not carried to Remix");
   }
   return false;
 }
@@ -1004,6 +1058,19 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                                 albedoStage.texMapId == stage.texMapId;
       const bool currentSafe = g_dx9.tssTemp || (d3dStage == 0 && !pass_reads(cp, D3DTA_CURRENT) &&
                                                  !pass_reads(ap, D3DTA_CURRENT));
+      // A claimed tint that never reaches a stage is the failure mode that made
+      // 389e4d5 look like a no-op in game: TFACTOR is spent up top, so the
+      // value is right and the wire is right, but nothing ever emits the stage
+      // Remix looks for. Each gate below says so distinctly.
+      if (hasHintTint) {
+        if (alreadyPlain) {
+          warn_once(0xA1C1, "albedo tint: claimed, but the hint stage was skipped because the "
+                            "lead already presents its texture plainly; tint never emitted");
+        } else if (!currentSafe) {
+          warn_once(0xA1C2, "albedo tint: claimed, but no TEMP register and CURRENT is not safe "
+                            "here; tint never emitted");
+        }
+      }
       if (!alreadyPlain && currentSafe) {
         if (IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId); tex != nullptr) {
           set_texture(d3dStage, tex);
@@ -1049,7 +1116,14 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
               set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_TEMP);
             }
             ++d3dStage;
+            info_once(0xA1CF, "albedo tint: stage emitted; Remix should tint this material");
+          } else if (hasHintTint) {
+            warn_once(0xA1C3, "albedo tint: claimed, but no stage budget left for it; "
+                              "tint never emitted");
           }
+        } else if (hasHintTint) {
+          warn_once(0xA1C4, "albedo tint: claimed, but the albedo texmap did not resolve; "
+                            "tint never emitted");
         }
       }
     }
