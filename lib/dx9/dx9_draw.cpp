@@ -559,12 +559,16 @@ struct DrawBatch {
   std::vector<uint16_t> indices;
   uint32_t vtxCount = 0;
   // Virtual world palette, snapshotted at append time. slotEntry maps a GX
-  // position-matrix slot to its palette entry for the slot's current
-  // contents; a reload with different bytes allocates a new entry, so the
-  // entry order (and with it the blend-index bytes) is deterministic.
+  // position-matrix slot to the palette entry created for the slot's current
+  // load generation; a reload (generation bump) allocates a new entry. Keying
+  // on the load SEQUENCE rather than the matrix values keeps the entry order
+  // - and with it the rewritten blend-index bytes and the merged mesh's hash
+  // - identical every frame even while the values animate. Value comparison
+  // is not stable: two bones' matrices can compare equal in one frame and
+  // not the next, shifting every later index and re-hashing the mesh.
   std::vector<D3DMATRIX> palette;
   std::array<int32_t, gx::MaxPnMtx> slotEntry{};
-  std::array<Mat3x4<float>, gx::MaxPnMtx> slotSnap{};
+  std::array<uint32_t, gx::MaxPnMtx> slotGen{};
 };
 
 DrawBatch g_batch;
@@ -634,20 +638,19 @@ uint64_t compute_batch_state_key() noexcept {
   return XXH3_64bits(buf.data(), buf.size());
 }
 
-// Palette entry for a GX slot's current contents, allocating on first use or
-// when the slot was reloaded with different bytes. Returns -1 when the
-// palette is full (caller flushes and retries).
+// Palette entry for a GX slot's current load generation, allocating on first
+// use or after a reload. Returns -1 when the palette is full (caller flushes
+// and retries).
 int32_t batch_slot_entry(uint32_t slot) noexcept {
-  const Mat3x4<float>& cur = g_gxState.pnMtx[slot].pos;
   int32_t entry = g_batch.slotEntry[slot];
-  if (entry >= 0 && std::memcmp(&g_batch.slotSnap[slot], &cur, sizeof(cur)) == 0) {
+  if (entry >= 0 && g_batch.slotGen[slot] == g_gxState.pnMtxGen[slot]) {
     return entry;
   }
   if (g_batch.palette.size() >= MaxWorldPalette) {
     return -1;
   }
-  std::memcpy(&g_batch.slotSnap[slot], &cur, sizeof(cur));
-  const D3DMATRIX m = to_d3d(cur);
+  g_batch.slotGen[slot] = g_gxState.pnMtxGen[slot];
+  const D3DMATRIX m = to_d3d(g_gxState.pnMtx[slot].pos);
   g_batch.palette.push_back(g_batch.haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
   entry = static_cast<int32_t>(g_batch.palette.size()) - 1;
   g_batch.slotEntry[slot] = entry;
@@ -665,7 +668,7 @@ uint32_t batch_new_entries_needed(const DecodedDraw& draw) noexcept {
     }
     seen[slot] = true;
     const int32_t entry = g_batch.slotEntry[slot];
-    if (entry < 0 || std::memcmp(&g_batch.slotSnap[slot], &g_gxState.pnMtx[slot].pos, sizeof(Mat3x4<float>)) != 0) {
+    if (entry < 0 || g_batch.slotGen[slot] != g_gxState.pnMtxGen[slot]) {
       ++needed;
     }
   }

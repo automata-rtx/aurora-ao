@@ -291,6 +291,10 @@ struct GXState {
     operator bool() const noexcept { return handle.operator bool(); }
   };
   std::array<PnMtx, MaxPnMtx> pnMtx;
+  // Bumped on every position-matrix load (XF write). Consumers that snapshot
+  // slot contents (the D3D9 draw batcher's palette) key on (slot, generation)
+  // so their allocation is deterministic regardless of the matrix values.
+  std::array<u32, MaxPnMtx> pnMtxGen{};
   u32 currentPnMtx;
   Mat4x4<float> proj;
   GXProjectionType projType; // for GXGetProjectionv

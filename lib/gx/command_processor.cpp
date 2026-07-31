@@ -253,6 +253,7 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
     for (u32 i = 0; i < len; i++) {
       flat[i] = read_f32(data + i * 4, bigEndian);
     }
+    g_gxState.pnMtxGen[mtxIdx]++;
     g_gxState.stateDirty = true;
   } else if (addr < 0x0F0) {
     // Texture matrices (0x078-0x0EF)
