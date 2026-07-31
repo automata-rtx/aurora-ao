@@ -31,9 +31,72 @@
 
 ---
 
-## Note — no aurora changes since 3.18 (2026-07-27, still true 2026-07-28)
+## Checkpoint 3.19 — matrix-palette draw batching: one mesh per character (2026-07-31)
 
-All work since has been on the dusklight and dxvk-remix sides: the kankyo
+**Why.** Under RTX Remix, a J3D character was dozens of meshes. Each shape
+packet loads its handful of GX position matrices and draws, and the backend
+submitted every GX draw command as its own `DrawIndexedPrimitiveUP` — so Remix
+hashed every packet separately (the geometry-hash debug view showed Wolf Link
+as a patchwork of ~54 colours). That breaks anything that needs "the
+character" to be one stable piece of geometry: per-asset replacement, and the
+dxvk-remix fork's surface-hair growth, which was scattering strands per-packet
+against per-packet bone palettes.
+
+**What.** `dx9_draw.cpp` now accumulates consecutive matrix-palette draws
+(`hasPnMtxIdx`) whose pipeline state is unchanged into a single indexed
+triangle-list draw against a **virtual world-matrix palette of up to 256
+entries** — the palette depth Remix's GPU skinning consumes
+(`SkinningArgs::bones[256]`). Details:
+
+- **State key.** A draw joins the open batch only if an xxh3 over everything
+  the draw path reads from `g_gxState` (projection, fog, cull/blend/depth,
+  alpha compare, TEV stages + registers + konsts + swap tables, texgen +
+  texture matrices, indirect stages, polygon offset, and the loaded texture
+  object of every referenced map) matches, plus an exact vertex-layout match
+  (FVF / stride / uv-slot assignment). Position matrices are excluded — they
+  are what the batch virtualizes. A missed field would merge draws that render
+  differently, so when in doubt a field is included; a superfluous field only
+  splits batches.
+- **Palette.** Per-vertex blend indices are rewritten from the GX slot to a
+  palette entry allocated per (slot, loaded value) in first-use order, so the
+  emitted vertex bytes are deterministic and the merged mesh keeps **one
+  stable rest-pose hash** frame over frame. Slot reloads with identical bytes
+  reuse their entry, so packets sharing bones don't bloat the palette.
+- **Flushes.** Everything else that touches the device flushes the open batch
+  first: `end_frame`, `copy_tex`, offscreen begin/end, the viewport/scissor
+  relays, `set_camera_view`, `set_skinning`/`clear_skinning`, and any
+  non-batchable draw. Device recreation discards without drawing.
+- **Split points.** A pipeline-state change flushes — which is exactly the
+  wanted granularity: accessories with their own material (eye decals, the
+  chained paw) stay separate meshes, while every same-material packet run
+  (the pelt) merges into one.
+- **Caps.** Palette > 256 or > 65535 vertices cycles the batch (a second
+  stable mesh; in practice one character never hits either). The palette
+  deliberately exceeds `D3DCAPS9::MaxVertexBlendMatrixIndex`, like the
+  GXSetSkinning path: Remix reads the transform state directly, and only raw
+  D3D9 rasterization mis-skins past the cap (warned once).
+  `AURORA_DX9_NO_BATCH=1` disables batching for raw-D3D9 comparison.
+
+**Remix side effects.** The merged draw carries the same 1.0-weight blend
+stream as before; `finalizeSkinningData` keeps its multi-bone path
+(object == world space, palette read from `WORLDMATRIX(0..n)`), skinning runs
+on Remix's GPU against the full palette, and motion vectors still come from
+the per-frame bone updates — just one mesh instead of dozens.
+
+**Verification state:** all five `lib/dx9/*.cpp` TUs pass
+`x86_64-w64-mingw32-g++ -std=c++20 -fsyntax-only -DAURORA_ENABLE_D3D9
+-DTARGET_PC` against real MinGW d3d9/windows headers and real absl/fmt/xxhash
+(Dawn/SDL3 shimmed). Not yet run in game — first bring-up should check:
+(a) characters render identically to pre-batch (rasterization is
+state-identical by construction), (b) the geometry-hash debug view shows one
+colour per material run on Wolf Link, (c) dxvk-remix surface hair grows one
+coat across the merged mesh.
+
+---
+
+## Note — no aurora changes 3.18 → 3.19 (2026-07-27..30)
+
+All work in that window was on the dusklight and dxvk-remix sides: the kankyo
 bridge, the Remix-hosted settings tab and overlay, the bloom fidelity pass, the
 atmosphere (fog + sky + sky-light from one medium), warp, the time-of-day
 scrub/freeze, and several game-side switches (frustum culling, sky billboards,
@@ -42,9 +105,8 @@ here is documentation only, so a stale pin costs nothing but is bumped anyway
 to keep the repos honest.
 
 **If you are looking for the current state of the project as a whole, it is not
-in this file.** This repo has been quiet for two days. Go to
-`dusklight-ao/docs/kankyo-remix.md` §"Picking this up cold" and §"Test session
-playbook".
+in this file.** Go to `dusklight-ao/docs/kankyo-remix.md` §"Picking this up
+cold" and §"Test session playbook".
 
 Two aurora behaviours were re-examined during that work and both were found
 correct, recorded here so they are not re-investigated:

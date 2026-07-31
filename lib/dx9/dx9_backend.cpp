@@ -194,6 +194,7 @@ static bool create_device_for(uint32_t width, uint32_t height) noexcept {
 // a texture-cache rebuild and a Remix renderer restart, but resizes are rare
 // and user-driven.
 static bool recreate_device(uint32_t width, uint32_t height) noexcept {
+  discard_draw_batch();
   if (g_dx9.dev != nullptr) {
     if (g_dx9.inOffscreen) {
       end_offscreen();
@@ -377,6 +378,7 @@ void end_frame() noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
+  flush_draw_batch();
   if (g_dx9.inOffscreen) {
     // Unbalanced GXCreateFrameBuffer; make sure the frame presents the
     // backbuffer and the next Clear hits it.
@@ -456,6 +458,7 @@ void set_render_viewport() noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
+  flush_draw_batch();
   const auto& vp = g_gxState.renderViewport;
   const float maxW = static_cast<float>(current_target_width());
   const float maxH = static_cast<float>(current_target_height());
@@ -480,6 +483,7 @@ void set_render_scissor() noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
+  flush_draw_batch();
   const auto& sc = g_gxState.renderScissor;
   const auto maxW = static_cast<int32_t>(current_target_width());
   const auto maxH = static_cast<int32_t>(current_target_height());
@@ -521,6 +525,7 @@ void copy_tex(const void* dest, bool clear) noexcept {
   if (g_dx9.dev == nullptr) {
     return;
   }
+  flush_draw_batch();
 
   const auto srcRect = gx::map_logical_scissor(g_gxState.texCopySrc);
   const bool colorCopy = !gx::is_depth_format(g_gxState.texCopyFmt);
@@ -586,6 +591,7 @@ void begin_offscreen(uint32_t width, uint32_t height) noexcept {
   if (g_dx9.dev == nullptr || g_dx9.inOffscreen) {
     return;
   }
+  flush_draw_batch();
   OffscreenTarget* target = texture_get_offscreen(std::max(width, 1u), std::max(height, 1u));
   if (target == nullptr) {
     return;
@@ -609,6 +615,7 @@ void end_offscreen() noexcept {
   if (g_dx9.dev == nullptr || !g_dx9.inOffscreen) {
     return;
   }
+  flush_draw_batch();
   g_dx9.dev->SetRenderTarget(0, s_backbufferColor);
   g_dx9.dev->SetDepthStencilSurface(s_backbufferDepth);
   g_dx9.inOffscreen = false;
@@ -627,6 +634,7 @@ bool in_offscreen() noexcept { return g_dx9.inOffscreen; }
 
 void set_skinning(const void* palette, uint32_t jointCount, const void* influences, uint32_t vtxCount,
                   uint32_t influenceCount) noexcept {
+  flush_draw_batch();
   g_skin.palette = static_cast<const float*>(palette);
   g_skin.influences = static_cast<const uint8_t*>(influences);
   g_skin.jointCount = jointCount;
@@ -634,9 +642,13 @@ void set_skinning(const void* palette, uint32_t jointCount, const void* influenc
   g_skin.influenceCount = std::min<uint32_t>(influenceCount, 4);
 }
 
-void clear_skinning() noexcept { g_skin = {}; }
+void clear_skinning() noexcept {
+  flush_draw_batch();
+  g_skin = {};
+}
 
 void set_camera_view(const float* mtx3x4) noexcept {
+  flush_draw_batch();
   const D3DMATRIX view = to_d3d_3x4(mtx3x4);
   D3DMATRIX inv;
   if (mtx_affine_inverse(view, inv)) {

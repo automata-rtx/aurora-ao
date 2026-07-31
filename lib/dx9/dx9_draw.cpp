@@ -7,7 +7,10 @@
 #include "dx9_texture.hpp"
 #include "dx9_vertex.hpp"
 
+#include <xxhash.h>
+
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 namespace aurora::dx9 {
@@ -512,6 +515,316 @@ void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32
 
 bool can_draw() noexcept { return g_dx9.dev != nullptr && g_dx9.inScene; }
 
+// ---------------------------------------------------------------------------
+// Draw batching.
+//
+// A J3D character reaches this backend as dozens of shape-packet draws: each
+// packet loads a handful of GX position matrices and draws its triangles, and
+// between the packets of one material nothing changes except those matrix
+// loads. Submitted one by one, every packet is its own mesh to RTX Remix -
+// its own geometry hash, its own tiny bone palette - which breaks per-asset
+// replacement and anything else that needs "the character" to be one stable
+// piece of geometry.
+//
+// The batcher accumulates consecutive matrix-palette draws whose pipeline
+// state is unchanged into a single indexed triangle-list draw against a
+// virtual world-matrix palette of up to MaxWorldPalette (256) entries -
+// exactly the palette depth RTX Remix's GPU skinning consumes
+// (SkinningArgs::bones[256]). Per-vertex blend indices are rewritten from the
+// draw's GX slot to a palette entry allocated per (slot, loaded value), in
+// first-use order, so the emitted vertex bytes are identical every frame and
+// the merged mesh keeps one stable hash. Accessories with their own material
+// (eye decals, a chained paw) change pipeline state, which flushes the batch
+// and keeps them separate meshes - the desired split.
+//
+// The palette deliberately exceeds D3DCAPS9::MaxVertexBlendMatrixIndex, like
+// the GXSetSkinning path above: Remix reads the transform state directly and
+// skins on the GPU, so only raw D3D9 rasterization mis-skins past the cap
+// (warned once). Set AURORA_DX9_NO_BATCH=1 to disable batching when debugging
+// raw D3D9 output.
+// ---------------------------------------------------------------------------
+
+struct DrawBatch {
+  bool open = false;
+  uint64_t stateKey = 0;
+  bool haveCam = false;
+  // Layout of the accumulated vertices; draws must match exactly to append.
+  DWORD fvf = 0;
+  uint32_t stride = 0;
+  uint32_t blendIndexOffset = 0;
+  uint8_t uvCount = 0;
+  std::array<int8_t, 8> texSlot{};
+  // Accumulated geometry.
+  std::vector<uint8_t> verts;
+  std::vector<uint16_t> indices;
+  uint32_t vtxCount = 0;
+  // Virtual world palette, snapshotted at append time. slotEntry maps a GX
+  // position-matrix slot to its palette entry for the slot's current
+  // contents; a reload with different bytes allocates a new entry, so the
+  // entry order (and with it the blend-index bytes) is deterministic.
+  std::vector<D3DMATRIX> palette;
+  std::array<int32_t, gx::MaxPnMtx> slotEntry{};
+  std::array<Mat3x4<float>, gx::MaxPnMtx> slotSnap{};
+};
+
+DrawBatch g_batch;
+
+bool batching_enabled() noexcept {
+  static const bool disabled = [] {
+    const char* v = std::getenv("AURORA_DX9_NO_BATCH");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  return !disabled;
+}
+
+// Hash of everything the draw path reads from g_gxState except the position
+// matrices (virtualized into the batch palette) and data already baked into
+// the decoded vertex bytes (vertex arrays, channel material colors). Two
+// draws with equal keys configure the device identically, so they can share
+// one batch. A missed field here would merge draws that render differently -
+// when in doubt, include it; a superfluous field only splits batches.
+uint64_t compute_batch_state_key() noexcept {
+  static thread_local std::vector<uint8_t> buf;
+  buf.clear();
+  const auto put = [&](const void* p, size_t n) {
+    const auto* b = static_cast<const uint8_t*>(p);
+    buf.insert(buf.end(), b, b + n);
+  };
+  const auto put_u32 = [&](uint32_t v) { put(&v, sizeof(v)); };
+
+  put(&g_gxState.proj, sizeof(g_gxState.proj));
+  put_u32(static_cast<uint32_t>(g_gxState.projType));
+  put(&g_gxState.fog, sizeof(g_gxState.fog));
+  put_u32(static_cast<uint32_t>(g_gxState.cullMode));
+  put_u32(static_cast<uint32_t>(g_gxState.blendMode));
+  put_u32(static_cast<uint32_t>(g_gxState.blendFacSrc));
+  put_u32(static_cast<uint32_t>(g_gxState.blendFacDst));
+  put_u32(static_cast<uint32_t>(g_gxState.blendOp));
+  put_u32(static_cast<uint32_t>(g_gxState.depthFunc));
+  put_u32(static_cast<uint32_t>(g_gxState.depthCompare) | static_cast<uint32_t>(g_gxState.depthUpdate) << 1 |
+          static_cast<uint32_t>(g_gxState.colorUpdate) << 2 | static_cast<uint32_t>(g_gxState.alphaUpdate) << 3 |
+          static_cast<uint32_t>(g_gxState.skinningActive) << 4);
+  put_u32(g_gxState.dstAlpha);
+  put(&g_gxState.alphaCompare, sizeof(g_gxState.alphaCompare));
+  put(&g_gxState.colorRegs, sizeof(g_gxState.colorRegs));
+  put(&g_gxState.kcolors, sizeof(g_gxState.kcolors));
+  put(&g_gxState.tevSwapTable, sizeof(g_gxState.tevSwapTable));
+  put(&g_gxState.tevStages, sizeof(g_gxState.tevStages));
+  put_u32(g_gxState.numTevStages);
+  put(&g_gxState.tcgs, sizeof(g_gxState.tcgs));
+  put(&g_gxState.texCoordScales, sizeof(g_gxState.texCoordScales));
+  put_u32(g_gxState.numTexGens);
+  put(&g_gxState.indStages, sizeof(g_gxState.indStages));
+  put(&g_gxState.indTexMtxs, sizeof(g_gxState.indTexMtxs));
+  put_u32(g_gxState.numIndStages);
+  put(&g_gxState.texMtxs, sizeof(g_gxState.texMtxs));
+  put(&g_gxState.ptTexMtxs, sizeof(g_gxState.ptTexMtxs));
+  put(&g_gxState.frontOffset, sizeof(float) * 5); // front/back offset+scale, clamp
+
+  // Bound texture identity for every referenced map: the loaded object's raw
+  // registers cover the data pointer, format, tlut and sampler state.
+  for (uint32_t s = 0; s < g_gxState.numTevStages && s < gx::MaxTevStages; ++s) {
+    const auto mapId = static_cast<int32_t>(g_gxState.tevStages[s].texMapId);
+    put_u32(static_cast<uint32_t>(mapId));
+    if (mapId >= 0 && mapId < static_cast<int32_t>(gx::MaxTextures)) {
+      put(&g_gxState.loadedTextures[mapId], sizeof(g_gxState.loadedTextures[mapId]));
+    }
+  }
+
+  return XXH3_64bits(buf.data(), buf.size());
+}
+
+// Palette entry for a GX slot's current contents, allocating on first use or
+// when the slot was reloaded with different bytes. Returns -1 when the
+// palette is full (caller flushes and retries).
+int32_t batch_slot_entry(uint32_t slot) noexcept {
+  const Mat3x4<float>& cur = g_gxState.pnMtx[slot].pos;
+  int32_t entry = g_batch.slotEntry[slot];
+  if (entry >= 0 && std::memcmp(&g_batch.slotSnap[slot], &cur, sizeof(cur)) == 0) {
+    return entry;
+  }
+  if (g_batch.palette.size() >= MaxWorldPalette) {
+    return -1;
+  }
+  std::memcpy(&g_batch.slotSnap[slot], &cur, sizeof(cur));
+  const D3DMATRIX m = to_d3d(cur);
+  g_batch.palette.push_back(g_batch.haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
+  entry = static_cast<int32_t>(g_batch.palette.size()) - 1;
+  g_batch.slotEntry[slot] = entry;
+  return entry;
+}
+
+// Counts the palette entries this draw would newly allocate.
+uint32_t batch_new_entries_needed(const DecodedDraw& draw) noexcept {
+  std::array<bool, gx::MaxPnMtx> seen{};
+  uint32_t needed = 0;
+  for (uint32_t v = 0; v < draw.vtxCount; ++v) {
+    const uint8_t slot = draw.pnMtxPerVertex[v] < gx::MaxPnMtx ? draw.pnMtxPerVertex[v] : 0;
+    if (seen[slot]) {
+      continue;
+    }
+    seen[slot] = true;
+    const int32_t entry = g_batch.slotEntry[slot];
+    if (entry < 0 || std::memcmp(&g_batch.slotSnap[slot], &g_gxState.pnMtx[slot].pos, sizeof(Mat3x4<float>)) != 0) {
+      ++needed;
+    }
+  }
+  return needed;
+}
+
+void open_batch(uint64_t stateKey, const DecodedDraw& draw) noexcept {
+  g_batch.open = true;
+  g_batch.stateKey = stateKey;
+  g_batch.haveCam = g_camera.valid && g_gxState.projType != GX_ORTHOGRAPHIC;
+  g_batch.fvf = draw.fvf;
+  g_batch.stride = draw.stride;
+  g_batch.blendIndexOffset = draw.blendIndexOffset;
+  g_batch.uvCount = draw.uvCount;
+  g_batch.texSlot = draw.texSlot;
+  g_batch.verts.clear();
+  g_batch.indices.clear();
+  g_batch.vtxCount = 0;
+  g_batch.palette.clear();
+  g_batch.slotEntry.fill(-1);
+}
+
+bool batch_compatible(uint64_t stateKey, const DecodedDraw& draw) noexcept {
+  return g_batch.stateKey == stateKey && g_batch.fvf == draw.fvf && g_batch.stride == draw.stride &&
+         g_batch.blendIndexOffset == draw.blendIndexOffset && g_batch.uvCount == draw.uvCount &&
+         g_batch.texSlot == draw.texSlot;
+}
+
+// Projection/view/blend-mode setup for a batch: apply_transforms minus the
+// world matrices, which the flush uploads from the virtual palette.
+void apply_batch_transforms() noexcept {
+  set_proj_matrix(to_d3d_proj(g_gxState.proj));
+  // A single model-view inverse does not exist for palette draws (docs #7).
+  g_worldViewInv.valid = false;
+  const D3DMATRIX identity{{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
+  set_view_matrix(g_batch.haveCam ? g_camera.view : identity);
+  set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
+  set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
+}
+
+// Appends a decoded matrix-palette draw (pre-triangulated to a list) to the
+// open batch, opening or cycling the batch as needed. Returns true when the
+// draw was consumed (including "culled entirely").
+bool batch_append(const DecodedDraw& draw, const uint16_t* indices, uint32_t indexCount) noexcept {
+  const uint64_t stateKey = compute_batch_state_key();
+
+  if (g_batch.open && !batch_compatible(stateKey, draw)) {
+    flush_draw_batch();
+  }
+
+  if (!g_batch.open) {
+    if (!apply_pixel_state()) {
+      // GX_CULL_ALL: the draw is skipped entirely, same as the direct path.
+      return true;
+    }
+    open_batch(stateKey, draw);
+    apply_batch_transforms();
+    apply_tev(draw);
+  }
+
+  // Cycle the batch when this draw would not fit; the device state is
+  // untouched by a flush (it only uploads world matrices and draws), so the
+  // new batch continues under the state applied when the run began.
+  if (g_batch.vtxCount + draw.vtxCount > 0xFFFFu ||
+      g_batch.palette.size() + batch_new_entries_needed(draw) > MaxWorldPalette) {
+    flush_draw_batch();
+    open_batch(stateKey, draw);
+  }
+
+  const auto base = static_cast<uint32_t>(g_batch.vtxCount);
+  g_batch.verts.insert(g_batch.verts.end(), draw.verts, draw.verts + static_cast<size_t>(draw.vtxCount) * draw.stride);
+
+  // Rewrite every vertex's blend index from its GX slot to the batch palette.
+  uint8_t* dstBase = g_batch.verts.data() + static_cast<size_t>(base) * draw.stride;
+  for (uint32_t v = 0; v < draw.vtxCount; ++v) {
+    const uint8_t slot = draw.pnMtxPerVertex[v] < gx::MaxPnMtx ? draw.pnMtxPerVertex[v] : 0;
+    const int32_t entry = batch_slot_entry(slot);
+    if (entry < 0) {
+      // Cannot happen: capacity was reserved above. Keep the draw consistent
+      // rather than crash.
+      warn_once(0xB100, "draw batch: palette overflow after reservation");
+      break;
+    }
+    const auto index = static_cast<uint32_t>(entry);
+    std::memcpy(dstBase + static_cast<size_t>(v) * draw.stride + draw.blendIndexOffset, &index, 4);
+  }
+
+  for (uint32_t i = 0; i < indexCount; ++i) {
+    g_batch.indices.push_back(static_cast<uint16_t>(base + indices[i]));
+  }
+  g_batch.vtxCount += draw.vtxCount;
+  return true;
+}
+
+// Routes a batchable draw into the batch. Returns false when the draw is not
+// batchable and must take the direct path (which flushes first).
+bool try_batch_draw(const DecodedDraw& draw, GXPrimitive prim) noexcept {
+  if (!batching_enabled() || !draw.hasPnMtxIdx || draw.pnMtxPerVertex == nullptr) {
+    return false;
+  }
+  switch (prim) {
+  case GX_TRIANGLES:
+  case GX_QUADS:
+  case GX_TRIANGLESTRIP:
+  case GX_TRIANGLEFAN:
+    break;
+  default:
+    return false;
+  }
+  if (prim == GX_TRIANGLES) {
+    t_indexScratch.clear();
+    for (uint16_t v = 0; v + 2 < draw.vtxCount; v += 3) {
+      t_indexScratch.insert(t_indexScratch.end(), {v, static_cast<uint16_t>(v + 1), static_cast<uint16_t>(v + 2)});
+    }
+  } else {
+    build_indices(prim, static_cast<uint16_t>(draw.vtxCount), t_indexScratch);
+  }
+  if (t_indexScratch.size() < 3) {
+    return true; // degenerate; consumed with nothing to draw
+  }
+  return batch_append(draw, t_indexScratch.data(), static_cast<uint32_t>(t_indexScratch.size()));
+}
+
+} // namespace
+
+void flush_draw_batch() noexcept {
+  if (!g_batch.open) {
+    return;
+  }
+  g_batch.open = false;
+  if (g_batch.vtxCount >= 3 && g_batch.indices.size() >= 3) {
+    if (g_batch.palette.size() > static_cast<size_t>(g_dx9.caps.MaxVertexBlendMatrixIndex) + 1) {
+      info_once(0xB000, "draw batch palette exceeds device MaxVertexBlendMatrixIndex (fine under RTX Remix, "
+                        "mis-skins under raw D3D9; set AURORA_DX9_NO_BATCH=1 to compare)");
+    }
+    for (size_t i = 0; i < g_batch.palette.size(); ++i) {
+      set_world_matrix(static_cast<uint32_t>(i), g_batch.palette[i]);
+    }
+    set_fvf(g_batch.fvf);
+    g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, g_batch.vtxCount,
+                                      static_cast<UINT>(g_batch.indices.size() / 3), g_batch.indices.data(),
+                                      D3DFMT_INDEX16, g_batch.verts.data(), g_batch.stride);
+  }
+  g_batch.verts.clear();
+  g_batch.indices.clear();
+  g_batch.palette.clear();
+  g_batch.vtxCount = 0;
+}
+
+void discard_draw_batch() noexcept {
+  g_batch.open = false;
+  g_batch.verts.clear();
+  g_batch.indices.clear();
+  g_batch.palette.clear();
+  g_batch.vtxCount = 0;
+}
+
+namespace {
+
 void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
   set_fvf(draw.fvf);
 
@@ -566,6 +879,10 @@ void draw_prim(GXPrimitive prim, GXVtxFmt fmt, uint16_t vtxCount, const uint8_t*
   if (!decode_draw(fmt, vtxCount, data, vtxSize, bigEndian, draw)) {
     return;
   }
+  if (try_batch_draw(draw, prim)) {
+    return;
+  }
+  flush_draw_batch();
   if (!apply_pixel_state()) {
     return;
   }
@@ -599,6 +916,11 @@ void draw_indexed(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* vtxData, uint3
   if (!decode_draw(fmt, vtxCount, vtxData, vtxSize, bigEndian, draw)) {
     return;
   }
+  if (batching_enabled() && draw.hasPnMtxIdx && draw.pnMtxPerVertex != nullptr) {
+    batch_append(draw, indices, indexCount);
+    return;
+  }
+  flush_draw_batch();
   if (!apply_pixel_state()) {
     return;
   }

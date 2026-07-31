@@ -312,6 +312,18 @@ void warn_once(uint64_t key, const char* what) noexcept;
 // Same de-duplication, logged at info level (diagnostics, not problems).
 void info_once(uint64_t key, const char* what) noexcept;
 
+// ---------------------------------------------------------------------------
+// Draw batching (dx9_draw.cpp): consecutive matrix-palette draws whose
+// pipeline state is unchanged accumulate into one D3D9 draw against a
+// virtual world-matrix palette, so a GX character reaches RTX Remix as one
+// mesh with one stable rest-pose hash instead of dozens of shape-packet
+// draws. Every other device operation must flush the open batch first;
+// discard drops it without drawing (device loss/recreation).
+// ---------------------------------------------------------------------------
+
+void flush_draw_batch() noexcept;
+void discard_draw_batch() noexcept;
+
 } // namespace aurora::dx9
 
 #endif // AURORA_ENABLE_D3D9
