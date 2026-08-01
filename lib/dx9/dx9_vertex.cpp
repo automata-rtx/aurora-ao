@@ -267,6 +267,49 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   uint8_t* dstBase = t_scratch.data();
   out.verts = dstBase;
 
+  // Rest-space rewrite (GX_AURORA_SET_POS_MTX_REST, see dx9_internal.hpp):
+  // positions and normals of vertices transformed by an annotated position
+  // matrix are rewritten from their storage space into the model's rest
+  // space here, and the world-matrix uploads compensate with the inverse
+  // (slot_world_matrix). Rasterization is unchanged; the emitted bytes
+  // become one coherent rest-pose mesh. Skinned draws (GXSetSkinning) carry
+  // model-space vertices already and are excluded.
+  struct SlotRest {
+    const float* r = nullptr; // 12 floats, GX row-major 3x4
+    float n[9];               // inverse-transpose of the 3x3, for normals
+  };
+  std::array<SlotRest, gx::MaxPnMtx> slotRest{};
+  const uint32_t currentSlot = g_gxState.currentPnMtx < gx::MaxPnMtx ? g_gxState.currentPnMtx : 0;
+  bool anyRest = false;
+  if (!out.skinned) {
+    for (uint32_t slot = 0; slot < gx::MaxPnMtx; ++slot) {
+      if (!out.hasPnMtxIdx && slot != currentSlot) {
+        continue;
+      }
+      const float* r = slot_rest_matrix(slot);
+      if (r == nullptr) {
+        continue;
+      }
+      auto& e = slotRest[slot];
+      e.r = r;
+      // Normals transform by the inverse-transpose: cofactor matrix / det
+      // (slot_rest_matrix rejected a near-zero determinant already).
+      const float det = r[0] * (r[5] * r[10] - r[6] * r[9]) - r[1] * (r[4] * r[10] - r[6] * r[8]) +
+                        r[2] * (r[4] * r[9] - r[5] * r[8]);
+      const float inv = 1.0f / det;
+      e.n[0] = (r[5] * r[10] - r[6] * r[9]) * inv;
+      e.n[1] = (r[6] * r[8] - r[4] * r[10]) * inv;
+      e.n[2] = (r[4] * r[9] - r[5] * r[8]) * inv;
+      e.n[3] = (r[2] * r[9] - r[1] * r[10]) * inv;
+      e.n[4] = (r[0] * r[10] - r[2] * r[8]) * inv;
+      e.n[5] = (r[1] * r[8] - r[0] * r[9]) * inv;
+      e.n[6] = (r[1] * r[6] - r[2] * r[5]) * inv;
+      e.n[7] = (r[2] * r[4] - r[0] * r[6]) * inv;
+      e.n[8] = (r[0] * r[5] - r[1] * r[4]) * inv;
+      anyRest = true;
+    }
+  }
+
   // GX position-matrix slot -> D3D9 blend index, assigned in first-use order
   // so a draw only ever needs as many blend indices as it has distinct
   // matrices (see DecodedDraw::pnMtxSlots).
@@ -399,6 +442,38 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
       }
       const uint32_t indices = static_cast<uint32_t>(pnMtxRemap[slot]);
       std::memcpy(dst + indicesOffset, &indices, 4);
+    }
+
+    if (anyRest) {
+      const uint32_t restSlot = out.hasPnMtxIdx ? (pnmtxidx < gx::MaxPnMtx ? pnmtxidx : 0) : currentSlot;
+      if (const float* r = slotRest[restSlot].r) {
+        float p[3];
+        std::memcpy(p, dst, 12);
+        const float rp[3] = {
+            r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3],
+            r[4] * p[0] + r[5] * p[1] + r[6] * p[2] + r[7],
+            r[8] * p[0] + r[9] * p[1] + r[10] * p[2] + r[11],
+        };
+        std::memcpy(dst, rp, 12);
+        if (out.hasNormal) {
+          const float* n = slotRest[restSlot].n;
+          float nrm[3];
+          std::memcpy(nrm, dst + normalOffset, 12);
+          float rn[3] = {
+              n[0] * nrm[0] + n[1] * nrm[1] + n[2] * nrm[2],
+              n[3] * nrm[0] + n[4] * nrm[1] + n[5] * nrm[2],
+              n[6] * nrm[0] + n[7] * nrm[1] + n[8] * nrm[2],
+          };
+          const float lenSq = rn[0] * rn[0] + rn[1] * rn[1] + rn[2] * rn[2];
+          if (lenSq > 1e-12f) {
+            const float rcp = 1.0f / std::sqrt(lenSq);
+            rn[0] *= rcp;
+            rn[1] *= rcp;
+            rn[2] *= rcp;
+          }
+          std::memcpy(dst + normalOffset, rn, 12);
+        }
+      }
     }
   }
 

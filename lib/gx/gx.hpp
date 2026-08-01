@@ -295,6 +295,15 @@ struct GXState {
   // slot contents (the D3D9 draw batcher's palette) key on (slot, generation)
   // so their allocation is deterministic regardless of the matrix values.
   std::array<u32, MaxPnMtx> pnMtxGen{};
+  // Rest-space annotations (aurora extension GX_AURORA_SET_POS_MTX_REST):
+  // the game may declare, right after loading a position matrix, the
+  // constant transform from the storage space of the vertices drawn with it
+  // to the model's rest space (J3D keeps single-joint shapes joint-local and
+  // enveloped shapes in model space - mixed within one character). Only the
+  // D3D9 backend consumes it (vertex rewrite + world-matrix compensation);
+  // cleared by every load of the slot.
+  std::array<Mat3x4<float>, MaxPnMtx> pnMtxRest;
+  std::array<bool, MaxPnMtx> pnMtxRestValid{};
   u32 currentPnMtx;
   Mat4x4<float> proj;
   GXProjectionType projType; // for GXGetProjectionv

@@ -353,15 +353,14 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     // cap - it reads the transform state directly and skins on the GPU - so
     // this only ever showed up in raw D3D9.
     for (uint32_t i = 0; i < draw.pnMtxCount; ++i) {
-      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[draw.pnMtxSlots[i]].pos);
-      set_world_matrix(i, haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
+      set_world_matrix(i, slot_world_matrix(draw.pnMtxSlots[i], haveCam));
     }
     set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else {
     const D3DMATRIX modelView = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);
-    set_world_matrix(0, haveCam ? mtx_multiply(modelView, g_camera.viewInv) : modelView);
+    set_world_matrix(0, slot_world_matrix(g_gxState.currentPnMtx, haveCam));
     set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
@@ -370,7 +369,11 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     // matrix with the model-view inverse restores GX semantics (projected
     // shadows/light shafts, env maps). Only well-defined for rigid draws.
     // Always derived from the COMBINED model->view - D3D's camera-space
-    // texgen input is WORLD*VIEW, which equals pnMtx on both paths.
+    // texgen input is WORLD*VIEW, which equals pnMtx on both paths. That
+    // holds under a rest-space annotation too: WORLD*VIEW applied to the
+    // rewritten vertex still lands on the GX view position, and GX texgen
+    // reads the ORIGINAL stream coordinates - which inverse(pnMtx) of the
+    // view position reproduces - so the inverse stays uncompensated.
     if (mtx_affine_inverse(modelView, g_worldViewInv.full)) {
       g_worldViewInv.rotation = g_worldViewInv.full;
       g_worldViewInv.rotation.m[3][0] = 0.f;
@@ -504,8 +507,7 @@ void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32
       break;
     }
     for (uint32_t i = 0; i < used; ++i) {
-      const D3DMATRIX m = to_d3d(g_gxState.pnMtx[groupSlots[i]].pos);
-      set_world_matrix(i, g_camera.valid ? mtx_multiply(m, g_camera.viewInv) : m);
+      set_world_matrix(i, slot_world_matrix(groupSlots[i], g_camera.valid));
     }
     g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(s_verts.size() / draw.stride),
                                       static_cast<UINT>(s_indices.size() / 3), s_indices.data(), D3DFMT_INDEX16,
@@ -650,8 +652,10 @@ int32_t batch_slot_entry(uint32_t slot) noexcept {
     return -1;
   }
   g_batch.slotGen[slot] = g_gxState.pnMtxGen[slot];
-  const D3DMATRIX m = to_d3d(g_gxState.pnMtx[slot].pos);
-  g_batch.palette.push_back(g_batch.haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
+  // Rest-compensated (slot_world_matrix): the annotation is snapshotted
+  // together with the matrix value - the game re-announces it after every
+  // load, so it is coherent with this (slot, generation) pair.
+  g_batch.palette.push_back(slot_world_matrix(slot, g_batch.haveCam));
   entry = static_cast<int32_t>(g_batch.palette.size()) - 1;
   g_batch.slotEntry[slot] = entry;
   return entry;

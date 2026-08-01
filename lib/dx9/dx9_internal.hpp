@@ -279,6 +279,51 @@ inline bool mtx_affine_inverse(const D3DMATRIX& m, D3DMATRIX& out) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// Rest-space rewrite (aurora extension GX_AURORA_SET_POS_MTX_REST).
+//
+// J3D stores a single-joint shape's vertices in that joint's local frame and
+// an enveloped shape's vertices in model (bind) space - one character mixes
+// both. The game annotates each position-matrix load with the constant
+// transform from the loaded vertices' storage space to the model's rest
+// space; decode_draw rewrites positions/normals by it, and every world
+// matrix upload compensates with its inverse via slot_world_matrix. The
+// rendered result is unchanged, but the emitted vertex bytes - what the
+// draw batcher merges, RTX Remix hashes, and captures export - form one
+// coherent rest-pose mesh.
+// ---------------------------------------------------------------------------
+
+// Rest matrix for a GX position-matrix slot (12 floats, GX row-major 3x4),
+// or nullptr when the slot has no annotation. Rejects degenerate matrices so
+// the vertex rewrite and the matrix compensation always make the same call.
+inline const float* slot_rest_matrix(uint32_t slot) noexcept {
+  if (slot >= gx::MaxPnMtx || !g_gxState.pnMtxRestValid[slot]) {
+    return nullptr;
+  }
+  const auto* r = reinterpret_cast<const float*>(&g_gxState.pnMtxRest[slot]);
+  const float det = r[0] * (r[5] * r[10] - r[6] * r[9]) - r[1] * (r[4] * r[10] - r[6] * r[8]) +
+                    r[2] * (r[4] * r[9] - r[5] * r[8]);
+  if (det > -1e-12f && det < 1e-12f) {
+    return nullptr;
+  }
+  return r;
+}
+
+// World matrix for a GX position-matrix slot: the loaded pnMtx, premultiplied
+// by the inverse of the slot's rest annotation when one is active (vertices
+// were rewritten into rest space at decode), then split against the camera
+// when requested.
+inline D3DMATRIX slot_world_matrix(uint32_t slot, bool applyCamera) noexcept {
+  D3DMATRIX m = to_d3d(g_gxState.pnMtx[slot].pos);
+  if (const float* rest = slot_rest_matrix(slot)) {
+    D3DMATRIX restInv;
+    if (mtx_affine_inverse(to_d3d_3x4(rest), restInv)) {
+      m = mtx_multiply(restInv, m);
+    }
+  }
+  return applyCamera ? mtx_multiply(m, g_camera.viewInv) : m;
+}
+
+// ---------------------------------------------------------------------------
 // Skinning extension state (raw host pointers; see dx9.hpp set_skinning).
 // ---------------------------------------------------------------------------
 

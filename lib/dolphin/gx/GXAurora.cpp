@@ -101,6 +101,15 @@ void GXSetViewMtx(const void* mtx) {
   }
 }
 
+void GXSetPosMtxRest(const void* restMtx, u32 id) {
+  const f32* values = reinterpret_cast<const f32*>(restMtx);
+  GX_WRITE_AURORA(GX_AURORA_SET_POS_MTX_REST);
+  GX_WRITE_U32(id);
+  for (int i = 0; i < 12; ++i) {
+    GX_WRITE_F32(values[i]);
+  }
+}
+
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {

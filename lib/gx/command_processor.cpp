@@ -254,6 +254,9 @@ static bool copy_xf_data(u32 addr, const u8* data, u32 len, bool bigEndian) {
       flat[i] = read_f32(data + i * 4, bigEndian);
     }
     g_gxState.pnMtxGen[mtxIdx]++;
+    // A load supersedes any rest-space annotation for the slot; the game
+    // re-announces after the load when one applies (GXSetPosMtxRest).
+    g_gxState.pnMtxRestValid[mtxIdx] = false;
     g_gxState.stateDirty = true;
   } else if (addr < 0x0F0) {
     // Texture matrices (0x078-0x0EF)
@@ -2039,6 +2042,22 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     if (dx9::active()) {
       dx9::set_camera_view(view);
     }
+  } else if (subCmd == GX_AURORA_SET_POS_MTX_REST) {
+    CHECK(pos + 52 <= size, "GX_AURORA_SET_POS_MTX_REST read overrun");
+    const u32 id = read_u32(data + pos, bigEndian);
+    pos += 4;
+    f32 flat[12];
+    for (f32& v : flat) {
+      v = read_f32(data + pos, bigEndian);
+      pos += 4;
+    }
+    const u32 mtxIdx = id / 3;
+    CHECK(mtxIdx < MaxPnMtx, "GX_AURORA_SET_POS_MTX_REST: bad position matrix id {}", id);
+    // Rest-space annotation for the last load of this position matrix (see
+    // GXAurora.h): the vertices drawn with it satisfy rest = R * stored.
+    // Consumed by the D3D9 backend; cleared by the slot's next load.
+    std::memcpy(&g_gxState.pnMtxRest[mtxIdx], flat, sizeof(flat));
+    g_gxState.pnMtxRestValid[mtxIdx] = true;
   }
 
   else {

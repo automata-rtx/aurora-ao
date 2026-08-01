@@ -31,6 +31,68 @@
 
 ---
 
+## Checkpoint 3.20 — rest-space annotations: coherent vertex bytes for mixed J3D spaces (2026-08-01)
+
+**Why.** With 3.19 a J3D character reaches Remix as one merged mesh — but the
+bytes inside that mesh mix coordinate spaces. J3D stores a **single-joint
+("full weight") shape's vertices in that joint's local frame** (its draw
+matrix is `view × AnmMtx(joint)`), while **enveloped shapes' vertices sit in
+model/bind space** (draw matrix `view × Σw·AnmMtx·invBind`). Rasterization is
+right either way because each part's matrix undoes its storage space — but
+anything that reads the bytes as *one* mesh sees the full-weight parts
+(Wolf Link's head and tail) collapsed around the model origin: Remix captures
+export exactly that explosion, and the dxvk-remix surface-hair scatter grew
+strands across it.
+
+**What.** A new annotation extension, `GXSetPosMtxRest(restMtx, id)`
+(`GX_AURORA_SET_POS_MTX_REST 0x0053`): immediately after loading a GX
+position matrix, the game may declare the constant transform from the loaded
+vertices' storage space to the model's rest space. Consumption is D3D9-only:
+
+- `decode_draw` rewrites annotated vertices' **positions by `R`** and
+  **normals by `R`'s 3×3 inverse-transpose** (renormalized), for both
+  matrix-palette draws (per-vertex slot) and rigid draws (`currentPnMtx`).
+- Every world-matrix upload compensates through `slot_world_matrix()` —
+  `WORLD = R⁻¹ · pnMtx (· viewInv)` — at all four sites: `apply_transforms`
+  (palette + rigid), `draw_palette_split`, and the batcher's
+  `batch_slot_entry`, whose (slot, generation) snapshot picks the annotation
+  up coherently because the game re-announces after every load.
+- **Any load of a position matrix clears its annotation**, so unannotated
+  engine code (particles, UI, other games) keeps today's behavior byte for
+  byte. The camera-space texgen inverse stays derived from the
+  *uncompensated* model-view on purpose — GX texgen reads the original
+  stream coordinates, which that inverse reproduces.
+- The wgpu backend ignores the annotation entirely.
+
+Rasterization is unchanged (`W' · (R·p) = pnMtx·p`, verified numerically to
+float precision); the merged mesh's emitted bytes become **one coherent
+bind-pose mesh**, still constant frame over frame, so the stable-hash
+property of 3.19 is preserved — the hash *values* of full-weight parts
+change once, as the bytes now differ.
+
+**Game side (dusklight `J3DShapeMtx.cpp`).** After each shape-matrix load
+whose position source is the draw-matrix array (pipelines PNGP/NCPU) and
+whose draw-matrix flag is 0 (full weight), the hook announces
+`R = MTXInverse(invJointMtx[getDrawMtxIndex(useMtxIdx)])` — the joint's
+bind-pose global. Enveloped entries (flag 1) and CPU-deform pipelines need no
+annotation (vertices already model-space); models without an envelope block
+are skipped (no inverse-bind table). TP loads its models with the ConcatView
+flag (`0x…30`/`0x…10` resource flags), so the annotated call sites are the
+ConcatView `load()`s; the indexed `J3DShapeMtx`/`Multi` `load()`s carry the
+same hook for non-ConcatView models. LOD loads already concat the
+inverse-bind (`loadMtxConcatView_PNGP_LOD`) and billboards stay unannotated.
+
+**Verification state:** `dx9_vertex.cpp`, `dx9_draw.cpp`, `GXAurora.cpp` and
+`command_processor.cpp` pass the MinGW `-fsyntax-only` harness; dusklight's
+`J3DShapeMtx.cpp` passes it against the game's include set; the
+rewrite/compensation algebra (including the normal inverse-transpose) is
+covered by a standalone numeric check. Not yet run in game — first bring-up
+should check: (a) characters render identically (the compensation is exact by
+construction), (b) a Remix capture of Wolf Link shows head/tail in bind pose
+instead of origin spikes, (c) surface hair attaches to the visible pelt.
+
+---
+
 ## Checkpoint 3.19 — matrix-palette draw batching: one mesh per character (2026-07-31)
 
 **Why.** Under RTX Remix, a J3D character was dozens of meshes. Each shape
@@ -58,10 +120,11 @@ entries** — the palette depth Remix's GPU skinning consumes
   differently, so when in doubt a field is included; a superfluous field only
   splits batches.
 - **Palette.** Per-vertex blend indices are rewritten from the GX slot to a
-  palette entry allocated per (slot, loaded value) in first-use order, so the
-  emitted vertex bytes are deterministic and the merged mesh keeps **one
-  stable rest-pose hash** frame over frame. Slot reloads with identical bytes
-  reuse their entry, so packets sharing bones don't bloat the palette.
+  palette entry allocated per (slot, load generation) in first-use order, so
+  the emitted vertex bytes are deterministic and the merged mesh keeps **one
+  stable rest-pose hash** frame over frame. (Originally keyed per (slot,
+  loaded value); value equality is not stable under animation, which shifted
+  entry order and re-hashed the mesh — fixed in the follow-up commit.)
 - **Flushes.** Everything else that touches the device flushes the open batch
   first: `end_frame`, `copy_tex`, offscreen begin/end, the viewport/scissor
   relays, `set_camera_view`, `set_skinning`/`clear_skinning`, and any

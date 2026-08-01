@@ -119,6 +119,16 @@ extern "C" {
  */
 #define GX_AURORA_SET_VIEW_MTX 0x0052
 
+/**
+ * Annotates the most recent load of a GX position matrix with the constant
+ * transform from the storage space of the vertices drawn with it to the
+ * model's rest space. Followed by a u32 position-matrix id (GX_PNMTX0..9)
+ * and twelve f32 (row-major 3x4). Cleared by the next load of the same
+ * position matrix. Backends that re-emit stable rest-space geometry (D3D9
+ * for RTX Remix) consume it; rasterization is unchanged everywhere.
+ */
+#define GX_AURORA_SET_POS_MTX_REST 0x0053
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -204,6 +214,22 @@ void GXClearSkinning(void);
  * Call whenever the view matrix changes (per frame / per view).
  */
 void GXSetViewMtx(const void* mtx);
+
+/**
+ * Declare, immediately after loading a GX position matrix (id = GX_PNMTX0..
+ * GX_PNMTX9), that the vertices drawn with it are stored in a space other
+ * than the model's rest space: restMtx (3x4, 12 f32 row-major) maps stored
+ * coordinates to rest-space coordinates. J3D stores a single-joint ("full
+ * weight") shape's vertices in the joint's local frame while enveloped
+ * shapes' vertices sit in model/bind space, so one character's merged mesh
+ * mixes coordinate spaces. With the annotation the D3D9 backend rewrites
+ * decoded vertices into rest space and compensates the world matrices with
+ * the inverse - rasterization is identical, but the bytes RTX Remix hashes,
+ * skins and captures form one coherent rest-pose mesh. Any load of the same
+ * position matrix clears the annotation, so unannotated engine code keeps
+ * its current behavior. The wgpu backend ignores it.
+ */
+void GXSetPosMtxRest(const void* restMtx, u32 id);
 
 /**
  * Enable or disable the GPU-skinning debug view. When enabled, matrix-palette-skinned draws (those
