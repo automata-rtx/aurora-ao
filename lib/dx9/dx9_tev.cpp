@@ -964,7 +964,13 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   if (lead.op == D3DTOP_SELECTARG1 && !lead.usesArg2 && !lead.usesArg0 &&
       !lead.arg1.isConst && arg_base(lead.arg1.ta) == D3DTA_TEXTURE) {
     if (tint_from_next_stage(outTint)) {
-      info_once(cfgHash ^ 0xA1BE, "albedo tint: claimed from the following stage (texture, then x const)");
+      {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "albedo tint: claimed from the following stage (texture, then x const)%s",
+                      albedo_stage_desc(stage));
+        info_once(cfgHash ^ 0xA1BE, buf);
+      }
       return true;
     }
   }
@@ -1003,12 +1009,20 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   };
   if (isTexture(lead.arg1) && isTint(lead.arg2)) {
     outTint = lead.arg2.constValue;
-    info_once(cfgHash ^ 0xA1BF, "albedo tint: claimed (texture x const)");
+    {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "albedo tint: claimed (texture x const)%s", albedo_stage_desc(stage));
+      info_once(cfgHash ^ 0xA1BF, buf);
+    }
     return true;
   }
   if (isTexture(lead.arg2) && isTint(lead.arg1)) {
     outTint = lead.arg1.constValue;
-    info_once(cfgHash ^ 0xA1BF, "albedo tint: claimed (const x texture)");
+    {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "albedo tint: claimed (const x texture)%s", albedo_stage_desc(stage));
+      info_once(cfgHash ^ 0xA1BF, buf);
+    }
     return true;
   }
   // Distinguish "the constant is white" from "this was never texture x const".
@@ -1019,7 +1033,12 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   const bool pairing = (isTexture(lead.arg1) && lead.arg2.isConst) ||
                        (isTexture(lead.arg2) && lead.arg1.isConst);
   if (pairing) {
-    info_once(cfgHash ^ 0xA1B6, "albedo tint: constant is white; no tint stage needed");
+    {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "albedo tint: constant is white; no tint stage needed%s",
+                    albedo_stage_desc(stage));
+      info_once(cfgHash ^ 0xA1B6, buf);
+    }
   } else {
     // Name what the two operands actually were. "texture x vertex colour" is
     // the overwhelmingly common world-geometry case and a correct reject; a
