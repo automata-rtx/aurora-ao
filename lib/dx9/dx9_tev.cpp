@@ -813,6 +813,53 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
 // rather than "whichever operand happened to ask first", and costs nothing:
 // materialize() already hands back TFACTOR for a matching constant, so the
 // real stage that uses this konst reuses the same slot.
+// Names the reduced op in a log line. Only the ops reduce_pass can actually
+// produce are listed; anything else falls through to its numeric value, which
+// is still enough to look up.
+const char* d3d_texture_op_name(DWORD op) noexcept {
+  switch (op) {
+  case D3DTOP_DISABLE:                   return "DISABLE";
+  case D3DTOP_SELECTARG1:                return "SELECTARG1";
+  case D3DTOP_SELECTARG2:                return "SELECTARG2";
+  case D3DTOP_MODULATE:                  return "MODULATE";
+  case D3DTOP_MODULATE2X:                return "MODULATE2X";
+  case D3DTOP_MODULATE4X:                return "MODULATE4X";
+  case D3DTOP_ADD:                       return "ADD";
+  case D3DTOP_ADDSIGNED:                 return "ADDSIGNED";
+  case D3DTOP_ADDSIGNED2X:               return "ADDSIGNED2X";
+  case D3DTOP_SUBTRACT:                  return "SUBTRACT";
+  case D3DTOP_ADDSMOOTH:                 return "ADDSMOOTH";
+  case D3DTOP_BLENDDIFFUSEALPHA:         return "BLENDDIFFUSEALPHA";
+  case D3DTOP_BLENDTEXTUREALPHA:         return "BLENDTEXTUREALPHA";
+  case D3DTOP_BLENDFACTORALPHA:          return "BLENDFACTORALPHA";
+  case D3DTOP_BLENDTEXTUREALPHAPM:       return "BLENDTEXTUREALPHAPM";
+  case D3DTOP_BLENDCURRENTALPHA:         return "BLENDCURRENTALPHA";
+  case D3DTOP_MULTIPLYADD:               return "MULTIPLYADD";
+  case D3DTOP_LERP:                      return "LERP";
+  default:                               return "?";
+  }
+}
+
+// Appends the albedo stage's texture identity to a log line, in the same shape
+// the multi-texture diagnostic uses, so a reject can be matched against Remix's
+// texture categorization list. Without this a reject names a reason but not a
+// material, which is the difference between "widen the gate" and "widen the
+// gate for THIS item".
+const char* albedo_stage_desc(const gx::TevStage& stage) noexcept {
+  static thread_local char desc[64];
+  uint32_t w = 0;
+  uint32_t h = 0;
+  uint32_t fmt = 0;
+  if (stage.texMapId != GX_TEXMAP_NULL && stage.texMapId < static_cast<int>(gx::MaxTextures)) {
+    const auto& obj = g_gxState.loadedTextures[static_cast<size_t>(stage.texMapId)];
+    w = obj.width();
+    h = obj.height();
+    fmt = obj.format();
+  }
+  std::snprintf(desc, sizeof(desc), " [map%d %ux%u fmt%u]", static_cast<int>(stage.texMapId), w, h, fmt);
+  return desc;
+}
+
 bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   const int idx = preferred_albedo_stage();
   if (idx < 0) {
@@ -847,17 +894,28 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   // apply_tev. Naming the reason is what turns "the fix did not work" into a
   // decidable question.
   const PassOp& lead = cp.hasTemp ? cp.tempOp : cp.finals[0];
-  if (lead.op != D3DTOP_MODULATE) {
-    // The most likely one to matter: GX output scale. GX_CS_SCALE_2/SCALE_4 on
-    // an otherwise plain texture x konst stage reduce to MODULATE2X/MODULATE4X,
-    // which is still a tint but not this shape.
-    if (lead.op == D3DTOP_MODULATE2X || lead.op == D3DTOP_MODULATE4X) {
-      warn_once(cfgHash ^ 0xA1B1,
-                "albedo tint: lead is MODULATE2X/4X (GX output scale); tint not carried to Remix");
-    } else {
-      warn_once(cfgHash ^ 0xA1B2,
-                "albedo tint: lead op is not MODULATE; tint not carried to Remix");
-    }
+  // GX output scale is accepted. GX_CS_SCALE_2/SCALE_4 on an otherwise plain
+  // texture x konst stage reduce to MODULATE2X/MODULATE4X, and a 2026-08-02 run
+  // hit that path on 11 distinct material configs - every one of them a tint
+  // that was being dropped for the scale alone.
+  //
+  // The scale is deliberately NOT carried into the tint. It is a brightness
+  // multiplier on the rasterized result, whereas what Remix wants here is a
+  // material albedo: doubling that pushes it above 1, which is unphysical for a
+  // diffuse surface and would read as a blown-out item rather than a tinted
+  // one. The konst is the colour; the scale is not part of it.
+  const bool leadIsModulate =
+      lead.op == D3DTOP_MODULATE || lead.op == D3DTOP_MODULATE2X || lead.op == D3DTOP_MODULATE4X;
+  if (!leadIsModulate) {
+    // Most of these are correct rejections rather than losses - a plain
+    // SELECTARG1(TEXTURE) material has no tint to carry. Naming the op is what
+    // separates those from a shape that genuinely should be handled, which the
+    // first version of this message could not do.
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "albedo tint: lead op is %s (not a modulate); tint not carried to Remix%s",
+                  d3d_texture_op_name(lead.op), albedo_stage_desc(stage));
+    warn_once(cfgHash ^ 0xA1B2, buf);
     return false;
   }
   if (!lead.usesArg2) {
@@ -900,9 +958,17 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   if (pairing) {
     info_once(cfgHash ^ 0xA1B6, "albedo tint: constant is white; no tint stage needed");
   } else {
-    warn_once(cfgHash ^ 0xA1B7,
-              "albedo tint: lead is not texture x const (colour may come from a vertex colour or "
-              "a register lerp); tint not carried to Remix");
+    // Name what the two operands actually were. "texture x vertex colour" is
+    // the overwhelmingly common world-geometry case and a correct reject; a
+    // const-x-const or register pairing is not, and is the shape that would
+    // justify widening this further.
+    char buf[200];
+    std::snprintf(buf, sizeof(buf),
+                  "albedo tint: lead is %s x %s, not texture x const; tint not carried to Remix%s",
+                  isTexture(lead.arg1) ? "texture" : (lead.arg1.isConst ? "const" : "non-const"),
+                  isTexture(lead.arg2) ? "texture" : (lead.arg2.isConst ? "const" : "non-const"),
+                  albedo_stage_desc(stage));
+    warn_once(cfgHash ^ 0xA1B7, buf);
   }
   return false;
 }
