@@ -1,6 +1,6 @@
 # Aurora / Dusklight rendering architecture — research notes
 
-Findings from a full read of `aurora-ao` (branch base `claude/gpu-skinning-72pstj`,
+Findings from a full read of `aurora-ao` (the GPU-skinning lineage,
 commit `7b7306e`) and targeted exploration of `dusklight-ao` (base `abf26c38d2`).
 Everything the D3D9 backend relies on is recorded here with file references.
 
@@ -133,7 +133,7 @@ From `lib/gx/gx.hpp` (`GXState`):
   (`copyTextures`). Game uses this for shadow silhouettes (packed RGBA),
   distortion sources, etc. D3D9 v1 policy in mapping doc §10.
 
-## 5. GPU skinning (branch `claude/gpu-skinning-72pstj`)
+## 5. GPU skinning
 
 Two distinct skinning mechanisms exist:
 

@@ -1,4 +1,4 @@
-# Aurora D3D9 Fixed-Function Backend ("Fixed-Function" branch)
+# Aurora D3D9 fixed-function backend
 
 **Start here.** This directory is the canonical knowledge base for the DirectX 9
 fixed-function rendering mode being added to Aurora (and surfaced in Dusklight).
@@ -52,7 +52,7 @@ vertices plus GPU-side skinning for stable mesh hashing — see
 | [`remix-material-interface.md`](remix-material-interface.md) | **How a GX material becomes a Remix material, what survives and what silently does not.** The most misunderstood system here; read it before touching `dx9_tev.cpp` or diagnosing any colour defect. |
 | [`material-report.md`](material-report.md) | The `matrep.*` log: format, how to read it, how to join aurora's log to Remix's. This is how material questions get answered without asking the owner to describe pixels. |
 | [`unsupported-effects.md`](unsupported-effects.md) | Living list of effects beyond fixed-function/SM1 and how Remix could compensate. |
-| [`progress.md`](progress.md) | Checkpoint log: what is done, what is in flight, exact next steps. **Update at every conversation checkpoint.** |
+| [`progress.md`](progress.md) | Why the backend is shaped the way it is (the decisions that are expensive to rediscover), plus the checkpoint log. **Add an entry whenever `lib/dx9/` changes.** |
 
 If the question is about how the game *looks* under Remix rather than about the
 D3D9 backend, the design work is in the other two repos — start at
@@ -88,6 +88,8 @@ introspects.
   `Direct3DCreate9`, `*UP` draw calls, `SetTransform`, `SetTexture`, and
   fixed-function skinning — the API subset Remix hooks best.
 
-## Status snapshot
+## Status
 
-See [`progress.md`](progress.md) for the always-current state.
+What is broken right now, across all three repos:
+`dusklight-ao/docs/remix-open-issues.md`. What changed here and why:
+[`progress.md`](progress.md).

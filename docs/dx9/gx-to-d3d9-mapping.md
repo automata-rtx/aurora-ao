@@ -277,45 +277,30 @@ wholesale and the game bakes most world lighting into vertex colors:
 
 ## 9. TEV → texture-stage states [v1] — `lib/dx9/dx9_tev.*`
 
-> **Remix constraint (load-bearing).** Remix reconstructs a draw's material
-> from **one** texture stage — the first bound to the lowest
-> `D3DTSS_TEXCOORDINDEX` (`D3D9Rtx::processTextures`) — and that stage's
-> color/alpha op and args become the surface's **entire albedo and opacity**
-> (`setTextureStageState` → `opaque_surface_material_interaction.slangh`).
-> It decodes ops `MODULATE/SELECTARG1/SELECTARG2/MODULATE2X/MODULATE4X/ADD`
-> (anything else reads as MODULATE) and arg sources
-> `DIFFUSE/CURRENT/TEXTURE/TFACTOR/SPECULAR` with no modifier bits.
+> **Remix constraint (load-bearing).** Remix reconstructs a draw's material from
+> **one** texture stage, and anything it cannot decode resolves to *identity*
+> (white) rather than to an error. That single fact drives most of what this
+> section emits.
 >
-> Args it can't decode (`D3DTA_TEMP`, `D3DTA_CONSTANT`, anything carrying
-> `D3DTA_COMPLEMENT`/`D3DTA_ALPHAREPLICATE`) become
-> `RtTextureArgSource::None`, which the shader resolves to **identity** —
-> `vec3(1.0)` for color, the sampled opacity for alpha arg1 — so they are
-> harmless on their own. (An earlier revision of this doc claimed `None`
-> rendered black; it does not.)
+> **`remix-material-interface.md` is authoritative for it** — what Remix reads,
+> which ops and args survive, why the hint stage below is *conditional*, and the
+> design rules that follow. It is not repeated here: this section used to carry
+> its own copy, and that copy was still describing the pre-2026-08-03 hint rule
+> weeks after the code changed.
 >
-> The real hazard is the single-stage view: a GX material's first TEV stage is
-> rarely the finished albedo. `texture × dark konst` (konst routed through
-> TFACTOR) is taken as the whole albedo → the surface renders **black** while
-> its texture is resident and still listed in Remix's texture list; and that
-> stage's alpha becomes the whole opacity → alpha-tested cutouts lose their
-> shape (foliage cards become full quads) or vanish (grass). Consequences, all
-> implemented in `dx9_tev.cpp`:
-> - Unless the leading stage already presents the texture plainly
->   (`SELECTARG1/MODULATE` over `TEXTURE`/`DIFFUSE` only), a hint stage is
->   prepended: `color = MODULATE(TEXTURE, DIFFUSE)`, `alpha =
->   SELECTARG1(TEXTURE)`. It writes CURRENT which the real chain overwrites,
->   and is only emitted when nothing in that GX stage reads CURRENT, so raster
->   is unchanged. A draw without vertex colors resolves `DIFFUSE` to `None` =
->   identity on both sides, so the modulate is a no-op there.
+> What belongs here, because it is about what we *emit*:
+> - A **hint stage** (`color = MODULATE(TEXTURE, DIFFUSE)`,
+>   `alpha = SELECTARG1(TEXTURE)`) is prepended **only when Remix would
+>   otherwise read the stage wrongly**. It writes TEMP so the real chain is
+>   untouched, making it raster-neutral wherever it lands.
 > - The texture is bound only on emitted stages that actually reference
 >   `D3DTA_TEXTURE` — Remix keeps two texture candidates per draw, so
 >   duplicates from a split stage crowd out a real second texture.
 > - Unused stages are disabled **and unbound**: Remix's scan skips
 >   texture-less stages rather than stopping at the first disabled one, so a
 >   leftover binding could win the albedo slot.
-> - Only `colorTextures[0]` is used as albedo for normal materials
->   (`ColorTexture2` is RayPortal-only), so multi-texture GX materials are
->   inherently approximated under Remix.
+> - Multi-texture GX materials are inherently approximated, since only one
+>   texture becomes the albedo.
 
 The heart of the fixed-function mapping. GX TEV per stage computes
 `d ± (a*(1-c) + b*c) + bias, × scale` per color and alpha with arbitrary
@@ -449,8 +434,8 @@ suffice.
   exists, `finalizeSkinningData` is skipped, and each skinned draw keeps
   `WORLDMATRIX(0)` (its packet's slot-0 joint) as instance transform —
   character parts scatter. The fused mode is therefore raw-D3D9-only.
-- `SetTexture(stage 0..n)` with stage 0 = the dominant diffuse map (TEV mapper
-  orders stages so the first texture-sampling stage lands on stage 0 —
-  important for Remix material capture).
+- `SetTexture(stage 0..n)`. Which stage becomes the albedo is Remix's choice,
+  not ours — see `remix-material-interface.md`; the mapper's job is to make the
+  stage it picks readable rather than to assume stage order decides.
 - Alpha-tested cutouts via ALPHATEST render states (Remix "cutout" category).
 - No pixel/vertex shaders, no MSAA, no sRGB states, no queries.
