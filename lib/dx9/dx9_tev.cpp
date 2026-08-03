@@ -904,8 +904,71 @@ bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   // material albedo: doubling that pushes it above 1, which is unphysical for a
   // diffuse surface and would read as a blown-out item rather than a tinted
   // one. The konst is the colour; the scale is not part of it.
+  const auto isTintConst = [](const Operand& o) {
+    return o.isConst && (o.constValue & 0x00FFFFFFu) != 0x00FFFFFFu;
+  };
+  const auto readsCurrent = [](const Operand& o) {
+    return !o.isConst && arg_base(o.ta) == D3DTA_CURRENT;
+  };
+
+  // "Sample in one stage, tint in the next" is a standard GX idiom, and it is
+  // the same product as texture x konst - just spread over two stages. Looking
+  // only at the albedo stage misses every material written that way, which a
+  // 2026-08-03 run showed is the single largest reject bucket (26 configs whose
+  // lead is a bare SELECTARG1(TEXTURE), i.e. a stage that only samples).
+  //
+  // Restricted to the IMMEDIATELY following stage on purpose. Scanning further
+  // would have to reason about whatever the intervening stages do to the chain,
+  // and a stage that adds or lerps in between breaks the equivalence - at which
+  // point the konst is no longer simply the surface's colour and advertising it
+  // would be the guess this gate exists to avoid.
+  const auto tint_from_next_stage = [&](uint32_t& out) -> bool {
+    const uint32_t next = stageIdx + 1;
+    if (next >= g_gxState.numTevStages) {
+      return false;
+    }
+    const auto& ns = g_gxState.tevStages[next];
+    // A tinting stage samples no texture of its own; if it does, it is a second
+    // layer rather than a tint and Remix can only show one of them anyway.
+    if (ns.texMapId != GX_TEXMAP_NULL && ns.texCoordId != GX_TEXCOORD_NULL) {
+      return false;
+    }
+    const uint64_t nextHash = xxh3_hash(ns, 0) ^ 0xA1B80000ull;
+    const Operand na = color_operand(ns.colorPass.a, ns, next, true, draw);
+    const Operand nb = color_operand(ns.colorPass.b, ns, next, true, draw);
+    const Operand nc = color_operand(ns.colorPass.c, ns, next, true, draw);
+    const Operand nd = color_operand(ns.colorPass.d, ns, next, true, draw);
+    const ReducedPass np = reduce_pass(na, nb, nc, nd, ns.colorOp, nextHash, true);
+    const PassOp& nl = np.hasTemp ? np.tempOp : np.finals[0];
+    const bool modulate =
+        nl.op == D3DTOP_MODULATE || nl.op == D3DTOP_MODULATE2X || nl.op == D3DTOP_MODULATE4X;
+    if (!modulate || !nl.usesArg2 || nl.usesArg0 || nl.complementArg2) {
+      return false;
+    }
+    if (readsCurrent(nl.arg1) && isTintConst(nl.arg2)) {
+      out = nl.arg2.constValue;
+      return true;
+    }
+    if (readsCurrent(nl.arg2) && isTintConst(nl.arg1)) {
+      out = nl.arg1.constValue;
+      return true;
+    }
+    return false;
+  };
+
   const bool leadIsModulate =
       lead.op == D3DTOP_MODULATE || lead.op == D3DTOP_MODULATE2X || lead.op == D3DTOP_MODULATE4X;
+
+  // A lead that only presents its texture has nothing to tint with, but the
+  // next stage may.
+  if (lead.op == D3DTOP_SELECTARG1 && !lead.usesArg2 && !lead.usesArg0 &&
+      !lead.arg1.isConst && arg_base(lead.arg1.ta) == D3DTA_TEXTURE) {
+    if (tint_from_next_stage(outTint)) {
+      info_once(cfgHash ^ 0xA1BE, "albedo tint: claimed from the following stage (texture, then x const)");
+      return true;
+    }
+  }
+
   if (!leadIsModulate) {
     // Most of these are correct rejections rather than losses - a plain
     // SELECTARG1(TEXTURE) material has no tint to carry. Naming the op is what
