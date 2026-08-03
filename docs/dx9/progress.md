@@ -125,9 +125,18 @@ decisions it records as load-bearing:
   the stage wrongly — and **only** then. Emitting it over a material Remix
   already reads correctly is what bleached rupees, hearts and lava. *(3.8
   introduced it, 3.19 made it conditional)*
-- The hint advertises the material's **colour** texture, not merely the first
-  textured stage: character eyes composite a 32×32 I8 highlight mask with the
-  real 64×64 CMPR eyeball two stages later. *(3.14)*
+- **The material's albedo is *evaluated*, not pattern-matched.** The GX colour
+  pass is computed with the texture pinned to black and to white; the two
+  endpoints say what the surface should look like, and the hint advertises the
+  op that best reproduces them — `MODULATE` for a black-floored tint, `ADD` for
+  a ramp that ends at white, which a multiply would darken. The earlier
+  "look for a texture × constant multiply" model matched 6 of 111 real
+  materials, because this game's dominant shape is a two-colour ramp. *(3.20)*
+- The hint advertises the material's **colour** texture where there is one, and
+  a stage that *reads* its texture in preference to one that merely binds it —
+  character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
+  eyeball two stages later, while other materials open with a setup stage that
+  binds a texture and does nothing with it. *(3.14, 3.20)*
 - **Multi-stage TEV decomposition uses the TSS TEMP register**
   (`D3DPMISCCAPS_TSSARGTEMP`), making `d ± lerp(a,b,c)` exact instead of
   dropping the `d` term — a bug that deleted the diffuse base of every BG
@@ -194,6 +203,46 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.20 — the material model was wrong; evaluate instead of pattern-match (2026-08-04)
+
+**3.19 was tested. It was safe but nearly inert — 3 materials out of 111.** The
+log said why, and the answer was a wrong model rather than a coding error.
+
+`albedo_tint()` looked for a literal `texture x constant` multiply. The dominant
+shape in this game is `lerp(colourA, colourB, textureIntensity)` — a greyscale
+texture selecting between two authored colours, which is how one rupee texture
+yields seven rupee colours. A multiply is only the special case where colourA is
+black. **104 of 111 materials reported no tint**; the 6 that were detected were
+exactly the black-floored ones, and those came out of Remix correctly coloured.
+
+Changes:
+
+1. **`evaluate_albedo()` replaces `albedo_tint()`.** It evaluates the GX colour
+   pass twice — texture pinned to black, then to white — and reports the two
+   endpoints. No pattern matching.
+2. **The op is chosen from the endpoints.** A multiply cannot represent a ramp
+   with a non-black floor (it falls to black where the texture is dark, which
+   *darkens* the surface), so those advertise `ADD` instead, which Remix also
+   decodes. Simulated over the captured materials: **30 now carry colour, up
+   from 6.**
+3. **`preferred_albedo_stage()` now prefers a stage that *reads* its texture.**
+   Materials here routinely open with a setup stage that binds a texture and
+   does nothing with it; picking it handed Remix an empty program.
+4. **The hint no longer multiplies by vertex colour when the material never read
+   it** — that factor is a substituted white on meshes without vertex colours.
+
+Report gains `shape`, `out0`/`out1`, `usesTex`, `usesVtx` and `form`, so the
+next log states what each material *is* and what we advertised for it.
+
+Two instrumentation defects from 3.19 fixed: the cross-log join key did not
+actually join (the two sides formatted the pointer differently), and the fork's
+dedup key included `tFactor`, whose value tracks fog and time of day — 828
+distinct values exhausted the 1024 cap in 14 seconds.
+
+**Syntax-checked: NO** (no MinGW toolchain available). The evaluator was instead
+validated by re-implementing it against the 111 real materials captured in the
+2026-08-03 log. **Untested in game.**
 
 ### 3.19 — the greyscale defect was our own hint stage (2026-08-03)
 

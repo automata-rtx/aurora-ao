@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace aurora::dx9 {
 static Module Log("aurora::dx9::tev");
@@ -501,10 +503,25 @@ bool is_color_texture_format(uint32_t fmt) noexcept {
   }
 }
 
-// GX stage whose texture should become the albedo: the first one sampling a
-// colour texture, else simply the first textured stage.
+// Does this stage's colour pass actually read its texture? A stage can bind a
+// texture and do nothing with it - materials in this game routinely open with a
+// setup stage whose colour pass is all ZERO, with the real work one stage later.
+// Picking such a stage as the albedo hands Remix an empty program and loses the
+// material's colour, which is one of the two ways the greyscale defect happened.
+bool stage_colour_reads_texture(const gx::TevStage& s) noexcept {
+  const auto reads = [](GXTevColorArg a) { return a == GX_CC_TEXC || a == GX_CC_TEXA; };
+  return reads(s.colorPass.a) || reads(s.colorPass.b) || reads(s.colorPass.c) || reads(s.colorPass.d);
+}
+
+// GX stage whose texture should become the albedo. Preference order:
+//   1. a stage that samples a colour texture AND uses it in its colour pass
+//   2. any stage that uses its texture in its colour pass
+//   3. the first textured stage at all (last resort)
+// See docs/dx9/remix-material-interface.md §7 - a luminance texture that is used
+// is a better albedo than a colour texture that is merely bound.
 int preferred_albedo_stage() noexcept {
   int firstTextured = -1;
+  int firstUsed = -1;
   for (uint32_t i = 0; i < g_gxState.numTevStages; ++i) {
     const auto& s = g_gxState.tevStages[i];
     if (s.texMapId == GX_TEXMAP_NULL || s.texMapId >= static_cast<int>(gx::MaxTextures) ||
@@ -514,11 +531,17 @@ int preferred_albedo_stage() noexcept {
     if (firstTextured < 0) {
       firstTextured = static_cast<int>(i);
     }
+    if (!stage_colour_reads_texture(s)) {
+      continue;
+    }
+    if (firstUsed < 0) {
+      firstUsed = static_cast<int>(i);
+    }
     if (is_color_texture_format(g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)].format())) {
       return static_cast<int>(i);
     }
   }
-  return firstTextured;
+  return firstUsed >= 0 ? firstUsed : firstTextured;
 }
 
 bool op_reads(const PassOp& op, DWORD source) noexcept {
@@ -865,53 +888,174 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
   return tci | index;
 }
 
-// The constant that tints the material's albedo, when it has one, so apply_tev
-// can claim TFACTOR for it before any other constant takes the slot. Only
-// TFACTOR survives into Remix; D3DTSS_CONSTANT does not.
+// What the material's albedo actually is, evaluated rather than pattern-matched.
 //
-// Deliberately narrow: only a plain "texture x constant" lead counts, because
-// advertising a guess trades a missing colour for a wrong one, which is harder
-// to spot. That narrowness is also why the 2026-07-29 fix built on this
-// predicate did nothing - see docs/dx9/remix-material-interface.md, which owns
-// the full account of what crosses this interface and what silently does not.
-bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
+// The previous version of this looked for a literal "texture x constant"
+// multiply. That model is wrong for this game: the dominant shape is
+// `lerp(colourA, colourB, textureIntensity)`, where a greyscale texture selects
+// between two authored colours - which is how one rupee texture yields seven
+// rupee colours. A multiply is only the special case where one endpoint is
+// black, and matching only that case is why 104 of 111 materials in the
+// 2026-08-03 log reported no tint at all.
+//
+// So instead of asking "is this a tint?", evaluate the GX colour pass twice -
+// once with the texture reading black, once reading white - and report the two
+// endpoints. Remix can only express `TEXTURE x TFACTOR`, so we advertise the
+// endpoint that carries the material's colour; the other endpoint is logged so
+// the choice can be judged from a log rather than argued about.
+//
+// Full account: docs/dx9/remix-material-interface.md.
+struct AlbedoIntent {
+  bool valid = false;         // the pass could be evaluated at all
+  bool usesTexture = false;   // the colour pass reads its texture
+  bool usesVertexColor = false;
+  uint32_t out0 = 0;          // colour where the texture reads black
+  uint32_t out1 = 0;          // colour where the texture reads white
+  bool hasTint = false;       // worth advertising a TFACTOR
+  uint32_t tint = 0xFFFFFFFFu;
+  // Which op best approximates the material in the one stage Remix reads.
+  // MODULATE fits `texture x colour` exactly. ADD fits a ramp that ends at
+  // white, where a multiply cannot: `tex x C` always falls to black at tex=0,
+  // but the material's floor is a real colour, so multiplying would darken it.
+  // Remix decodes both (docs/dx9/remix-material-interface.md §2).
+  DWORD hintOp = D3DTOP_MODULATE;
+  const char* shape = "unknown";
+};
+
+// Chroma (max-min across RGB): how much colour a value carries, as opposed to
+// how bright it is. Used to pick which lerp endpoint is the material's colour.
+inline uint32_t chroma_of(uint32_t argb) noexcept {
+  const uint32_t r = (argb >> 16) & 0xFFu, g = (argb >> 8) & 0xFFu, b = argb & 0xFFu;
+  return std::max({r, g, b}) - std::min({r, g, b});
+}
+inline uint32_t luma_of(uint32_t argb) noexcept {
+  const uint32_t r = (argb >> 16) & 0xFFu, g = (argb >> 8) & 0xFFu, b = argb & 0xFFu;
+  return (r * 77 + g * 151 + b * 28) >> 8;
+}
+
+// Resolve one operand to a per-channel value with the texture pinned to
+// `texValue`. Returns false for anything whose value we cannot know here
+// (CURRENT/TEMP carry a previous stage's result).
+bool eval_operand(const Operand& o, float texValue, float (&out)[3], bool& sawTexture,
+                  bool& sawVertexColor) noexcept {
+  if (o.isConst) {
+    out[0] = static_cast<float>((o.constValue >> 16) & 0xFFu) / 255.f;
+    out[1] = static_cast<float>((o.constValue >> 8) & 0xFFu) / 255.f;
+    out[2] = static_cast<float>(o.constValue & 0xFFu) / 255.f;
+    return true;
+  }
+  const DWORD base = arg_base(o.ta);
+  if (base == D3DTA_TEXTURE) {
+    sawTexture = true;
+    out[0] = out[1] = out[2] = texValue;
+  } else if (base == D3DTA_DIFFUSE) {
+    // Vertex colour is per-vertex, so it has no single value here. Treat it as
+    // white: it is a separate multiply that the hint stage already carries.
+    sawVertexColor = true;
+    out[0] = out[1] = out[2] = 1.f;
+  } else {
+    return false;
+  }
+  if ((o.ta & D3DTA_COMPLEMENT) != 0) {
+    for (float& v : out) {
+      v = 1.f - v;
+    }
+  }
+  return true;
+}
+
+AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
+  AlbedoIntent r;
   const int idx = preferred_albedo_stage();
   if (idx < 0) {
-    return false;
+    return r;
   }
   const auto& stage = g_gxState.tevStages[static_cast<size_t>(idx)];
   const auto stageIdx = static_cast<uint32_t>(idx);
-  const uint64_t cfgHash = xxh3_hash(stage, 0);
-  const Operand a = color_operand(stage.colorPass.a, stage, stageIdx, true, draw);
-  const Operand b = color_operand(stage.colorPass.b, stage, stageIdx, true, draw);
-  const Operand c = color_operand(stage.colorPass.c, stage, stageIdx, true, draw);
-  const Operand d = color_operand(stage.colorPass.d, stage, stageIdx, true, draw);
-  const ReducedPass cp = reduce_pass(a, b, c, d, stage.colorOp, cfgHash, true);
+  const Operand ops[4] = {
+      color_operand(stage.colorPass.a, stage, stageIdx, true, draw),
+      color_operand(stage.colorPass.b, stage, stageIdx, true, draw),
+      color_operand(stage.colorPass.c, stage, stageIdx, true, draw),
+      color_operand(stage.colorPass.d, stage, stageIdx, true, draw),
+  };
 
-  // Only a plain "texture x constant" lead counts. Anything more elaborate is
-  // not a tint, and advertising a guess would be worse than leaving the albedo
-  // untinted - the failure mode there is a wrong colour rather than a missing
-  // one, which is much harder to spot.
-  const PassOp& lead = cp.hasTemp ? cp.tempOp : cp.finals[0];
-  if (lead.op != D3DTOP_MODULATE || !lead.usesArg2 || lead.usesArg0 || lead.complementArg2) {
-    return false;
+  const float bias = stage.colorOp.bias == GX_TB_ADDHALF    ? 0.5f
+                     : stage.colorOp.bias == GX_TB_SUBHALF  ? -0.5f
+                                                            : 0.f;
+  const float scale = stage.colorOp.scale == GX_CS_SCALE_2   ? 2.f
+                      : stage.colorOp.scale == GX_CS_SCALE_4 ? 4.f
+                      : stage.colorOp.scale == GX_CS_DIVIDE_2 ? 0.5f
+                                                              : 1.f;
+  const bool subtract = stage.colorOp.op == GX_TEV_SUB;
+
+  uint32_t endpoints[2] = {0, 0};
+  for (int end = 0; end < 2; ++end) {
+    const float texValue = end == 0 ? 0.f : 1.f;
+    float v[4][3];
+    for (int i = 0; i < 4; ++i) {
+      if (!eval_operand(ops[i], texValue, v[i], r.usesTexture, r.usesVertexColor)) {
+        return r; // depends on a previous stage; not evaluable here
+      }
+    }
+    uint32_t packed = 0xFF000000u;
+    for (int ch = 0; ch < 3; ++ch) {
+      // GX: out = (d +/- (a*(1-c) + b*c) + bias) * scale
+      const float term = v[0][ch] * (1.f - v[2][ch]) + v[1][ch] * v[2][ch];
+      float o = (v[3][ch] + (subtract ? -term : term) + bias) * scale;
+      o = o < 0.f ? 0.f : (o > 1.f ? 1.f : o);
+      packed |= static_cast<uint32_t>(o * 255.f + 0.5f) << (16 - ch * 8);
+    }
+    endpoints[end] = packed;
   }
-  const auto isTexture = [](const Operand& o) {
-    return !o.isConst && arg_base(o.ta) == D3DTA_TEXTURE;
-  };
-  // White is the identity here, so it is not worth a stage.
-  const auto isTint = [](const Operand& o) {
-    return o.isConst && (o.constValue & 0x00FFFFFFu) != 0x00FFFFFFu;
-  };
-  if (isTexture(lead.arg1) && isTint(lead.arg2)) {
-    outTint = lead.arg2.constValue;
-    return true;
+
+  r.valid = true;
+  r.out0 = endpoints[0];
+  r.out1 = endpoints[1];
+
+  if (!r.usesTexture) {
+    r.shape = "flat";
+    return r; // no texture in the colour pass; nothing for a tint to modulate
   }
-  if (isTexture(lead.arg2) && isTint(lead.arg1)) {
-    outTint = lead.arg1.constValue;
-    return true;
+
+  const uint32_t rgb0 = r.out0 & 0x00FFFFFFu;
+  const uint32_t rgb1 = r.out1 & 0x00FFFFFFu;
+  if (rgb0 == 0 && rgb1 == 0x00FFFFFFu) {
+    r.shape = "tex"; // plain texture, already what Remix would build
+    return r;
   }
-  return false;
+  if (rgb0 == 0) {
+    r.shape = "tex*c"; // the classic tinted mask
+  } else {
+    r.shape = "ramp"; // a lerp between two real colours
+  }
+
+  // Pick the op and constant that best reproduce the two endpoints within the
+  // single stage Remix reads.
+  uint32_t pick;
+  if (rgb0 == 0) {
+    // Floor is black: `texture x out1` is exact at both ends.
+    pick = rgb1;
+    r.hintOp = D3DTOP_MODULATE;
+  } else if (luma_of(rgb1) >= 0xF0 && chroma_of(rgb1) <= 0x10) {
+    // Ramp to (near) white: `texture + out0` holds the coloured floor and
+    // saturates to white at the top, which a multiply cannot do.
+    pick = rgb0;
+    r.hintOp = D3DTOP_ADD;
+  } else {
+    // A ramp between two real colours. Neither op reproduces it; multiply by
+    // whichever endpoint carries more colour, since that is the one a viewer
+    // would name as the object's colour.
+    const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
+    pick = c1 > c0 ? rgb1 : (c0 > c1 ? rgb0 : (luma_of(rgb1) >= luma_of(rgb0) ? rgb1 : rgb0));
+    r.hintOp = D3DTOP_MODULATE;
+  }
+  // White would be the identity for a multiply, and black would erase the
+  // surface for either op; neither is worth a stage.
+  if (!(r.hintOp == D3DTOP_MODULATE && pick == 0x00FFFFFFu) && pick != 0) {
+    r.hasTint = true;
+    r.tint = 0xFF000000u | pick;
+  }
+  return r;
 }
 
 } // namespace
@@ -920,12 +1064,13 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   const uint32_t numStages = std::max<uint32_t>(g_gxState.numTevStages, 1);
   ConstAlloc consts;
 
-  // Claim TFACTOR for the albedo tint before anything else can (see
-  // albedo_tint). Done here rather than at the hint stage below because the
+  // Claim TFACTOR for the albedo's colour before anything else can (see
+  // evaluate_albedo). Done here rather than at the hint stage below because the
   // constant slots are allocated as the real stages are emitted, and the hint
   // is written before any of them have run.
-  uint32_t hintTint = 0;
-  const bool hasHintTint = albedo_tint(draw, hintTint);
+  const AlbedoIntent albedo = evaluate_albedo(draw);
+  const uint32_t hintTint = albedo.tint;
+  const bool hasHintTint = albedo.hasTint;
   if (hasHintTint) {
     consts.tfactor = hintTint;
     consts.tfactorUsed = true;
@@ -936,6 +1081,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // be invisible, which is why this defect took three sessions to locate.
   // Field meanings: docs/dx9/material-report.md.
   const char* hintDecision = "notReached";
+  const char* hintForm = "-";
   const char* tintDecision = hasHintTint ? "detected" : "none";
   bool hintLooseWouldSuppress = false;
   IDirect3DBaseTexture9* hintTexture = nullptr;
@@ -1070,9 +1216,37 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, albedoStage.texMapId);
           set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, albedoStage.texCoordId, draw));
-          set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
-          set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-          set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+          // What the hint advertises, in priority order. Remix reads this one
+          // stage, so the two argument slots have to carry whatever matters
+          // most, and the material's own colour outranks vertex shading.
+          //
+          //   1. an ADD tint - the ramp case, which a multiply cannot express
+          //      and which must therefore occupy the hint stage itself
+          //   2. texture x vertex colour, when the material genuinely used the
+          //      rasterized colour; a MODULATE tint then rides the second stage
+          //      below, a pairing Remix decodes and which is proven working
+          //   3. texture x tint, when there is no vertex colour to preserve
+          //   4. the plain texture
+          if (albedo.hasTint && albedo.hintOp == D3DTOP_ADD) {
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_ADD);
+            set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_TFACTOR);
+            hintForm = "add:tint";
+          } else if (albedo.usesVertexColor || !albedo.valid) {
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            hintForm = "mod:vtx";
+          } else if (albedo.hasTint) {
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_TFACTOR);
+            hintForm = "mod:tint";
+          } else {
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+            set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            hintForm = "tex";
+          }
           // Opacity must be the texture's own alpha: it is what Remix
           // alpha-tests against, and it is what gives foliage cards and grass
           // blades their cutout shape.
@@ -1089,10 +1263,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           // immediately after the hint and read the register the hint wrote.
           // Raster-neutral on the same grounds as the hint.
           // Details: docs/dx9/remix-material-interface.md §4.
-          if (hasHintTint && d3dStage + need >= MaxStages) {
+          // Only needed when the hint stage spent both of its argument slots
+          // on texture x vertex colour; the other forms already carry the tint.
+          const bool tintNeedsOwnStage = hasHintTint && albedo.hintOp == D3DTOP_MODULATE &&
+                                         std::strcmp(hintForm, "mod:vtx") == 0;
+          if (tintNeedsOwnStage && d3dStage + need >= MaxStages) {
             tintDecision = "skip:budget";
+          } else if (hasHintTint && !tintNeedsOwnStage) {
+            tintDecision = "inHint";
           }
-          if (hasHintTint && d3dStage + need < MaxStages) {
+          if (tintNeedsOwnStage && d3dStage + need < MaxStages) {
             tintDecision = "emitted";
             const DWORD hintReg = g_dx9.tssTemp ? D3DTA_TEMP : D3DTA_CURRENT;
             set_texture(d3dStage, nullptr);
@@ -1243,13 +1423,19 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
         afmt = obj.format();
       }
     }
+    // Pointer printed as bare uppercase 16-hex so it matches the fork's
+    // matrep.rmx tex0ptr byte for byte. The two sides previously formatted it
+    // differently and the join key silently did not join.
     Log.info("matrep.sum mk={:016X} gxStages={} d3dStages={} albedoGx={} albedoMap={} "
-             "albedoTex={}x{} fmt={} colorFmt={} hint={} hintTex={} hintLoose={} "
+             "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
+             "usesTex={} usesVtx={} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
-             is_color_texture_format(afmt) ? 1 : 0, hintDecision, static_cast<void*>(hintTexture),
-             hintLooseWouldSuppress ? 1 : 0, tintDecision, hintTint,
-             consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
+             is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
+             albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
+             albedo.usesVertexColor ? 1 : 0, hintDecision, hintForm,
+             reinterpret_cast<uintptr_t>(hintTexture), hintLooseWouldSuppress ? 1 : 0, tintDecision,
+             hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"));
 
@@ -1290,9 +1476,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
 
     // What we actually handed D3D9, which is all Remix ever sees.
     for (uint32_t s = 0; s < d3dStage && s < MaxStages; ++s) {
-      Log.info("matrep.d3d mk={:016X} st={}/{} tex={} cop={} a1={} a2={} aop={} aa1={} aa2={} "
+      Log.info("matrep.d3d mk={:016X} st={}/{} tex={:016X} cop={} a1={} a2={} aop={} aa1={} aa2={} "
                "res={} konst={:08X}",
-               matKey, s, d3dStage, static_cast<void*>(g_cache.textures[s]),
+               matKey, s, d3dStage, reinterpret_cast<uintptr_t>(g_cache.textures[s]),
                g_cache.tss[s][D3DTSS_COLOROP], d3dta_name(g_cache.tss[s][D3DTSS_COLORARG1]),
                d3dta_name(g_cache.tss[s][D3DTSS_COLORARG2]), g_cache.tss[s][D3DTSS_ALPHAOP],
                d3dta_name(g_cache.tss[s][D3DTSS_ALPHAARG1]), d3dta_name(g_cache.tss[s][D3DTSS_ALPHAARG2]),

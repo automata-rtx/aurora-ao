@@ -44,12 +44,18 @@ Remix's land in `rtx-remix/logs/remix-dxvk.log`. **Both files are needed.**
 ## Joining the two logs
 
 The two sides cannot share a hash — they compute different things over different
-bytes. Join on the **texture pointer**, which is bit-identical on both sides:
+bytes. Join on the **texture pointer**, which is bit-identical on both sides and
+printed in the same format by both (bare uppercase, 16 hex digits):
 
 ```
-aurora   matrep.d3d ... tex=0x000001F4A2B30040
-fork     matrep.rmx ... tex0ptr=0x000001F4A2B30040
+aurora   matrep.sum ... hintTex=000001AF128B83A0
+aurora   matrep.d3d ... tex=000001AF128B83A0
+fork     matrep.rmx ... tex0ptr=000001AF128B83A0
 ```
+
+*(Until 2026-08-04 aurora printed `0x1af128b83a0` and the fork printed
+`000001AF128B83A0`, so the join key did not actually join. Keep these formats
+identical if you touch either side.)*
 
 Aurora's texture objects are content-addressed and stable across frames, so a
 pointer identifies a texture for the life of the device. It does **not** survive
@@ -66,8 +72,9 @@ This is the line that usually settles the question on its own.
 ```
 matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            albedoTex=32x32 fmt=GX_TF_I8 colorFmt=0
-           hint=skip:remixReadsItAlready hintTex=0x0 hintLoose=0
-           tint=detected tintVal=00FF3020 tfactor=FF00FF30 tfUsed=1
+           shape=ramp out0=B80000 out1=FFFFFF usesTex=1 usesVtx=0
+           hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
+           tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white
 ```
 
@@ -78,11 +85,38 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `albedoGx` / `albedoMap` | which GX stage and texmap we nominated as the albedo |
 | `albedoTex` / `fmt` | the nominated texture's size and GX format |
 | `colorFmt` | 1 if that format carries colour, 0 if it is an intensity mask |
-| `hint` | **the decision that matters** — see below |
+| **`shape`** | what the material *is* — see below |
+| **`out0` / `out1`** | **the colour the GX program produces where the texture reads black, and where it reads white.** This is ground truth: it is what the surface should look like |
+| `usesTex` / `usesVtx` | whether the colour pass reads its texture / the rasterized vertex colour |
+| `hint` | whether the hint stage was emitted — see below |
+| **`form`** | what the hint advertised — see below |
 | `hintLoose` | 1 if suppression was declined *only* because the material is multi-stage |
-| `tint` | whether an albedo tint was detected, and whether a stage carried it |
-| `tfactor` / `tfUsed` | the per-draw constant Remix will read, if any |
+| `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
+| `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
+
+### `shape` values
+
+| Value | Means |
+| :-- | :-- |
+| `tex` | plain texture, black to white — Remix needs no help |
+| `tex*c` | texture × one colour; a multiply reproduces it **exactly** |
+| `ramp` | `lerp(out0, out1, texture)` between two real colours — the common case in this game, and only approximable in the one stage Remix reads |
+| `flat` | the colour pass never reads the texture |
+| `unevaluable` | depends on a previous stage's result, so it cannot be evaluated here |
+
+### `form` values — what the hint told Remix
+
+| Value | Means |
+| :-- | :-- |
+| `mod:tint` | `TEXTURE × TFACTOR` — exact for `tex*c` |
+| `add:tint` | `TEXTURE + TFACTOR` — for a ramp that ends at white, where a multiply would darken the coloured floor |
+| `mod:vtx` | `TEXTURE × DIFFUSE`, with any tint riding a following stage |
+| `tex` | the texture alone |
+
+**The quickest read: compare `out0`/`out1` against `tfactor`.** If the material
+ramps `B80000 → FFFFFF` and `tfactor=FFB80000` with `form=add:tint`, the colour
+survived. If `out1` is a strong colour and `tfUsed=0`, it did not.
 
 ### `hint` values
 
@@ -101,18 +135,19 @@ A surface renders greyscale under Remix and correct in raw D3D9 when a colour
 term reached identity. In the report that reads:
 
 ```
-matrep.sum ... fmt=GX_TF_I8 colorFmt=0 hint=emitted ... vtxColor=default-white
+matrep.sum ... shape=ramp out0=B80000 out1=FFFFFF tfUsed=0 form=mod:vtx
 matrep.rmx ... albedo="TEX * VertexColor0"
 ```
 
-The texture is a luminance mask, the hint fired, and Remix is multiplying it by
-a vertex colour that is white. Texture × white = the texture, uncoloured.
+The material should ramp from red to white; `tfUsed=0` says no colour reached
+Remix, and the reconstruction is the texture times a vertex colour that is
+white. Texture × white = the texture, uncoloured.
 
 The fixed version:
 
 ```
-matrep.sum ... hint=skip:remixReadsItAlready tfactor=FF00FF30
-matrep.rmx ... albedo="TEX * tFactor(00FF30)"
+matrep.sum ... shape=ramp out0=B80000 out1=FFFFFF form=add:tint tfactor=FFB80000
+matrep.rmx ... albedo="TEX + tFactor(b80000)"
 ```
 
 ## Reading `matrep.rmx`
@@ -129,9 +164,15 @@ matrep.rmx id=… first=0 tex0ptr=… tex0hash=…
 `TEX * VertexColor0` with `vtxColor=default-white` upstream means the hint
 bleached it; `TEX * tFactor(…)` means the tint survived.
 
-`id` is keyed on the reconstruction inputs, not on the texture — so one texture
-used in several contexts produces one line **per context**, which is exactly the
-case texture-hash tagging cannot address.
+`id` is keyed on the reconstruction *shape* — the texture, the ops and the
+argument sources — so one texture used in several contexts produces one line
+**per context**, which is exactly the case texture-hash tagging cannot address.
+
+It deliberately **excludes** `tFactor`'s value. Including it (as the first
+version did) meant the same few materials were reported hundreds of times,
+because the game's tints track fog and time of day: the 2026-08-03 session
+produced 828 distinct tFactor values and exhausted the 1024 cap in 14 seconds.
+The value is still printed on every line; it just no longer multiplies them.
 
 Two caveats worth knowing:
 

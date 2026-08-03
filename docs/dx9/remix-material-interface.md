@@ -141,19 +141,47 @@ The question is only which D3D9 slot a constant lands in:
 > draw's *first* constant TFACTOR unconditionally, so in practice this means:
 > do not let an unimportant constant claim TFACTOR ahead of the albedo tint.
 
-## 7. Why this game hits it so hard
+## 7. The shape this game actually uses — measured, not assumed
 
-Twilight Princess colours many objects by tinting one shared greyscale texture.
-The proof is in the game's own data: the seven rupee colours are seven
-byte-identical resource rows — same archive, same model, same animation —
-differing only in which animation frame is held. One model, one texture, seven
-colours.
+**This section replaces an earlier claim that these materials are
+"greyscale texture × one tint colour". They are usually not**, and building a
+fix on that model is why the 2026-07-29 attempt matched almost nothing.
 
-So "the texture is greyscale" is *normal and correct* here, and any rule of the
-form "an intensity-format texture is not the albedo" is wrong for this game.
-`is_color_texture_format()` exists for a real reason (character eyes composite a
-colour eyeball with intensity masks) but it must never be read as "a luminance
-texture cannot be a material's albedo."
+Measured from the 2026-08-03 session log, over 111 distinct materials, the
+dominant shape is a **two-colour ramp**:
+
+```
+colour = lerp(colourA, colourB, textureIntensity)
+```
+
+The greyscale texture is not a mask waiting to be tinted — it is a *slider
+between two authored colours*. That is how one rupee texture yields seven rupee
+colours. `texture × colour` is only the **special case where colourA is black**.
+
+The numbers that settle it: with the old "look for a multiply" rule, **104 of
+111 materials reported no tint at all**. The 6 that were detected were exactly
+the ones whose floor was black — and those came out of Remix correctly coloured.
+Same code, same session, split precisely along that line.
+
+Consequences for anything touching this area:
+
+- **Do not pattern-match for a tint.** *Evaluate* the colour pass instead, with
+  the texture pinned to black and to white. The two endpoints tell you what the
+  material is, and `evaluate_albedo()` in `dx9_tev.cpp` does exactly this.
+- **A multiply cannot represent a ramp with a non-black floor.** `tex × C` always
+  falls to black where the texture is dark, so multiplying a floor-coloured ramp
+  *darkens* it. Remix also decodes `ADD`, which fits that shape: `tex + floor`
+  keeps the floor and saturates to white. Pick the op from the endpoints.
+- **"The texture is greyscale" is normal and correct here.** Any rule of the form
+  "an intensity-format texture is not the albedo" is wrong for this game.
+  `is_color_texture_format()` exists for a real reason (character eyes composite
+  a colour eyeball with intensity masks) but it must never be read as "a
+  luminance texture cannot be a material's albedo".
+- **A stage can bind a texture and not use it.** Materials here routinely open
+  with a setup stage whose colour pass is all `ZERO`, with the real work one
+  stage later. Selecting the first *textured* stage rather than the first stage
+  that *reads* its texture hands Remix an empty program — the second cause of
+  the same defect.
 
 ## 8. Design rules, collected
 
