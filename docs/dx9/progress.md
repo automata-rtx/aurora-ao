@@ -14,9 +14,14 @@
    `automata-rtx/dxvk-remix` (the Remix fork). `Fixed-Function` is the
    integration branch aurora and dusklight merge into at checkpoints that are
    CI-green *and* tested in game; it is deliberately behind.
-   All `claude/*` branches are retired and disposable — see `CLAUDE.md`,
-   which carries the standing rule to mirror session branches to
-   `Fixed-Function-dev` on every push.
+   **Push only your session's `claude/*` branch.** Earlier revisions of this
+   file called those branches "retired and disposable" and told sessions to
+   mirror them to `Fixed-Function-dev` on every push; that authorization was
+   **revoked by the owner on 2026-07-29** and both claims are now wrong. The
+   owner merges at milestones they choose, so a `claude/*` branch carrying
+   unmerged work is the normal state. Before deleting one,
+   `git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be
+   `0` — otherwise say so and stop. See `CLAUDE.md`.
 3. Check "Next steps" of the newest entry below; the code lives in
    `aurora-ao/lib/dx9/`. **If the task is about how the game *looks* under
    Remix rather than about the D3D9 backend, you are in the wrong repo** —
@@ -28,6 +33,109 @@
 5. Read `CLAUDE.md` at the repo root — notably: the owner's interactive
    approval prompts are broken in ALL their Claude Code sessions, so never
    use tools that require an approval prompt (work around them instead).
+
+---
+
+## Checkpoint 3.21 — what the Remix fur effort needed from skinning, and what is still unsolved (2026-08-03)
+
+**No aurora code changed in this checkpoint.** It exists because two separate
+wrong diagnoses were made on the dxvk-remix side by reasoning about "the
+skinning" without knowing which of aurora's two mechanisms a character
+actually uses. Getting that wrong costs a build-and-test round each time, so
+it is written down here, in the backend's own log.
+
+### The fact that matters: two mechanisms, and characters use the first
+
+Restating §5 of `architecture-notes.md` because its consequences are not
+obvious:
+
+1. **Matrix-palette (PNGP) — this is what ~all characters use, Wolf Link
+   included.** J3D pre-blends the weighted envelope on the **CPU** into a
+   ≤10-entry palette per draw packet (`J3DMtxBuffer::calcWeightEnvelopeMtx`);
+   each vertex then carries a single `GX_VA_PNMTXIDX`. Aurora's D3D9 path
+   writes **blend weight 1.0 and one index** per vertex.
+2. **`GXSetSkinning` (J3DSkinDeform) — rare, 2 actors.** Real per-vertex
+   `{bone, weight}[≤4]`, built by dusklight `src/dusk/gpu_skinning.cpp`.
+
+The trap: **mechanism 1 is single-influence per *vertex*, but the blend is
+not lost — it is baked inside each palette matrix.** So per-vertex rigid
+attachment to a palette slot is *exact*, and any consumer looking for
+multi-bone weights on a character finds none and concludes the mesh is
+"unskinned" or "rigid". It is neither. Two things follow that anyone touching
+this should hold onto:
+
+- A per-vertex weight of 1.0 is **not** evidence that a character deforms
+  rigidly. The deformation lives in the palette entry, which is recomputed
+  every frame from the animation.
+- A **triangle** whose corners point at different palette slots is
+  interpolated across its face — the surface stretches over the joint. So
+  "single influence per vertex" does **not** imply "rigid per triangle", and
+  anything that attaches to the surface between vertices needs the
+  barycentric blend of the corner slots, not one corner's slot.
+
+### What aurora contributed, and why it stands on its own
+
+Two checkpoints were driven by the fur work but are **not fur features**, and
+both are worth having regardless of whether fur is ever finished:
+
+- **3.19 draw batching** — one merged indexed draw per character material run
+  against a virtual 256-entry world palette, with entries allocated per
+  (slot, load-generation) so the merged bytes are deterministic under
+  animation. A character becomes *one mesh with a stable hash* instead of
+  dozens of per-packet draws.
+- **3.20 rest-space annotations** — `GXSetPosMtxRest` plus the D3D9 rewrite,
+  making those merged bytes one coherent bind-pose mesh instead of a mix of
+  joint-local and model-space vertices.
+
+Together they are what makes a character *addressable* from Remix at all:
+stable hashing, sane captures, and a mesh an artist can open in Blender and
+author against. Both were verified in game (3.20 above).
+
+### What is still unsolved
+
+**Fur attachment to the skeleton is not good enough in practice** — the
+owner's standing verdict as of 2026-08-03, after two rounds of fixes. Do not
+read the dxvk-remix hair doc as describing a solved problem.
+
+What is known, so it is not re-derived:
+
+- Strands are grouped into static clusters carried by a blended bone
+  transform; the grouping and the blend are correct in isolation and are
+  covered by offline harnesses (`scratchpad/tu/cluster_check.cpp`,
+  `surface_check.cpp` in the dxvk-remix tree).
+- Round 1 grouped by the root vertex's own blend weights. On these characters
+  that is always one bone, so the overlay reported **204 clusters, 0
+  blended** and nothing changed. This is mechanism 1 above, misread.
+- Round 2 grouped by the root's **barycentric blend over its triangle's
+  corner slots**, which does produce blended clusters offline (a synthetic
+  single-influence mesh whose triangles straddle bones went from 0 to 7 of 9
+  blended). In game it still did not satisfy.
+- Therefore the remaining defect is **not** "the weights are single-influence"
+  and **not** "the blend math is wrong". Both were checked.
+
+Unexplored candidates, roughly in order of how much they would explain:
+
+1. **Palette identity across frames.** Hair records palette indices once, at
+   growth time, and reuses them every frame. 3.19 allocates entries per
+   (slot, load-generation). If a character's generation numbering or packet
+   order shifts — LOD change, an actor reload, a different animation reaching
+   a different set of packets — recorded indices would point at the wrong
+   matrices, and the fur would follow the wrong bones. **This has never been
+   verified beyond the "deterministic bytes" claim, and it is the first thing
+   to test.** A cheap check: log the palette slot→joint mapping at growth and
+   again some frames later, and diff.
+2. **Mask-bound roots crossing slot boundaries.** With a scatter mask, a root
+   binds to the nearest *live* vertex and then resolves weights from that
+   vertex's incident triangles. Where the mask surface sits off the body, the
+   nearest live vertex can belong to a different body part than the root
+   visually sits on.
+3. **Strand direction, not root position.** Clusters carry a single blended
+   matrix, so a strand's whole length is transformed rigidly by it. Roots may
+   be landing correctly while the tufts splay wrongly under rotation.
+
+If this is picked up again, **get a frame's worth of ground truth before
+changing code**: the cluster count and blended count from the overlay, and a
+capture showing where strands sit versus where the pelt sits.
 
 ---
 
@@ -82,14 +190,24 @@ ConcatView `load()`s; the indexed `J3DShapeMtx`/`Multi` `load()`s carry the
 same hook for non-ConcatView models. LOD loads already concat the
 inverse-bind (`loadMtxConcatView_PNGP_LOD`) and billboards stay unannotated.
 
-**Verification state:** `dx9_vertex.cpp`, `dx9_draw.cpp`, `GXAurora.cpp` and
-`command_processor.cpp` pass the MinGW `-fsyntax-only` harness; dusklight's
-`J3DShapeMtx.cpp` passes it against the game's include set; the
-rewrite/compensation algebra (including the normal inverse-transpose) is
-covered by a standalone numeric check. Not yet run in game — first bring-up
-should check: (a) characters render identically (the compensation is exact by
-construction), (b) a Remix capture of Wolf Link shows head/tail in bind pose
-instead of origin spikes, (c) surface hair attaches to the visible pelt.
+**Verification state (updated 2026-08-02 — now run in game).**
+`dx9_vertex.cpp`, `dx9_draw.cpp`, `GXAurora.cpp` and `command_processor.cpp`
+pass the MinGW `-fsyntax-only` harness; dusklight's `J3DShapeMtx.cpp` passes
+it against the game's include set; the rewrite/compensation algebra
+(including the normal inverse-transpose) is covered by a standalone numeric
+check. In game:
+
+- (a) **characters render identically** — the compensation is exact by
+  construction and nothing regressed visually.
+- (b) **Remix captures export Wolf Link coherently** — head and tail in bind
+  pose instead of origin spikes. This was the point of the change and it
+  worked. (Captures come out at 0.01 scale; anything authored against a
+  capture, notably a hair scatter mask, must match that scale.)
+- (c) **surface hair attaches to the visible pelt** — strands scatter across
+  the real body rather than across an exploded one.
+
+So 3.20 delivered what it was for. What it did **not** fix is how well fur
+*follows* the skeleton once attached; see 3.21.
 
 ---
 
