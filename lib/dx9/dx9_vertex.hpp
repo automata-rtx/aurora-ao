@@ -41,6 +41,13 @@ struct DecodedDraw {
   uint8_t uvCount = 0;
   bool hasNormal = false;
   bool hasSpecular = false;
+  // Whether the DIFFUSE the draw carries came from the vertex stream (CLR0) or
+  // was substituted. Remix reads DIFFUSE as part of the albedo, so a
+  // substituted white is a silent identity - which is exactly how a tinted
+  // material can come out greyscale. Reported by the material report; see
+  // docs/dx9/material-report.md.
+  bool hasVertexColor = false;
+  uint32_t defaultDiffuse = 0xFFFFFFFFu; // meaningful only when !hasVertexColor
 };
 
 // Decodes vtxCount vertices from the raw GX stream (vtxSize bytes each,

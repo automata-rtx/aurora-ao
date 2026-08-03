@@ -254,6 +254,7 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   // Default diffuse when the stream carries no CLR0: channel-0 material color
   // when sourced from register, else opaque white (docs #8).
   uint32_t defaultDiffuse = 0xFFFFFFFFu;
+  out.hasVertexColor = plan[GX_VA_CLR0].attrType != GX_NONE;
   if (plan[GX_VA_CLR0].attrType == GX_NONE) {
     const auto& cc = g_gxState.colorChannelConfig[GX_COLOR0];
     if (cc.matSrc == GX_SRC_REG) {
@@ -262,6 +263,7 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
                        float_to_u8(mat[2]);
     }
   }
+  out.defaultDiffuse = defaultDiffuse;
 
   t_scratch.resize(static_cast<size_t>(out.stride) * vtxCount);
   uint8_t* dstBase = t_scratch.data();

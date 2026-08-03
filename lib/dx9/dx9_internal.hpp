@@ -312,6 +312,17 @@ void warn_once(uint64_t key, const char* what) noexcept;
 // Same de-duplication, logged at info level (diagnostics, not problems).
 void info_once(uint64_t key, const char* what) noexcept;
 
+// Material translation report: what the GX material was, what we handed D3D9,
+// and every decision taken in between. Always on and bounded, because the
+// project's rule is that a log answers the question rather than the owner.
+// Format, field meanings and worked examples: docs/dx9/material-report.md.
+inline constexpr size_t kMatrepMaxMaterials = 512;
+// True the first time this material key is seen, false afterwards and once the
+// cap is reached (which logs matrep.trunc exactly once). Callers log the lines
+// themselves through their own Module, so GX enums format via
+// lib/gx/gx_fmt.hpp rather than through a second set of name tables.
+bool matrep_should_emit(uint64_t key) noexcept;
+
 } // namespace aurora::dx9
 
 #endif // AURORA_ENABLE_D3D9

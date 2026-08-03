@@ -24,6 +24,12 @@ CameraView g_camera;
 
 static bool s_active = false;
 static absl::flat_hash_set<uint64_t> s_warned;
+// Material translation report. Deliberately a SEPARATE set from s_warned: a key
+// collision between the two would silently suppress one of them, and these keys
+// are content hashes rather than hand-assigned ids. See
+// docs/dx9/material-report.md for the format and why it is always on.
+static absl::flat_hash_set<uint64_t> s_matrep;
+static uint32_t s_matrepSuppressed = 0;
 // Backbuffer color/depth surfaces, cached after device create/reset so
 // offscreen passes can restore them.
 static IDirect3DSurface9* s_backbufferColor = nullptr;
@@ -72,6 +78,23 @@ void warn_once(uint64_t key, const char* what) noexcept {
   if (s_warned.insert(key).second) {
     Log.warn("dx9: unsupported: {} (key={:#x})", what, key);
   }
+}
+
+// One line per distinct material configuration, capped so a play session costs
+// kilobytes. Format and reading guide: docs/dx9/material-report.md.
+bool matrep_should_emit(uint64_t key) noexcept {
+  if (s_matrep.contains(key)) {
+    return false;
+  }
+  if (s_matrep.size() >= kMatrepMaxMaterials) {
+    if (s_matrepSuppressed++ == 0) {
+      Log.info("matrep.trunc side=aurora cap={} - further distinct materials not reported",
+               kMatrepMaxMaterials);
+    }
+    return false;
+  }
+  s_matrep.insert(key);
+  return true;
 }
 
 static void apply_default_state() noexcept {

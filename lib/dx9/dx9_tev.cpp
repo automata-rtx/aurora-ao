@@ -3,6 +3,9 @@
 #ifdef AURORA_ENABLE_D3D9
 
 #include "dx9_texture.hpp"
+// GX enum names for the material report, so the log never carries a second
+// copy of them that can drift (docs/dx9/material-report.md).
+#include "../gx/gx_fmt.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -46,6 +49,27 @@ inline uint32_t pack_argb(const Vec4<float>& c) noexcept {
 inline uint32_t pack_gray(float v) noexcept {
   const uint32_t g = to_u8(v);
   return g << 24 | g << 16 | g << 8 | g;
+}
+
+// D3D9 argument names for the material report. GX enum names come from
+// lib/gx/gx_fmt.hpp's format_as overloads - the single source of truth for
+// those - but D3D9 arguments have no equivalent, and the two modifier bits are
+// worth spelling out because both make Remix drop the argument to identity.
+// See docs/dx9/material-report.md.
+const char* d3dta_name(DWORD ta) noexcept {
+  const DWORD base = ta & ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE);
+  const bool comp = (ta & D3DTA_COMPLEMENT) != 0;
+  const bool rep = (ta & D3DTA_ALPHAREPLICATE) != 0;
+  switch (base) {
+  case D3DTA_DIFFUSE: return comp ? "~DIFFUSE" : (rep ? "DIFFUSE.a" : "DIFFUSE");
+  case D3DTA_CURRENT: return comp ? "~CURRENT" : (rep ? "CURRENT.a" : "CURRENT");
+  case D3DTA_TEXTURE: return comp ? "~TEXTURE" : (rep ? "TEXTURE.a" : "TEXTURE");
+  case D3DTA_TFACTOR: return comp ? "~TFACTOR" : (rep ? "TFACTOR.a" : "TFACTOR");
+  case D3DTA_SPECULAR: return "SPECULAR";
+  case D3DTA_TEMP: return comp ? "~TEMP" : (rep ? "TEMP.a" : "TEMP");
+  case D3DTA_CONSTANT: return comp ? "~CONSTANT" : (rep ? "CONSTANT.a" : "CONSTANT");
+  default: return "?";
+  }
 }
 
 // Resolves a konst color selector to ARGB.
@@ -357,33 +381,25 @@ inline Operand white_operand() noexcept {
 
 // --- RTX Remix material reconstruction -------------------------------------
 //
-// Remix rebuilds a draw call's material from exactly ONE texture stage - the
-// first stage bound to the lowest D3DTSS_TEXCOORDINDEX
-// (D3D9Rtx::processTextures) - and that stage's color/alpha op and args become
-// the surface's entire albedo and opacity (d3d9_rtx_utils.cpp
-// setTextureStageState -> opaque_surface_material_interaction.slangh).
+// Remix rebuilds a draw's material from exactly ONE texture stage, so most of
+// what we emit below is invisible to it, and anything it cannot decode resolves
+// to identity - white - rather than to an error.
 //
-// Args it cannot decode (D3DTA_TEMP, D3DTA_CONSTANT, anything carrying
-// D3DTA_COMPLEMENT/D3DTA_ALPHAREPLICATE) become RtTextureArgSource::None,
-// which the shader resolves to *identity* - vec3(1.0) for color, the sampled
-// opacity for alpha arg1 - so those are harmless on their own.
+// This is the most misunderstood system in the project and it has been
+// described wrongly in comments twice. The authoritative account, including
+// what survives the capture path, why the hint stage below is conditional, and
+// the design rules that follow, is:
 //
-// The damage comes from the single-stage view itself: a GX material's first
-// TEV stage is rarely the finished albedo. When it computes, say,
-// `texture x konst` with a dark konst (which we route through TFACTOR), Remix
-// takes that partial result as the whole albedo and the surface renders black
-// or near-black - while the texture is resident and correctly bound, so it
-// still appears in Remix's texture list. The same applies to alpha: that one
-// stage's alpha becomes the whole opacity, so alpha-tested cutouts lose their
-// shape (foliage cards render as full quads) or vanish entirely (grass) when
-// the first stage's alpha is a blend weight rather than the texture's alpha.
+//     docs/dx9/remix-material-interface.md
 //
-// So unless the leading stage already presents the texture the way Remix will
-// read it, prepend a stage that does: color = TEXTURE * DIFFUSE, alpha =
-// TEXTURE. It writes CURRENT, which the real chain then overwrites, and is
-// only emitted when nothing in that GX stage reads CURRENT - so the
-// rasterized result is unchanged. (A draw with no vertex colors resolves
-// DIFFUSE to None = identity on both sides, so the modulate is a no-op there.)
+// Keep it there. A comment that re-explains it will go stale against it.
+//
+// The short version, only so the code below reads sensibly: a GX material's
+// first TEV stage is rarely the finished albedo, and that one stage's alpha
+// becomes the whole opacity - which is what destroys alpha-tested cutouts. So
+// when Remix would read this stage wrongly we prepend a stage it reads right.
+// When Remix would read it correctly we must NOT, because the hint cannot
+// express a tint and would replace a good material with a worse one.
 constexpr DWORD arg_base(DWORD ta) noexcept { return ta & ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE); }
 
 // True when this op hands Remix the texture as-is, optionally modulated by
@@ -416,12 +432,63 @@ bool op_is_plain_texture(const PassOp& op) noexcept {
   return sawTexture;
 }
 
+// Whether Remix will decode this operand at all. An operand it cannot decode
+// becomes RtTextureArgSource::None, which its shader resolves to *identity* -
+// white for colour. See docs/dx9/remix-material-interface.md for the full list
+// of what survives the capture path and what does not.
+//
+// A constant only survives if it lands in TFACTOR; the per-stage
+// D3DTSS_CONSTANT slot is never read by Remix.
+//
+// An unclaimed TFACTOR counts as decodable: materialize() hands the draw's
+// first constant TFACTOR unconditionally, so a constant asked about before any
+// stage has been emitted is the one that will get it. Missing this is how the
+// July 2026 fix came to depend on albedo_tint() having already claimed the
+// slot, and therefore did nothing whenever that predicate declined.
+bool remix_decodes_arg(const Operand& o, const ConstAlloc& consts) noexcept {
+  if (o.isConst) {
+    return !consts.tfactorUsed || consts.tfactor == o.constValue;
+  }
+  if (o.ta != arg_base(o.ta)) {
+    return false; // COMPLEMENT / ALPHAREPLICATE are not decoded
+  }
+  return o.ta == D3DTA_TEXTURE || o.ta == D3DTA_DIFFUSE || o.ta == D3DTA_TFACTOR;
+}
+
+// True when Remix, reading this stage alone, reconstructs the albedo we meant -
+// including any tint. This is the test that decides whether the hint stage
+// below is needed; emitting the hint when this is already true is what bleached
+// rupees, hearts and lava, because the hint can only say TEXTURE x DIFFUSE and
+// it wins the stage Remix reads.
+bool remix_decodes_albedo(const PassOp& op, const ConstAlloc& consts) noexcept {
+  if (op.op != D3DTOP_MODULATE && op.op != D3DTOP_MODULATE2X && op.op != D3DTOP_MODULATE4X &&
+      op.op != D3DTOP_SELECTARG1 && op.op != D3DTOP_SELECTARG2) {
+    return false;
+  }
+  if (op.usesArg0 || op.complementArg2) {
+    return false;
+  }
+  if (!remix_decodes_arg(op.arg1, consts)) {
+    return false;
+  }
+  if (op.usesArg2 && !remix_decodes_arg(op.arg2, consts)) {
+    return false;
+  }
+  const auto isTex = [](const Operand& o) { return !o.isConst && o.ta == D3DTA_TEXTURE; };
+  return isTex(op.arg1) || (op.usesArg2 && isTex(op.arg2));
+}
+
 // Intensity-only GX formats carry no colour: they are masks - eye highlights,
 // eye shadows, gradient ramps. When a material mixes them with a colour
 // texture, the colour one is the albedo Remix should be shown. Character eyes
 // are the case that forced this: their first textured stage samples a 32x32 I8
 // highlight mask, with the actual eyeball (64x64 CMPR) two stages later, so
 // taking the first textured stage handed Remix a grey blob for the eye.
+//
+// CAUTION: a luminance texture tinted by a konst is a legitimate albedo (it is
+// how this game colours rupees and hearts), so "not a colour format" does not
+// mean "not the albedo". See docs/dx9/material-report.md - the report's
+// albedoFmt field exists to catch exactly that misselection.
 bool is_color_texture_format(uint32_t fmt) noexcept {
   switch (fmt) {
   case GX_TF_I4:
@@ -798,21 +865,15 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
   return tci | index;
 }
 
-// The constant that tints the material's albedo, when it has one.
+// The constant that tints the material's albedo, when it has one, so apply_tev
+// can claim TFACTOR for it before any other constant takes the slot. Only
+// TFACTOR survives into Remix; D3DTSS_CONSTANT does not.
 //
-// Remix rebuilds a surface from a single stage and, among our two constant
-// slots, understands only D3DTA_TFACTOR - it never reads D3DTSS_CONSTANT
-// anywhere in its capture path. An arg it cannot decode becomes
-// RtTextureArgSource::None, which the shader resolves to *identity*, i.e.
-// white. So a lost tint does not darken a surface, it bleaches it: a rupee is
-// a luminance texture tinted by a konst, and under Remix it renders greyscale
-// while raw D3D9 is correct. Hearts are the same shape of material.
-//
-// Reporting the tint here lets apply_tev claim TFACTOR for it up front, before
-// any other constant can take the slot. That makes the value deterministic
-// rather than "whichever operand happened to ask first", and costs nothing:
-// materialize() already hands back TFACTOR for a matching constant, so the
-// real stage that uses this konst reuses the same slot.
+// Deliberately narrow: only a plain "texture x constant" lead counts, because
+// advertising a guess trades a missing colour for a wrong one, which is harder
+// to spot. That narrowness is also why the 2026-07-29 fix built on this
+// predicate did nothing - see docs/dx9/remix-material-interface.md, which owns
+// the full account of what crosses this interface and what silently does not.
 bool albedo_tint(const DecodedDraw& draw, uint32_t& outTint) noexcept {
   const int idx = preferred_albedo_stage();
   if (idx < 0) {
@@ -870,49 +931,22 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     consts.tfactorUsed = true;
   }
 
-  // Diagnostic for multi-texture materials: Remix can only take one of their
-  // textures as the surface albedo, so when a character's eye composites an
-  // eyeball, a highlight and an eye shadow in one draw, only one survives.
-  // Log each distinct layout once so a run's log identifies exactly which
-  // texmap/texcoord each stage samples and which one we hand Remix.
-  {
-    uint64_t layoutKey = 0xD1A6;
-    uint32_t textured = 0;
-    for (uint32_t i = 0; i < numStages; ++i) {
-      const auto& s = g_gxState.tevStages[i];
-      if (s.texMapId == GX_TEXMAP_NULL || s.texCoordId == GX_TEXCOORD_NULL) {
-        continue;
-      }
-      ++textured;
-      layoutKey = layoutKey * 1315423911u + (static_cast<uint64_t>(s.texMapId) << 8) +
-                  static_cast<uint64_t>(s.texCoordId) + i;
-    }
-    if (textured > 1) {
-      char buf[256];
-      int off = std::snprintf(buf, sizeof(buf), "multi-texture material (%u textured stages):", textured);
-      for (uint32_t i = 0; i < numStages && off > 0 && off < static_cast<int>(sizeof(buf)); ++i) {
-        const auto& s = g_gxState.tevStages[i];
-        if (s.texMapId == GX_TEXMAP_NULL || s.texCoordId == GX_TEXCOORD_NULL) {
-          continue;
-        }
-        // Dimensions/format identify which texture each stage samples, so a
-        // log can be matched against Remix's texture list - the stage order
-        // decides which one becomes the albedo, and picking the right one for
-        // e.g. an eye needs to know which map is the eyeball.
-        uint32_t w = 0;
-        uint32_t h = 0;
-        uint32_t fmt = 0;
-        if (s.texMapId < static_cast<int>(gx::MaxTextures)) {
-          const auto& obj = g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)];
-          w = obj.width();
-          h = obj.height();
-          fmt = obj.format();
-        }
-        off += std::snprintf(buf + off, sizeof(buf) - static_cast<size_t>(off), " [gx%u map%d coord%d %ux%u fmt%u]",
-                             i, static_cast<int>(s.texMapId), static_cast<int>(s.texCoordId), w, h, fmt);
-      }
-      info_once(layoutKey, buf);
-    }
+  // Decisions recorded for the material report emitted at the tail of this
+  // function. They are the whole point of the report: every one of them used to
+  // be invisible, which is why this defect took three sessions to locate.
+  // Field meanings: docs/dx9/material-report.md.
+  const char* hintDecision = "notReached";
+  const char* tintDecision = hasHintTint ? "detected" : "none";
+  bool hintLooseWouldSuppress = false;
+  IDirect3DBaseTexture9* hintTexture = nullptr;
+
+  // Identity of this material configuration, used to report each distinct one
+  // once. Hashed over the GX stage configs, so two materials that differ only
+  // in which texture object is bound collapse together - which is what we want,
+  // since the translation decisions depend on the configuration, not the pixels.
+  uint64_t matKey = 0xD1A6;
+  for (uint32_t i = 0; i < numStages; ++i) {
+    matKey = matKey * 1315423911u + xxh3_hash(g_gxState.tevStages[i], 0);
   }
 
   uint32_t d3dStage = 0;
@@ -1000,12 +1034,39 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       const PassOp& alphaLead = (anyTemp && ap.hasTemp) ? ap.tempOp : ap.finals[0];
       // A stage that already presents its texture plainly still needs the hint
       // when the colour texture lives on a different stage.
-      const bool alreadyPlain = op_is_plain_texture(colorLead) && op_is_plain_texture(alphaLead) &&
-                                albedoStage.texMapId == stage.texMapId;
+      const bool sameTexture = albedoStage.texMapId == stage.texMapId;
+      // Opacity must reach Remix as the texture's own alpha or alpha-tested
+      // cutouts break (foliage becomes solid quads, grass disappears). That is
+      // the half of the hint that is never in question, so it gates every
+      // suppression below.
+      const bool alphaPlain = op_is_plain_texture(alphaLead);
+      const bool colorPlain = op_is_plain_texture(colorLead);
+      // The hint actively destroys a tint Remix would otherwise have read, so
+      // suppress it when this stage IS the whole material and Remix decodes it.
+      // Restricted to single-stage materials on purpose: on a multi-stage
+      // material a later stage may change the colour, and Remix reading only
+      // this one would then be confidently wrong. The report's hintLoose field
+      // measures what dropping that restriction would catch.
+      // Background: docs/dx9/remix-material-interface.md.
+      const bool colorDecodable = remix_decodes_albedo(colorLead, consts);
+      const bool decodableSuppress = sameTexture && alphaPlain && colorDecodable && numStages == 1;
+      hintLooseWouldSuppress = sameTexture && alphaPlain && colorDecodable && !colorPlain && numStages != 1;
+      const bool alreadyPlain = (colorPlain && alphaPlain && sameTexture) || decodableSuppress;
       const bool currentSafe = g_dx9.tssTemp || (d3dStage == 0 && !pass_reads(cp, D3DTA_CURRENT) &&
                                                  !pass_reads(ap, D3DTA_CURRENT));
+      if (alreadyPlain) {
+        hintDecision = decodableSuppress && !colorPlain ? "skip:remixReadsItAlready" : "skip:alreadyPlain";
+      } else if (!currentSafe) {
+        hintDecision = "skip:unsafeCurrent";
+      }
       if (!alreadyPlain && currentSafe) {
-        if (IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId); tex != nullptr) {
+        IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId);
+        if (tex == nullptr) {
+          hintDecision = "skip:noTexture";
+        }
+        if (tex != nullptr) {
+          hintDecision = "emitted";
+          hintTexture = tex;
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, albedoStage.texMapId);
           set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, albedoStage.texCoordId, draw));
@@ -1023,19 +1084,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           ++d3dStage;
 
           // Carry the albedo tint, which the hint's TEXTURE x DIFFUSE cannot
-          // express - a modulate takes two args and both are already spoken
-          // for. Remix decodes exactly one extra MODULATE against TFACTOR
-          // (isTextureFactorBlendingEnabled; rtx.enableMultiStageTextureFactor
-          // Blending defaults on), and it matches that against whatever
-          // register the *previous* stage wrote. So this has to sit
-          // immediately after the hint and read the same register the hint
-          // wrote, or it is not recognised.
-          //
-          // Raster-neutral on the same grounds as the hint: with a TEMP
-          // register this only ever touches scratch, and without one the hint
-          // already established that nothing in this GX stage reads CURRENT
-          // back before the real chain overwrites it.
+          // express. Remix decodes one extra MODULATE against TFACTOR, matched
+          // against the register the *previous* stage wrote - so this must sit
+          // immediately after the hint and read the register the hint wrote.
+          // Raster-neutral on the same grounds as the hint.
+          // Details: docs/dx9/remix-material-interface.md §4.
+          if (hasHintTint && d3dStage + need >= MaxStages) {
+            tintDecision = "skip:budget";
+          }
           if (hasHintTint && d3dStage + need < MaxStages) {
+            tintDecision = "emitted";
             const DWORD hintReg = g_dx9.tssTemp ? D3DTA_TEMP : D3DTA_CURRENT;
             set_texture(d3dStage, nullptr);
             set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
@@ -1164,6 +1222,82 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
 
   if (consts.tfactorUsed) {
     set_rs(D3DRS_TEXTUREFACTOR, consts.tfactor);
+  }
+
+  // The material translation report. Emitted here because this is the only
+  // point where the GX input, every decision taken, and the finished D3D9 state
+  // all exist at once. Reading guide: docs/dx9/material-report.md.
+  if (matrep_should_emit(matKey)) {
+    const int albedoIdx = preferred_albedo_stage();
+    uint32_t aw = 0;
+    uint32_t ah = 0;
+    uint32_t afmt = 0;
+    int amap = -1;
+    if (albedoIdx >= 0) {
+      const auto& s = g_gxState.tevStages[static_cast<size_t>(albedoIdx)];
+      amap = static_cast<int>(s.texMapId);
+      if (s.texMapId >= 0 && s.texMapId < static_cast<int>(gx::MaxTextures)) {
+        const auto& obj = g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)];
+        aw = obj.width();
+        ah = obj.height();
+        afmt = obj.format();
+      }
+    }
+    Log.info("matrep.sum mk={:016X} gxStages={} d3dStages={} albedoGx={} albedoMap={} "
+             "albedoTex={}x{} fmt={} colorFmt={} hint={} hintTex={} hintLoose={} "
+             "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={}",
+             matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
+             is_color_texture_format(afmt) ? 1 : 0, hintDecision, static_cast<void*>(hintTexture),
+             hintLooseWouldSuppress ? 1 : 0, tintDecision, hintTint,
+             consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
+             draw.hasVertexColor ? "stream"
+                                 : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"));
+
+    // Per-stage GX detail: the material the game asked for, not our reduction
+    // of it. GX enum names come from lib/gx/gx_fmt.hpp.
+    for (uint32_t i = 0; i < numStages; ++i) {
+      const auto& s = g_gxState.tevStages[i];
+      const bool textured = s.texMapId != GX_TEXMAP_NULL && s.texCoordId != GX_TEXCOORD_NULL;
+      uint32_t w = 0;
+      uint32_t h = 0;
+      uint32_t fmt = 0;
+      if (textured && s.texMapId >= 0 && s.texMapId < static_cast<int>(gx::MaxTextures)) {
+        const auto& obj = g_gxState.loadedTextures[static_cast<size_t>(s.texMapId)];
+        w = obj.width();
+        h = obj.height();
+        fmt = obj.format();
+      }
+      Log.info("matrep.gx  mk={:016X} st={}/{} map={} coord={} tex={}x{} fmt={} "
+               "cc=[{},{},{},{}] cop={} scale={} out={} ca=[{},{},{},{}] aop={} "
+               "kc={} ka={} ind={}",
+               matKey, i, numStages, s.texMapId, s.texCoordId, w, h, static_cast<GXTexFmt>(fmt),
+               s.colorPass.a, s.colorPass.b, s.colorPass.c, s.colorPass.d, s.colorOp.op, s.colorOp.scale,
+               s.colorOp.outReg, s.alphaPass.a, s.alphaPass.b, s.alphaPass.c, s.alphaPass.d, s.alphaOp.op,
+               s.kcSel, s.kaSel, s.indTexMtxId != GX_ITM_OFF ? 1 : 0);
+    }
+
+    // The GX colour constants, which is where this game keeps the colour that
+    // distinguishes a green rupee from a red one, and the lighting bit that
+    // says whether the surface is self-lit.
+    Log.info("matrep.k   mk={:016X} K0={:08X} K1={:08X} K2={:08X} K3={:08X} "
+             "C0={:08X} C1={:08X} C2={:08X} lit={} matSrc={}",
+             matKey, pack_argb(g_gxState.kcolors[0]), pack_argb(g_gxState.kcolors[1]),
+             pack_argb(g_gxState.kcolors[2]), pack_argb(g_gxState.kcolors[3]),
+             pack_argb(g_gxState.colorRegs[1]), pack_argb(g_gxState.colorRegs[2]),
+             pack_argb(g_gxState.colorRegs[3]),
+             g_gxState.colorChannelConfig[GX_COLOR0].lightingEnabled ? 1 : 0,
+             g_gxState.colorChannelConfig[GX_COLOR0].matSrc);
+
+    // What we actually handed D3D9, which is all Remix ever sees.
+    for (uint32_t s = 0; s < d3dStage && s < MaxStages; ++s) {
+      Log.info("matrep.d3d mk={:016X} st={}/{} tex={} cop={} a1={} a2={} aop={} aa1={} aa2={} "
+               "res={} konst={:08X}",
+               matKey, s, d3dStage, static_cast<void*>(g_cache.textures[s]),
+               g_cache.tss[s][D3DTSS_COLOROP], d3dta_name(g_cache.tss[s][D3DTSS_COLORARG1]),
+               d3dta_name(g_cache.tss[s][D3DTSS_COLORARG2]), g_cache.tss[s][D3DTSS_ALPHAOP],
+               d3dta_name(g_cache.tss[s][D3DTSS_ALPHAARG1]), d3dta_name(g_cache.tss[s][D3DTSS_ALPHAARG2]),
+               d3dta_name(g_cache.tss[s][D3DTSS_RESULTARG]), g_cache.tss[s][D3DTSS_CONSTANT]);
+    }
   }
 
   // Terminate the stage chain. Every unused stage is disabled *and* unbound:

@@ -38,7 +38,7 @@ the D3D9 stream is correct — raw D3D9 renders these cases properly.
 | # | Remix behavior | Consequence | What we do |
 |---|----------------|-------------|------------|
 | R1 | **One albedo texture per draw.** Remix reconstructs a material from a single texture stage (the first bound to the lowest `D3DTSS_TEXCOORDINDEX`) and only `colorTextures[0]` is the albedo — `ColorTexture2` is RayPortal-only | Any GX material compositing several textures in one draw shows **only one layer** under Remix. Character eyes composite an eyeball (CMPR) with I8/I4 highlight and shadow masks | We advertise the **colour** texture (`preferred_albedo_stage`), so the eyeball wins over the masks. Showing all layers would need multi-pass splitting (base pass + overlay stages re-emitted as blended decal draws) — designed but not built |
-| R2 | **That one stage's op/args become the whole albedo *and* opacity** | A partial first stage (e.g. `texture x dark konst`) renders the surface black; a first stage whose alpha is a blend weight destroys alpha-test cutouts (foliage as full quads, grass invisible) | A raster-neutral hint stage (`MODULATE(TEXTURE, DIFFUSE)` / `SELECTARG1(TEXTURE)`) is prepended, writing TEMP so the real chain is untouched |
+| R2 | **That one stage's op/args become the whole albedo *and* opacity** | A partial first stage (e.g. `texture x dark konst`) renders the surface black; a first stage whose alpha is a blend weight destroys alpha-test cutouts (foliage as full quads, grass invisible) | A raster-neutral hint stage (`MODULATE(TEXTURE, DIFFUSE)` / `SELECTARG1(TEXTURE)`) is prepended, writing TEMP so the real chain is untouched. **Conditional since 2026-08-03** — emitting it over a material Remix already reads correctly replaces a good albedo with a worse one, which is what bleached rupees, hearts and lava. See [`remix-material-interface.md`](remix-material-interface.md) §5 |
 | R3 | Undecodable args (`D3DTA_TEMP`, `D3DTA_CONSTANT`, `COMPLEMENT`, `ALPHAREPLICATE`) resolve to `RtTextureArgSource::None` = **identity**, not zero | Harmless on their own — worth recording because an earlier revision of these docs claimed they rendered black, and that wrong premise cost a full test round | Nothing needed |
 | R4 | **UI overlay is not re-derived from a mid-run device `Reset`** | HUD keeps the scale/placement it had at device-creation size after any resize; raw D3D9 follows the Reset correctly | Resizes **recreate** the device instead (`recreate_device`), debounced one frame. Costs a black screen for the rebuild |
 | R5 | **`MaxVertexBlendMatrixIndex` is not enforced** — Remix reads the transform state directly and skins on the GPU | Masked a real raw-D3D9 bug for weeks: GX's 10-deep matrix palette overran the device's 9-index cap and scattered vertices, while Remix looked perfect | Palette is compacted per draw, and overflow draws are split into per-palette groups |
@@ -74,12 +74,11 @@ play-through produces a to-triage list to fold back into this document.
   signal (it is how the 3-constant ceiling was identified as the most frequent
   gap at 28 stages, and the compare-mode approximation as the prime suspect
   for the raw-D3D9 white ground at 4).
-- **Multi-texture materials** (INFO, via `info_once`):
-  `dx9: multi-texture material (N textured stages): [gx0 map2 coord2 32x32 fmt1] …`
-  — per stage: GX stage index, texmap, texcoord, texture dimensions and GX
-  format. This is what identified the eye material (I8 mask first, CMPR
-  eyeball two stages later) and is the tool to reach for whenever Remix shows
-  the wrong texture for a material.
+- **Material translation** (INFO, `matrep.*`): the full GX → D3D9 → Remix chain
+  for each distinct material, always on and bounded. Format and reading guide:
+  [`material-report.md`](material-report.md). This **replaces** the older
+  `multi-texture material (N textured stages)` line, which reported only
+  multi-texture draws and keyed on fields it did not print.
 
 **Known raw-D3D9 defect still open:** ground textures render pure white in raw
 D3D9 while Remix shows them correctly (Remix only reads the first stage, so it
@@ -112,7 +111,7 @@ The mechanism is Remix's **RTX injection boundary**: the first orthographic,
 z-write-disabled draw on the primary render target ends the raytraced scene for
 that frame, and every draw after it is rasterized-only and never categorised.
 Aurora submits these draws correctly — they arrive on the wrong side of a line
-Remix draws. Full write-up in `dusklight-ao/docs/kankyo-remix.md` open issue 6.
+Remix draws. Full write-up in `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
 **What is still worth checking here:** nothing urgent. Aurora is where the
 ortho and z-write state for the letterbox and fade quads is applied, so if the
@@ -166,11 +165,12 @@ circle shows" and "the flame renders as a white blob" are one bug, and it is
 **How to confirm, when testing resumes — cheapest first:**
 
 1. **Read the aurora log stood at a lit torch.** Free, no rebuild. The backend
-   already emits `dx9: unsupported: <reason> (key=0x…)` (`warn_once`) and
-   `dx9: multi-texture material (N textured stages): …` (`info_once`). If the
-   fire's TEV program hits an unsupported case, this names it outright. This is
-   the same instrumentation that identified the 3-constant ceiling at 28 stages
-   and compare-mode at 4.
+   emits `dx9: unsupported: <reason> (key=0x…)` (`warn_once`) and the full
+   `matrep.*` material report ([`material-report.md`](material-report.md)),
+   whose per-stage `matrep.gx` lines show the fire's TEV program directly — so
+   an unsupported shape can be read off the log rather than inferred from a
+   warning that may not have fired. This is the same class of instrumentation that
+   identified the 3-constant ceiling at 28 stages and compare-mode at 4.
 2. **A/B raw D3D9 against Remix at the same torch.** Decisive on ownership,
    because the known white-ground defect has a distinctive signature — wrong in
    raw D3D9, *correct* under Remix, since Remix only reads the first texture
@@ -182,42 +182,39 @@ circle shows" and "the flame renders as a white blob" are one bug, and it is
    | correct flame | circle | capture/categorization — the fork |
    | circle | circle | the resource itself, or a shared earlier stage |
 3. Only if both are inconclusive, fall back to the draw-call-ID work in
-   `kankyo-remix.md` open issue 6.
+   `remix-open-issues.md` open issue 6.
 
 ### Two more Remix-visible material defects, reported 2026-07-29
 
-Both trace to the same place — `dx9_tev.cpp`'s "RTX Remix material
-reconstruction" section — and both are this repo's to fix.
+**Rupees, hearts and Goron Mines lava render greyscale under Remix, correct in
+raw D3D9.**
 
-**Rupees and hearts render greyscale under Remix, correct in raw D3D9.**
+**Root-caused 2026-08-03, and the cause is not what this section said for a
+week.** The full account is in
+[`remix-material-interface.md`](remix-material-interface.md); the short version:
 
-The mechanism is exact. Remix rebuilds a draw's material from **one** texture
-stage and a small set of decodable args. It understands `D3DTA_TFACTOR`; it
-**never reads `D3DTSS_CONSTANT` / `D3DTA_CONSTANT` anywhere in its capture
-path** — verified by grep across `d3d9_rtx.cpp` and the material types. Args it
-cannot decode resolve to `RtTextureArgSource::None`, which the shader treats as
-**identity — `vec3(1.0)` for colour**.
+- The colour is **not** lost in a channel Remix cannot decode. Remix reads
+  `MODULATE(TEXTURE, TFACTOR)` correctly, and `materialize()` already routes a
+  material's first constant to TFACTOR.
+- It is lost because **aurora's own Remix hint stage overwrites the material
+  Remix was reading correctly.** The hint wins the stage Remix reads, and it can
+  only say `TEXTURE × DIFFUSE` — with `DIFFUSE` substituted as opaque white when
+  the mesh carries no vertex colours. Texture × white = greyscale.
+- The 2026-07-29 fix (`389e4d5`) added a repair stage carrying the tint, but
+  gated the whole thing behind `albedo_tint()`, a predicate narrow enough that
+  it declined these materials. The commit emitted **no additional D3D9 state at
+  all** — a byte-for-byte no-op, which is exactly what testing reported.
 
-Aurora deliberately uses two constant slots per stage (`materialize()`,
-`dx9_tev.cpp:296-322`): the per-draw `TFACTOR` first, then the per-stage
-`D3DTSS_CONSTANT`. **Any GX konst that lands in the second slot is invisible to
-Remix and silently becomes white.** A rupee is a luminance texture tinted by a
-konst; lose the tint and you get exactly the reported greyscale.
+**Fixed 2026-08-03** by suppressing the hint when Remix already decodes the
+stage correctly (`remix_decodes_albedo()` in `dx9_tev.cpp`), and by the
+[material report](material-report.md), which makes the decision observable
+instead of inferred. The suppression is deliberately restricted to
+single-stage materials; the report's `hintLoose` field measures what widening it
+would catch.
 
-There is a second, likelier-still path to the same symptom: the **Remix hint
-stage** (`dx9_tev.cpp:928-960`) advertises `colour = TEXTURE * DIFFUSE`,
-`alpha = TEXTURE`. That is the right shape for foliage, but it deliberately
-carries **no konst term at all** — so where a material's colour comes from a
-konst rather than from vertex colour, the hint itself throws the tint away.
-
-*Fix directions, neither implemented:* have the hint modulate by `TFACTOR` when
-the material's colour is konst-driven and there is no meaningful vertex colour;
-or emit a following `MODULATE(CURRENT|TEMP, TFACTOR)` stage, which Remix
-**does** understand — `enableMultiStageTextureFactorBlending` defaults to
-**true** and `isTextureFactorBlendingEnabled` explicitly matches that pattern
-against `CURRENT` or `TEMP` (`d3d9_rtx.cpp:944-980`). Prefer routing a
-material's albedo tint to TFACTOR over the per-stage constant whenever a choice
-exists, on the grounds that only one of the two survives into Remix.
+The general rule this leaves behind, and it survives the corrected diagnosis:
+**route a material's albedo tint to TFACTOR rather than the per-stage constant
+whenever there is a choice, because only one of the two survives into Remix.**
 
 **Grass patches shade wrongly under Remix, fine in raw D3D9.** Reported
 symptoms: glowing in the dark, being too dark, very delayed lighting response,
@@ -246,5 +243,5 @@ prerequisite for everything else the owner wants here — stable hashes make the
 blades taggable, replaceable with real geometry, and temporally stable.
 
 The lighting symptoms are partly separate and are catalogued in
-`dusklight-ao/docs/kankyo-remix.md` open issue 7, since they involve Remix
+`dusklight-ao/docs/remix-open-issues.md` open issue 7, since they involve Remix
 options as well as this repo.

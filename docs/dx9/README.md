@@ -31,19 +31,17 @@ path) with no Remix SDK integration.
 
 ## Repos & branches
 
-| Repo | Branch | Role |
-|------|--------|------|
-| `automata-rtx/aurora-ao` | `Fixed-Function` (dev: `Fixed-Function-dev`) | All D3D9 backend code (`lib/dx9/`), this doc set |
-| `automata-rtx/dusklight-ao` | `Fixed-Function` (dev: `Fixed-Function-dev`) | Backend option plumbing (CLI/config/menu), `extern/aurora` submodule bump |
+Three repos, all developing on `Fixed-Function-dev`. **The authority on branch
+rules is `CLAUDE.md` at this repo's root** — it is kept current and this section
+deliberately does not restate it.
 
-Workflow: commit on `Fixed-Function-dev`; merge into `Fixed-Function` at
-tested checkpoints (aurora first, then dusklight, so the submodule pin on
-dusklight's `Fixed-Function` resolves within aurora's `Fixed-Function`).
-Both lineages are based on each repo's mainline for later backports.
+This repo carries the D3D9 backend (`lib/dx9/`) and this doc set;
+`automata-rtx/dusklight-ao` vendors it at `extern/aurora`;
+`automata-rtx/dxvk-remix` is the Remix fork.
 
-Both branches are based on `claude/gpu-skinning-72pstj` — the functional
-GPU-skinning branch — because Remix requires rest-pose vertices + GPU-side
-skinning for stable mesh hashing (see `dusklight-ao/docs/gpu_skinning_and_platform_direction.md` §4).
+The lineage includes the GPU-skinning work, because Remix needs rest-pose
+vertices plus GPU-side skinning for stable mesh hashing — see
+`dusklight-ao/docs/gpu_skinning_and_platform_direction.md` §4.
 
 ## Document map
 
@@ -51,8 +49,14 @@ skinning for stable mesh hashing (see `dusklight-ao/docs/gpu_skinning_and_platfo
 |------|----------|
 | [`architecture-notes.md`](architecture-notes.md) | How Aurora renders today (FIFO → command processor → `g_gxState` → draws), how Dusklight feeds it, all integration points. Read second. |
 | [`gx-to-d3d9-mapping.md`](gx-to-d3d9-mapping.md) | The full translation spec: vertex decoding, transforms, TEV→texture-stage mapping, skinning, UI, samplers, EFB copies. Read third. |
+| [`remix-material-interface.md`](remix-material-interface.md) | **How a GX material becomes a Remix material, what survives and what silently does not.** The most misunderstood system here; read it before touching `dx9_tev.cpp` or diagnosing any colour defect. |
+| [`material-report.md`](material-report.md) | The `matrep.*` log: format, how to read it, how to join aurora's log to Remix's. This is how material questions get answered without asking the owner to describe pixels. |
 | [`unsupported-effects.md`](unsupported-effects.md) | Living list of effects beyond fixed-function/SM1 and how Remix could compensate. |
 | [`progress.md`](progress.md) | Checkpoint log: what is done, what is in flight, exact next steps. **Update at every conversation checkpoint.** |
+
+If the question is about how the game *looks* under Remix rather than about the
+D3D9 backend, the design work is in the other two repos — start at
+`dusklight-ao/docs/kankyo-remix.md`.
 
 ## Design in one paragraph
 

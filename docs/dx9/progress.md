@@ -7,20 +7,19 @@
 ## How to resume with zero context
 
 1. Read `docs/dx9/README.md`, then `architecture-notes.md`, then
-   `gx-to-d3d9-mapping.md` (this is the spec being implemented).
+   `gx-to-d3d9-mapping.md` (this is the spec being implemented). If the task
+   touches materials or colour, read `remix-material-interface.md` as well —
+   it is the system most often reasoned about incorrectly.
 2. `git log --oneline` on branch `Fixed-Function-dev` — the working branch in
    **all three** repos: `automata-rtx/aurora-ao`,
    `automata-rtx/dusklight-ao` (aurora is its `extern/aurora` submodule) and
-   `automata-rtx/dxvk-remix` (the Remix fork). `Fixed-Function` is the
-   integration branch aurora and dusklight merge into at checkpoints that are
-   CI-green *and* tested in game; it is deliberately behind.
-   All `claude/*` branches are retired and disposable — see `CLAUDE.md`,
-   which carries the standing rule to mirror session branches to
-   `Fixed-Function-dev` on every push.
+   `automata-rtx/dxvk-remix` (the Remix fork). **`CLAUDE.md` is the authority on
+   branch rules** — notably that session branches are *not* mirrored anywhere,
+   and that a branch must be checked for containment before deletion.
 3. Check "Next steps" of the newest entry below; the code lives in
    `aurora-ao/lib/dx9/`. **If the task is about how the game *looks* under
    Remix rather than about the D3D9 backend, you are in the wrong repo** —
-   go to `dusklight-ao/docs/kankyo-remix.md` §"Picking this up cold".
+   go to `dusklight-ao/docs/kankyo-remix.md`.
 4. Build target is Windows (MinGW or MSVC). This work is developed in a Linux
    container: compile-verify D3D9 code with
    `x86_64-w64-mingw32-g++ -fsyntax-only` where possible; full builds/testing
@@ -31,22 +30,73 @@
 
 ---
 
-## Note — no aurora changes since 3.18 (2026-07-27, still true 2026-07-28)
+## Checkpoint 3.19 — the greyscale defect was our own hint stage (2026-08-03)
 
-All work since has been on the dusklight and dxvk-remix sides: the kankyo
-bridge, the Remix-hosted settings tab and overlay, the bloom fidelity pass, the
-atmosphere (fog + sky + sky-light from one medium), warp, the time-of-day
-scrub/freeze, and several game-side switches (frustum culling, sky billboards,
-vrbox, recording mode). Aurora's last code change is `a7b47ac`; anything newer
-here is documentation only, so a stale pin costs nothing but is bumped anyway
-to keep the repos honest.
+**The 2026-07-29 tint fix (`389e4d5`) was tested and did nothing.** Rupees,
+hearts and Goron Mines lava are still greyscale. A full re-investigation across
+all three repos found the previous diagnosis wrong in its central claim.
+
+**What is actually happening.** Remix reads `MODULATE(TEXTURE, TFACTOR)` fine,
+and `materialize()` already puts a material's first constant in TFACTOR — so
+these materials were being read *correctly* until aurora's own Remix hint stage
+overwrote them. The hint wins the stage Remix reads and can only advertise
+`TEXTURE × DIFFUSE`, with `DIFFUSE` substituted as opaque white on meshes
+without vertex colours. Texture × white is precisely a greyscale rupee.
+
+`389e4d5` was correctly engineered end to end — the state it emits does match
+what Remix accepts — but everything in it was gated behind `albedo_tint()`,
+which rejects `MODULATE2X/4X`, `MULTIPLYADD`, `LERP` and complemented args, and
+which reduces the stage chosen by `preferred_albedo_stage()` — a function that
+deliberately *skips* the luminance textures the fix was written to repair. With
+that predicate false the commit emitted zero extra D3D9 state.
+
+**Changes in this checkpoint:**
+
+1. **The hint is now conditional** (`remix_decodes_albedo()`, `dx9_tev.cpp`).
+   When Remix would reconstruct the albedo we meant — tint included — the hint
+   is suppressed. Restricted to single-stage materials, because on a multi-stage
+   material a later stage may change the colour and Remix reading only one would
+   be confidently wrong. The opacity half is unchanged and still gates every
+   suppression: alpha must reach Remix as the texture's own alpha or alpha-test
+   cutouts break.
+2. **The material report** (`matrep.*`), always on and capped at 512 distinct
+   materials. It prints the GX material, the constants, every translation
+   decision, and the finished D3D9 state. `docs/dx9/material-report.md`.
+   Replaces the old `multi-texture material` line, which only fired for
+   multi-texture draws and keyed on fields it did not print.
+3. **`docs/dx9/remix-material-interface.md`** — the system description that was
+   missing, and the reason this took three sessions.
+
+**Verification state: NOT compile-checked.** No MinGW toolchain was available in
+the container this was written in, so the usual `-fsyntax-only` harness could
+not be run. Reviewed by inspection against the real field names and enums. Treat
+the first CI run as the syntax check.
+
+**Next run checklist:**
+- Rupees, hearts, lava should have colour. `matrep.sum` should read
+  `hint=skip:remixReadsItAlready` for them, and `matrep.rmx` should show
+  `albedo="TEX * tFactor(…)"`.
+- **The regression to watch for is surfaces going dark**, not staying grey — see
+  `material-report.md`. Any material whose GX first stage is `texture × dark
+  konst` and whose alpha is plainly the texture's alpha will now be read by
+  Remix directly instead of through the hint.
+- `hintLoose=1` counts materials the suppression declined only because they are
+  multi-stage. That number decides whether widening the rule is worth it.
+
+---
+
+## Note — the quiet period, 2026-07-27 to 2026-08-02 (historical)
+
+Between checkpoints 3.18 and 3.19 aurora did not change. Work in that window was
+on the dusklight and dxvk-remix sides: the kankyo bridge, the Remix-hosted
+settings tab and overlay, the bloom fidelity pass, the atmosphere (fog + sky +
+sky-light from one medium), warp, the time-of-day scrub/freeze, and several
+game-side switches (frustum culling, sky billboards, vrbox, recording mode).
 
 **If you are looking for the current state of the project as a whole, it is not
-in this file.** This repo has been quiet for two days. Go to
-`dusklight-ao/docs/kankyo-remix.md` §"Picking this up cold" and §"Test session
-playbook".
+in this file.** Go to `dusklight-ao/docs/kankyo-remix.md`.
 
-Two aurora behaviours were re-examined during that work and both were found
+Two aurora behaviours were re-examined during that window and both were found
 correct, recorded here so they are not re-investigated:
 
 - **World space.** `world = modelView · viewInv` (`dx9_draw.cpp:354/361/505`)
