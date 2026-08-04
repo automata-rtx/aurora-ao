@@ -257,10 +257,11 @@ The verdict rides `D3DMATERIAL9::Specular.r` and the fork sets
 option, which was necessarily wrong for one of the two cases. `vtxUse=` on
 `matrep.sum` prints `material`, `bakedLight` or `const`.
 
-**Syntax-checked**, both configs. Untested in game. Regression signature:
-surfaces that should be flat gaining a per-vertex tint (forwarding too much),
-or shaded areas going flat/bright (the constant case now colouring something it
-should not).
+**Syntax-checked** both configs, and **CI-green** on all 8 dusklight targets and
+the fork's 3 Windows configs. Untested in game. Regression signature: surfaces
+that should be flat gaining a per-vertex tint (forwarding too much), or shaded
+areas going flat/bright (the constant case now colouring something it should
+not).
 
 Known judgement call, deliberately left: a lighting-disabled draw whose vertex
 colour is genuinely authored — a tint or fade on an effect rather than baked
