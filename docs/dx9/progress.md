@@ -29,6 +29,15 @@ link to them rather than re-explaining.
 Build target is Windows. This work is developed in a Linux container, so see
 §"Verification vocabulary" before claiming anything compiles.
 
+## The one architectural fact that changes how you read the rest
+
+**The raw D3D9 image is a feed into Remix, not a product.** Nobody plays it. So
+"fixed function cannot express this" is a statement about the transport, and the
+answer is to do the work in Remix. Entries below written before 2026-08-04
+sometimes justify a decision with "raw D3D9 is unchanged" — read that as a
+safety note, not as the reason. Full statement:
+`remix-material-interface.md` §0.
+
 ## Where things are documented
 
 | Question | Document |
@@ -134,9 +143,13 @@ decisions it records as load-bearing:
   multiply" model matched 6 of 111 real materials, and gating `ADD` on the ramp
   ending near white matched 5 — both because this game's materials are additive
   two-colour ramps. *(3.20, corrected 3.21)*
-- **Vertex colour is not advertised to Remix**: it carries baked lighting here,
-  which a path tracer must not receive in the albedo. Real stages keep it, so
-  raw D3D9 is unchanged. *(3.21)*
+- **Vertex colour is forwarded only where GX says it is material colour.** With
+  the colour channel's lighting enabled the stream is the material GX then
+  lights, so it carries no light of its own and a path tracer can have it; with
+  lighting disabled it is the finished output, which is where this game bakes
+  room light. Withholding it globally (3.21) was too blunt and threw away real
+  colour. With no CLR0 attribute at all it is a constant and is simply
+  evaluated. *(3.21, corrected 3.25)*
 - **Two-colour ramps are reproduced, not approximated.** `lerp(A, B, texture)`
   is this game's dominant material shape and no stock Remix op expresses it, so
   the fork evaluates the GX combiner directly from two endpoints carried in
@@ -223,6 +236,36 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.25 — vertex colour, forwarded selectively (2026-08-04)
+
+3.21 stopped advertising `DIFFUSE` altogether because vertex colour carries
+baked lighting here. That was true and too blunt: **GX distinguishes the two
+cases per draw** and we were throwing away the good one.
+
+- lighting **enabled** on the colour channel: the vertex stream is the material
+  colour GX then lights, so it carries no light of its own → **forward it**
+- lighting **disabled**: the stream is the finished output, where this game
+  bakes room light → **withhold it**
+- **no `CLR0` attribute**: aurora substitutes a constant from the channel's
+  material colour register. `eval_operand` was treating `DIFFUSE` as white
+  unconditionally, so those materials evaluated as if they had no colour at
+  all — a silent loss, now fixed, which also makes them §10 ramp-eligible.
+
+The verdict rides `D3DMATERIAL9::Specular.r` and the fork sets
+`isVertexColorBakedLighting` **per draw** from it rather than from the global
+option, which was necessarily wrong for one of the two cases. `vtxUse=` on
+`matrep.sum` prints `material`, `bakedLight` or `const`.
+
+**Syntax-checked**, both configs. Untested in game. Regression signature:
+surfaces that should be flat gaining a per-vertex tint (forwarding too much),
+or shaded areas going flat/bright (the constant case now colouring something it
+should not).
+
+Known judgement call, deliberately left: a lighting-disabled draw whose vertex
+colour is genuinely authored — a tint or fade on an effect rather than baked
+room light — is withheld. `vtxUse=bakedLight` in the log is where to look if
+something loses a gradient it should have.
 
 ### 3.24 — reproduce the GX colour combiner instead of approximating it (2026-08-04)
 
@@ -343,9 +386,10 @@ Three changes, each from a specific line in the session log:
    why HUD fade-ins drew their whole quad opaque.
 3. **Vertex colour is no longer advertised.** Owner testing of
    `rtx.vertexColorIsBakedLighting` showed the vertex colours carry baked
-   lighting, which a path tracer must not receive in the albedo. Real stages are
-   untouched, so raw D3D9 is unchanged. This corrects a claim `kankyo-remix.md`
-   had carried for weeks.
+   lighting, which a path tracer must not receive in the albedo. This corrects a
+   claim `kankyo-remix.md` had carried for weeks. **Superseded by 3.25**, which
+   found this too blunt: GX distinguishes baked lighting from authored material
+   colour per draw, and only the former should be withheld.
 
 **CI-green.** Untested in game. The broadest risk is (3): surfaces that relied
 on vertex colour may read flatter or brighter.

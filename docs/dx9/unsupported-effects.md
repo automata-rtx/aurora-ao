@@ -1,10 +1,18 @@
 # Effects beyond fixed-function / SM1 — living list
 
-Per project rules, effects that cannot be reasonably expressed with
-fixed-function texture stages (or, at the outside, ps_1_x) are documented here
-rather than hacked around. Each entry notes the in-game impact and whether an
-RTX-Remix-side change could compensate. Update this file whenever the TEV
-mapper logs a new unsupported configuration.
+GX features the D3D9 fixed-function pipeline cannot carry, and Remix runtime
+behaviour that constrains what reaches the path tracer.
+
+**Read this as a work list, not a list of losses.** The raw D3D9 image is never
+shown to a player — it is a feed into Remix — so "fixed function cannot express
+this" is a statement about the *transport*, not about what the game can look
+like. Where the transport cannot carry an effect, the answer is to implement it
+**in Remix**, via the Remix API or a fork change. See
+[`remix-material-interface.md`](remix-material-interface.md) §0.
+
+The "what we do" column therefore describes the current state, and an entry
+saying "nothing; documented" is an open opportunity rather than a closed door.
+Update this file whenever the TEV mapper logs a new unsupported configuration.
 
 ## Confirmed unsupported (by design of D3D9 FF)
 

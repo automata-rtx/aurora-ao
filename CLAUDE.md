@@ -68,6 +68,30 @@ a formality — it is the only thing between a routine cleanup and lost work.
 work** — in neither `main` nor `Fixed-Function-dev`. Do not delete it and do
 not merge it into this lineage without being asked.
 
+## What the D3D9 renderer is for — read this before proposing a fix
+
+**The raw fixed-function D3D9 image is never shown to a player.** It exists so
+Remix's DX9→Vulkan translation picks the scene up automatically — geometry,
+transforms, textures, most of a frame, for free. **Remix's renderer is the
+product; D3D9 is the feed.**
+
+So:
+
+- **Fixed-function limits are not the ceiling.** Where the D3D9 stream cannot
+  carry something faithfully enough to reach Remix, implement it **in Remix** —
+  Remix API or a fork change — rather than contorting D3D9 to approximate it.
+  All three repos are ours.
+- **"Raw D3D9 stays correct" is not a design goal.** It is occasionally a handy
+  safety property, never a reason to reject an approach. Documents written
+  before 2026-08-04 sometimes treat it as a requirement; they are wrong and are
+  being corrected as they are touched.
+
+**Two exceptions still have to rasterize correctly:** the **HUD** (Remix
+rasterizes UI draws rather than path-tracing them) and **alpha** (Remix reads
+the stage's alpha to build opacity and the alpha test).
+
+Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
+
 ## How this project works — read before proposing a fix
 
 Five rules. They exist because each was learned the expensive way, and following
@@ -171,17 +195,15 @@ fixed-function and 11 Remix runtime limitations, all in
 
 Live defects:
 
-1. **Materials lose their colour under Remix** — rupees, hearts, Goron Mines
-   lava render greyscale while raw D3D9 is correct. Root-caused 2026-08-03 to
-   our own Remix hint stage overwriting a material Remix was reading correctly;
-   a July fix shipped, was tested, and turned out to be a no-op. A corrected fix
-   plus the `matrep` material report are in the tree and **untested**.
-   Read `docs/dx9/remix-material-interface.md` before touching this.
-2. **Ground textures render white in raw D3D9** (Remix is correct, because it
-   only reads the first texture stage). Prime suspect is the compare-mode
-   approximation; the one-line experiment is flipping it from always-true
-   (`d + c`) to always-false (`d`). Worth making runtime-selectable rather than
-   a rebuild, since it is also a suspect for the torch-flame white circle.
+1. **Materials.** Colour reaches Remix as of 2026-08-04 (tested). Two-colour
+   ramps are now reproduced exactly rather than approximated, and vertex colour
+   is forwarded only where GX says it is material rather than baked lighting —
+   both **untested**. Read `docs/dx9/remix-material-interface.md` before
+   touching any of it.
+2. ~~Ground textures render white in raw D3D9~~ — **not a defect.** Remix is
+   correct, and the raw image is never shown. Kept only because the same
+   compare-mode approximation is a suspect for the torch-flame white circle,
+   which *does* reach Remix.
 3. **World-space UI billboards reach Remix intermittently.** Not an aurora
    defect — it is Remix's RTX injection boundary. Full analysis in
    `dusklight-ao/docs/remix-open-issues.md` open issue 6.

@@ -917,6 +917,14 @@ struct AlbedoIntent {
   // reached Remix fully opaque, drawing its whole quad instead of just the
   // effect. TFACTOR's alpha channel is otherwise unused, so it can carry the
   // scale without competing with the colour tint.
+  // Whether the per-vertex colour stream is authored material colour rather
+  // than baked lighting, and therefore safe to hand a path tracer. GX settles
+  // this: with the colour channel's lighting *enabled*, the stream is the
+  // material colour that GX then lights, so it carries no light of its own.
+  // With lighting disabled the stream is the finished channel output, which is
+  // where this game bakes room lighting and shadow.
+  // docs/dx9/remix-material-interface.md §7c.
+  bool vertexColorIsMaterial = false;
   bool alphaValid = false;
   bool alphaUsesTexture = false;
   uint32_t alphaScale = 0xFF;  // opacity where the texture's alpha reads full
@@ -945,7 +953,8 @@ inline uint32_t luma_of(uint32_t argb) noexcept {
 // Resolve one operand to a per-channel value with the texture pinned to
 // `texValue`. Returns false for anything whose value we cannot know here
 // (CURRENT/TEMP carry a previous stage's result).
-bool eval_operand(const Operand& o, float texValue, float (&out)[3], bool& sawTexture,
+bool eval_operand(const Operand& o, float texValue, const float (&diffuse)[3],
+                  bool diffuseIsPerVertex, float (&out)[3], bool& sawTexture,
                   bool& sawVertexColor) noexcept {
   if (o.isConst) {
     out[0] = static_cast<float>((o.constValue >> 16) & 0xFFu) / 255.f;
@@ -958,10 +967,15 @@ bool eval_operand(const Operand& o, float texValue, float (&out)[3], bool& sawTe
     sawTexture = true;
     out[0] = out[1] = out[2] = texValue;
   } else if (base == D3DTA_DIFFUSE) {
-    // Vertex colour is per-vertex, so it has no single value here. Treat it as
-    // white: it is a separate multiply that the hint stage already carries.
-    sawVertexColor = true;
-    out[0] = out[1] = out[2] = 1.f;
+    // Only genuinely per-vertex when the stream carries CLR0. Otherwise aurora
+    // substitutes a constant - the GX channel's material colour register - and
+    // that constant is authored material colour, so evaluating it as white
+    // silently threw the colour away. Only the per-vertex case makes the
+    // material unevaluable.
+    sawVertexColor = sawVertexColor || diffuseIsPerVertex;
+    out[0] = diffuse[0];
+    out[1] = diffuse[1];
+    out[2] = diffuse[2];
   } else {
     return false;
   }
@@ -997,12 +1011,23 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
                                                               : 1.f;
   const bool subtract = stage.colorOp.op == GX_TEV_SUB;
 
+  // What D3DTA_DIFFUSE will actually be. With no CLR0 stream it is a constant
+  // aurora writes into every vertex, so it is knowable here; with a stream it
+  // is per-vertex and white is the only neutral stand-in.
+  const uint32_t dd = draw.defaultDiffuse;
+  const float diffuse[3] = {
+      draw.hasVertexColor ? 1.f : static_cast<float>((dd >> 16) & 0xFFu) / 255.f,
+      draw.hasVertexColor ? 1.f : static_cast<float>((dd >> 8) & 0xFFu) / 255.f,
+      draw.hasVertexColor ? 1.f : static_cast<float>(dd & 0xFFu) / 255.f,
+  };
+
   uint32_t endpoints[2] = {0, 0};
   for (int end = 0; end < 2; ++end) {
     const float texValue = end == 0 ? 0.f : 1.f;
     float v[4][3];
     for (int i = 0; i < 4; ++i) {
-      if (!eval_operand(ops[i], texValue, v[i], r.usesTexture, r.usesVertexColor)) {
+      if (!eval_operand(ops[i], texValue, diffuse, draw.hasVertexColor, v[i], r.usesTexture,
+                        r.usesVertexColor)) {
         return r; // depends on a previous stage; not evaluable here
       }
     }
@@ -1020,6 +1045,8 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
   r.valid = true;
   r.out0 = endpoints[0];
   r.out1 = endpoints[1];
+  r.vertexColorIsMaterial =
+      draw.hasVertexColor && g_gxState.colorChannelConfig[GX_COLOR0].lightingEnabled;
 
   // Opacity, by the same method: evaluate the alpha pass with the texture's
   // alpha at full. GX alpha operands are scalars, so one channel is enough.
@@ -1035,7 +1062,7 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
     bool sawTex = false;
     bool sawVtx = false;
     for (int i = 0; i < 4 && ok; ++i) {
-      ok = eval_operand(aops[i], 1.f, av[i], sawTex, sawVtx);
+      ok = eval_operand(aops[i], 1.f, diffuse, draw.hasVertexColor, av[i], sawTex, sawVtx);
     }
     if (ok) {
       const float aBias = stage.alphaOp.bias == GX_TB_ADDHALF   ? 0.5f
@@ -1379,6 +1406,15 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
             hintForm = "mod:vtx";
+          } else if (albedo.usesVertexColor && albedo.vertexColorIsMaterial) {
+            // The colour pass reads the vertex stream and GX says that stream
+            // is material colour, not baked lighting, so it has to reach Remix
+            // or the surface loses its colour. A MODULATE tint can still ride
+            // the following stage, which Remix decodes (§4).
+            set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
+            set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+            set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            hintForm = "mod:vtxMat";
           } else if (albedo.hasTint) {
             set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -1601,7 +1637,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                                    static_cast<float>((rampOther >> 8) & 0xFFu) / 255.f,
                                    static_cast<float>(rampOther & 0xFFu) / 255.f,
                                    rampValid ? 1.f : 0.f},
-                     rampTFactorIsHigh ? 1.f : 0.f);
+                     rampTFactorIsHigh ? 1.f : 0.f,
+                     albedo.vertexColorIsMaterial ? 1.f : 0.f);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1629,7 +1666,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
-             "selfLit={} emisScore={:.2f} emisCol={:06X} ramp={} rampOther={:06X} grp={}",
+             "selfLit={} emisScore={:.2f} emisCol={:06X} ramp={} rampOther={:06X} vtxUse={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1640,6 +1677,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
              selfLit.why, selfLit.score, selfLit.color, rampWhy, rampOther,
+             !draw.hasVertexColor ? "const"
+                                  : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction

@@ -13,18 +13,49 @@ spec this constrains.
 
 ---
 
+## 0. What the D3D9 renderer is for
+
+**The raw fixed-function image is never shown to anyone.** It exists so that
+Remix's DX9→Vulkan translation picks the scene up automatically — geometry,
+transforms, textures, the overwhelming majority of a frame, for free. Remix's
+renderer is the product; D3D9 is the feed.
+
+Two consequences, and they reverse an earlier assumption in these documents:
+
+1. **Fixed-function limitations are not the ceiling.** Where the D3D9 stage
+   chain cannot carry something faithfully enough to reach Remix, the answer is
+   to do it **in Remix** — through the Remix API, or by changing the fork —
+   rather than contorting the D3D9 stream to approximate it. Both halves are
+   ours. `unsupported-effects.md` is a list of *where to do the work*, not a
+   list of what we have given up.
+2. **"Raw D3D9 stays correct" is not a design goal.** It is sometimes a useful
+   safety property — a change that cannot alter the rasterized image cannot
+   regress anything outside Remix — but it is never a reason to reject an
+   approach. Several constraints in this document exist only because of the old
+   assumption; they are marked where they appear.
+
+**Two things must still rasterize correctly**, and they are the exceptions to
+everything above:
+
+- **The HUD.** Remix *rasterizes* UI draws rather than path-tracing them
+  (`isRenderingUI` in `d3d9_rtx.cpp`), so 2D stage chains are the real output.
+- **Alpha.** Remix reads the stage's alpha op and args to build opacity and the
+  alpha test, so cutouts depend on that half of the chain being right.
+
+---
+
 ## 1. The model, in one paragraph
 
 Aurora reduces a GX TEV program into D3D9 fixed-function texture stages. Remix
 does **not execute** those stages. It reads **one** of them, plus two booleans
 and one colour, and reconstructs a PBR material by pattern-matching a small set
-of recognised shapes. Everything else Aurora emits is invisible to Remix and
-exists only to make raw D3D9 rasterization correct.
+of recognised shapes. Everything else Aurora emits is invisible to Remix.
 
-So the D3D9 stage chain is doing two unrelated jobs at once: it is a *rasterizer
-program* and it is a *message to Remix*. Those two jobs want different things,
-and most of the defects in this area come from optimising one and damaging the
-other.
+Historically the stage chain was doing two jobs — a *rasterizer program* and a
+*message to Remix* — and most defects here came from optimising one and damaging
+the other. Per §0 that tension is largely gone: outside the HUD and the alpha
+test, **the chain is only a message to Remix**, and where the message cannot be
+expressed the answer is to extend Remix rather than to compromise the message.
 
 ---
 
@@ -94,7 +125,15 @@ must be applied to something a previous stage produced.
 
 Aurora prepends a synthetic stage advertising
 `colour = TEXTURE × DIFFUSE, alpha = TEXTURE`, writing `TEMP` so the real chain
-is untouched. It is raster-neutral by construction.
+is untouched.
+
+> The `TEMP` trick, and the whole notion of the hint being "raster-neutral",
+> dates from when the rasterized image had to stay correct. Per §0 it no longer
+> does, outside the HUD — so a future revision is free to write the material it
+> wants Remix to read directly into stage 0. That also frees `TFACTOR`, which
+> `materialize()` currently hands to the draw's first constant so real stages
+> rasterize correctly, and which is the reason a ramp is sometimes declined
+> (`ramp=tfTaken`, §10).
 
 **What it fixes** (checkpoint 3.8, all real and all still true): a GX material's
 first stage is often *not* the finished albedo. Handed such a stage, Remix
@@ -216,22 +255,40 @@ on it — 18 of 111 materials are `konst × texture-alpha`. A HUD effect fading 
 through that konst reached Remix fully opaque and drew its whole quad. The scale
 now rides `TFACTOR`'s alpha channel, which the colour tint does not use.
 
-## 7c. Vertex colour is baked lighting here — do not forward it
+## 7c. Vertex colour: forward it only when GX says it is material colour
 
-**Corrected 2026-08-04, against a claim these docs carried for weeks.**
-`kankyo-remix.md` stated that GX lighting "isn't baked into vertices, so there
-is no double-counting risk". Testing `rtx.vertexColorIsBakedLighting` disproved
-it: turning that normalisation *off* makes shaded areas visibly **darker**, so
-the vertex colours do carry baked lighting and shadow.
+**Two corrections, layered.** First (2026-08-04): `kankyo-remix.md` claimed GX
+lighting "isn't baked into vertices, so there is no double-counting risk".
+Testing `rtx.vertexColorIsBakedLighting` disproved it — turning that
+normalisation *off* makes shaded areas visibly **darker**, so the vertex colours
+do carry baked lighting. The response then was to stop forwarding `DIFFUSE`
+entirely. Second (same day): **that was too blunt**, and it threw away real
+material colour.
 
-A path tracer relights the scene. Handing it baked lighting in the albedo
-double-counts, and the shading it computes lands on top of shading that is
-already painted in.
+GX distinguishes the two cases exactly, per draw, in the colour channel's
+control (`GXSetChanCtrl`):
 
-So the hint no longer advertises `DIFFUSE` at all. **The real D3D9 stages still
-use vertex colour**, so raw D3D9 rasterization is unchanged — only what Remix
-reads is different. Remix's own `rtx.vertexColorIsBakedLighting` becomes
-irrelevant to the albedo as a result; leave it at its default.
+| GX state | What the vertex stream is | What we do |
+| :-- | :-- | :-- |
+| lighting **enabled**, `matSrc = GX_SRC_VTX` | the **material colour** that GX then multiplies by computed lighting — it carries no light of its own | **forward it**; a path tracer supplies the lighting |
+| lighting **disabled**, `matSrc = GX_SRC_VTX` | the finished channel output, which is where this game bakes room lighting and shadow | **withhold it** |
+| no `CLR0` attribute at all | a constant aurora writes into every vertex, from the channel's material colour register — authored colour by definition | **evaluate it** as part of the material (below) |
+
+The third row was a silent bug worth calling out: `eval_operand` treated
+`DIFFUSE` as white unconditionally, so a material whose colour arrived through
+that constant evaluated as if it had none. Those materials now evaluate
+correctly, which also makes them eligible for the §10 ramp.
+
+Aurora reports the verdict per draw in `D3DMATERIAL9::Specular.r`, and the fork
+uses it to set `isVertexColorBakedLighting` per draw instead of taking the
+global option — which was necessarily wrong for one of the two cases.
+`vtxUse=` on `matrep.sum` prints which of `material`, `bakedLight` or `const`
+applied.
+
+**The case that remains a judgement call:** a draw with lighting disabled whose
+vertex colour is genuinely authored — a per-vertex tint or fade on an effect,
+rather than baked room light. Those are withheld today. If something loses a
+colour gradient it should have, that is this, and the log will say `vtxUse=bakedLight`.
 
 ## 8. Design rules, collected
 
