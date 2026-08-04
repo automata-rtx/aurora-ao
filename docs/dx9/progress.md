@@ -248,10 +248,16 @@ Aurora declines when `TFACTOR` was claimed by a real stage rather than the hint,
 because then only one endpoint is reachable; `ramp=` on `matrep.sum` gives the
 reason and the material falls back to the previous approximation.
 
-**Syntax-checked** (aurora half). Untested in game. Regression signature: ramp
-materials rendering as a flat colour or with inverted light/dark would mean the
-endpoints are swapped; `rtx.dusklight.rampMaterials` turns it off live for an
-A/B against the approximation.
+**Syntax-checked** (aurora half) and **CI-green** on all 8 dusklight targets and
+the fork's 3 Windows configs. The Slang half compiled without a single
+diagnostic; what broke the first fork build was `CheckRtInstanceSize` — adding
+fields to `RtSurface` grows `RtInstance`, and that guard is release-only so no
+container check can see it. Untested in game.
+
+Regression signature: ramp materials rendering as a flat colour, or with light
+and dark inverted, would mean the endpoints are swapped;
+`rtx.dusklight.rampMaterials` turns it off live for an A/B against the
+approximation.
 
 ### 3.23 — the emissive premise was wrong; label every draw (2026-08-04)
 
