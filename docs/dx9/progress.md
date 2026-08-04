@@ -127,11 +127,16 @@ decisions it records as load-bearing:
   introduced it, 3.19 made it conditional)*
 - **The material's albedo is *evaluated*, not pattern-matched.** The GX colour
   pass is computed with the texture pinned to black and to white; the two
-  endpoints say what the surface should look like, and the hint advertises the
-  op that best reproduces them — `MODULATE` for a black-floored tint, `ADD` for
-  a ramp that ends at white, which a multiply would darken. The earlier
-  "look for a texture × constant multiply" model matched 6 of 111 real
-  materials, because this game's dominant shape is a two-colour ramp. *(3.20)*
+  endpoints say what the surface should look like. **The floor decides the op:**
+  a black floor takes `MODULATE` (exact), a coloured floor takes `ADD`, because
+  a multiply renders black wherever the texture is black and would replace the
+  object's own colour with a hole. The earlier "look for a texture × constant
+  multiply" model matched 6 of 111 real materials, and gating `ADD` on the ramp
+  ending near white matched 5 — both because this game's materials are additive
+  two-colour ramps. *(3.20, corrected 3.21)*
+- **Vertex colour is not advertised to Remix**: it carries baked lighting here,
+  which a path tracer must not receive in the albedo. Real stages keep it, so
+  raw D3D9 is unchanged. *(3.21)*
 - The hint advertises the material's **colour** texture where there is one, and
   a stage that *reads* its texture in preference to one that merely binds it —
   character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
