@@ -237,7 +237,8 @@ Replayed against the 2026-08-03 22:23 log the shipped defaults fire on **8 of
 their verdict (`selfLit=` on `matrep.sum`, `dusklight.emis` on the fork side,
 rejections included) so the next session settles it from the log.
 
-**Syntax-checked**, both configs. Untested in game. Regression signature:
+**Syntax-checked** in both configs, and **CI-green** on all 8 dusklight targets
+and the fork's 3 Windows configs. Untested in game. Regression signature:
 surfaces glowing that should not — most plausibly unlit interior geometry, which
 the game authors that way because it forces interior ambient to black.
 
