@@ -166,7 +166,7 @@ characters on both paths, EFB colour copies, stable texture hashing, real
 camera, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
-fixed-function and 10 Remix runtime limitations, all in
+fixed-function and 11 Remix runtime limitations, all in
 `docs/dx9/unsupported-effects.md`.
 
 Live defects:
@@ -186,10 +186,20 @@ Live defects:
    defect — it is Remix's RTX injection boundary. Full analysis in
    `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
-**Self-illumination exists as of 2026-08-04 and is untested** (open issue 9).
-GX has no emissive term, so this is not a translation: aurora reports the
-evidence GX does carry (a colour channel that takes no light, with its colour
-authored in a register) over `D3DMATERIAL9::Emissive`, and the fork applies the
-thresholds — which are options in the F1 overlay, not constants, because 59% of
-materials are unlit and what separates lava from an interior wall is a
-judgement. `docs/dx9/remix-material-interface.md` §9.
+**Self-illumination: first attempt tested 2026-08-04, caught one material, and
+it was not lava** (open issue 9). The rule required GX lighting to be off; the
+Goron Mines lava has it **on**. Together with the earlier "59% of a scene is
+unlit" measurement that settles it: **no single GX fact identifies an emitter.**
+Rev 2 scores three weak signals and the fork cuts at a live overlay threshold.
+`docs/dx9/remix-material-interface.md` §9.
+
+**Every material now carries `grp=`** — the name of the game code that drew it,
+from a debug group the game pushes per process draw. Three investigations have
+stalled on "which of these logged materials is the thing on screen"; that
+question is retired. Use it.
+
+**Remix cannot express a lerp between two constants**, which is this game's
+dominant material shape, so every two-colour ramp is approximated and the lava
+reads red-to-white instead of red-to-orange. The arithmetic and the fix are in
+`docs/dx9/remix-material-interface.md` §10 — designed, not built. This is
+currently the largest single win available on the material path.

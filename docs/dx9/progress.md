@@ -137,12 +137,16 @@ decisions it records as load-bearing:
 - **Vertex colour is not advertised to Remix**: it carries baked lighting here,
   which a path tracer must not receive in the albedo. Real stages keep it, so
   raw D3D9 is unchanged. *(3.21)*
-- **Self-illumination is split: aurora reports evidence, the fork judges.** GX's
-  "this channel takes no light" bit is true of **59% of materials**, so it is
-  evidence, never a rule. Aurora sends it plus `matSrc` and the presented colour
-  over `D3DMATERIAL9::Emissive` — free, because `D3DRS_LIGHTING` is off here so
-  no D3D9 material is ever read; the brightness and saturation thresholds live
-  in the fork's options so they move without a rebuild. *(3.22)*
+- **Self-illumination is split: aurora scores evidence, the fork judges.** No
+  single GX fact identifies an emitter — "takes no light" is true of 59% of one
+  scene *and* false for the Goron Mines lava. Aurora sums three weak signals and
+  sends the score over `D3DMATERIAL9::Emissive` — free, because `D3DRS_LIGHTING`
+  is off here so no D3D9 material is ever read; the cut lives in the fork's
+  options so it moves without a rebuild. *(3.22, corrected 3.23)*
+- **Every material is labelled with the game code that drew it** (`grp=`), from
+  a debug group the game pushes per process draw. Added because three separate
+  investigations stalled on "which of these logged materials is the thing the
+  owner is looking at". *(3.23)*
 - The hint advertises the material's **colour** texture where there is one, and
   a stage that *reads* its texture in preference to one that merely binds it —
   character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
@@ -214,6 +218,41 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.23 — the emissive premise was wrong; label every draw (2026-08-04)
+
+**3.22 was tested in the Goron Mines. It fired on one material and that material
+was not lava.** The rule required GX lighting to be *disabled*; every candidate
+lava material has **`lit=1`**. Combined with the earlier "59% of a scene is
+unlit" measurement, the conclusion is that **no single GX fact identifies an
+emitter** — "unlit" is simultaneously too broad and too narrow.
+
+Three changes:
+
+1. **Evidence is scored, not required.** Lighting disabled 0.50, colour authored
+   in a register 0.25, **a TEV stage scaled past what the console could display
+   0.25** — the last is new, and is the only thing in GX that states "brighter
+   than the display". The fork cuts at `rtx.dusklight.emissive.threshold`, live
+   in the overlay, so widening no longer costs a rebuild.
+2. **`grp=` on every `matrep.sum` line.** The game pushes a debug group per
+   process draw at `fpcDw_Execute` — the one funnel every draw passes through —
+   and aurora mirrors the innermost label into `GXState::currentDebugGroup()`.
+   Every material is now labelled with the game code that drew it. This is the
+   change that matters most: it retires "which logged material is the lava?"
+   permanently, not just for this defect.
+3. **A real bug in 3.22's glow colour**, found by reading the shader rather than
+   by testing: `emissiveColorConstant` is re-run through the *albedo's* texture
+   op, so the glow arrived as `colour + tFactor`. The fork now sets the
+   pre-image and declines when the op cannot be inverted.
+
+**Syntax-checked** in both configs. Untested in game. Regression signature: the
+`grp=` push costs one short string per drawn process per frame — if frame time
+regresses noticeably, suspect it first.
+
+Not fixed here, and now documented rather than guessed at: **Remix cannot
+express a lerp between two constants**, so the lava's `lerp(red, yellow, t)`
+reproduces as red-to-white. `remix-material-interface.md` §10 has the arithmetic
+and the design for fixing it properly.
 
 ### 3.22 — self-illumination: evidence here, judgement in the fork (2026-08-04)
 

@@ -1985,8 +1985,20 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     }
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
     auto label = read_string(data, pos, size, bigEndian);
+    // Mirror into the state stack so backends can name the current draw
+    // without a graphics debugger attached (GXState::currentDebugGroup).
+    if (g_gxState.debugGroupDepth < GXState::MaxDebugGroupDepth) {
+      auto& slot = g_gxState.debugGroups[g_gxState.debugGroupDepth];
+      const size_t n = std::min(label.size(), slot.size() - 1);
+      std::memcpy(slot.data(), label.data(), n);
+      slot[n] = '\0';
+    }
+    ++g_gxState.debugGroupDepth;
     gfx::push_debug_group(std::move(label));
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_POP) {
+    if (g_gxState.debugGroupDepth > 0) {
+      --g_gxState.debugGroupDepth;
+    }
     pop_debug_group();
   } else if (subCmd == GX_AURORA_DEBUG_MARKER_INSERT) {
     auto label = read_string(data, pos, size, bigEndian);

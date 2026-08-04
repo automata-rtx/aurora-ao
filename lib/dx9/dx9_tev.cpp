@@ -1124,48 +1124,70 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
 // stream. That pair is the strongest statement GX can make that a surface is
 // meant to look self-lit, and it is what this reports.
 //
-// It reports *evidence*, never a verdict on brightness: 69 of the 117 materials
-// in the 2026-08-04 session had lighting disabled, so "unlit" on its own would
-// light up more than half the scene. The thresholds that separate lava from an
-// ordinary unlit interior wall live in the fork (rtx.dusklight.emissive.*) so
-// they move from the F1 overlay instead of a rebuild.
+// It reports *graded evidence*, never a verdict. The 2026-08-04 Goron Mines
+// session settled why: the lava materials are `lit=1`, so a rule that required
+// "unlit" could never have caught them, while "unlit" on its own was true of
+// 59% of an earlier scene. No single GX fact separates lava from an ordinary
+// wall, so this sums what GX does say and lets the fork pick where to cut
+// (rtx.dusklight.emissive.threshold, live in the F1 overlay).
 //
 // docs/dx9/remix-material-interface.md §9.
 struct SelfLitEvidence {
-  bool selfLit = false;
+  float score = 0.f;          // 0..1, summed evidence
   uint32_t color = 0;         // 0x00RRGGBB, the colour the surface presents
-  const char* why = "yes";    // why not, when it is not
+  const char* why = "none";   // the evidence that fired, or why none could
 };
+
+// Weights. They are ordered by how much each fact narrows the field, measured
+// rather than chosen: `unlit` alone was 59% of one scene and `overRange` was
+// 26 of 76 materials in another, but their *conjunctions* are small. The fork's
+// default threshold sits so that the historical rule (unlit + register) still
+// passes; lowering it admits the over-range materials.
+constexpr float kScoreUnlit = 0.50f;     // GX lighting disabled for this channel
+constexpr float kScoreRegSrc = 0.25f;    // colour authored in a register, not per-vertex
+constexpr float kScoreOverRange = 0.25f; // a TEV stage scales past what GX can display
 
 SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
   SelfLitEvidence e;
-  const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
-  if (chan.lightingEnabled) {
-    e.why = "lit";
-    return e;
-  }
-  if (chan.matSrc != GX_SRC_REG) {
-    // Unlit with a vertex-stream colour is this game's baked-lighting shape,
-    // not a self-lit surface (remix-material-interface.md §7c).
-    e.why = "vtxSrc";
-    return e;
-  }
   if (g_gxState.projType == GX_ORTHOGRAPHIC) {
     e.why = "ortho";
     return e;
   }
   if (!albedo.valid || !albedo.usesTexture) {
-    // Nothing evaluable to take a colour from.
+    // Nothing evaluable to take a colour from, so there is nothing to emit.
     e.why = "noColor";
     return e;
   }
+
+  const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
+  const bool unlit = !chan.lightingEnabled;
+  // Unlit *with* a vertex-stream colour is this game's baked-lighting shape
+  // (§7c), so the register source is scored separately rather than required.
+  const bool regSrc = chan.matSrc == GX_SRC_REG;
+  // A TEV scale above 1 multiplies the stage result past 1.0, which the console
+  // then clamps. It is the only thing in GX that states "brighter than the
+  // display can show" - the closest the format comes to an emissive term.
+  bool overRange = false;
+  for (uint32_t i = 0; i < std::max<uint32_t>(g_gxState.numTevStages, 1); ++i) {
+    const auto sc = g_gxState.tevStages[i].colorOp.scale;
+    if (sc == GX_CS_SCALE_2 || sc == GX_CS_SCALE_4) {
+      overRange = true;
+      break;
+    }
+  }
+
+  e.score = (unlit ? kScoreUnlit : 0.f) + (regSrc ? kScoreRegSrc : 0.f) +
+            (overRange ? kScoreOverRange : 0.f);
+  e.why = unlit ? (regSrc ? (overRange ? "unlit+reg+over" : "unlit+reg")
+                          : (overRange ? "unlit+over" : "unlit"))
+                : (regSrc ? (overRange ? "reg+over" : "reg") : (overRange ? "over" : "none"));
+
   // The endpoint that carries the material's colour, same rule the albedo hint
   // uses: prefer the more chromatic end, break ties towards the brighter one.
   const uint32_t rgb0 = albedo.out0 & 0x00FFFFFFu;
   const uint32_t rgb1 = albedo.out1 & 0x00FFFFFFu;
   const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
   e.color = (c1 > c0 || (c1 == c0 && luma_of(rgb1) >= luma_of(rgb0))) ? rgb1 : rgb0;
-  e.selfLit = true;
   return e;
 }
 
@@ -1537,8 +1559,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // D3DRS_LIGHTING is off - so this cannot change the raw D3D9 image.
   set_emissive_evidence(static_cast<float>((selfLit.color >> 16) & 0xFFu) / 255.f,
                         static_cast<float>((selfLit.color >> 8) & 0xFFu) / 255.f,
-                        static_cast<float>(selfLit.color & 0xFFu) / 255.f,
-                        selfLit.selfLit ? 1.f : 0.f);
+                        static_cast<float>(selfLit.color & 0xFFu) / 255.f, selfLit.score);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1565,7 +1586,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     Log.info("matrep.sum mk={:016X} gxStages={} d3dStages={} albedoGx={} albedoMap={} "
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
-             "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} selfLit={} emisCol={:06X}",
+             "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
+             "selfLit={} emisScore={:.2f} emisCol={:06X} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1575,7 +1597,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
-             selfLit.why, selfLit.color);
+             selfLit.why, selfLit.score, selfLit.color,
+             g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction
     // of it. GX enum names come from lib/gx/gx_fmt.hpp.

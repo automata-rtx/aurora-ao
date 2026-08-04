@@ -78,7 +78,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            shape=ramp out0=B80000 out1=FFFFFF usesTex=1 usesVtx=0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
-           vtxColor=default-white selfLit=yes emisCol=B80000
+           vtxColor=default-white selfLit=unlit+reg emisScore=0.75
+           emisCol=B80000 grp=d_a_obj_lv3Water
 ```
 
 | Field | Means |
@@ -98,8 +99,10 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
-| **`selfLit`** | `yes` if GX says this surface takes no light and its colour is authored, otherwise **why not**: `lit` (GX lighting on), `vtxSrc` (unlit but vertex-sourced, so baked lighting), `ortho` (a 2D draw), `noColor` (nothing evaluable to take a colour from) |
-| `emisCol` | the colour handed to the fork as the glow, when `selfLit=yes` |
+| **`grp`** | **which piece of game code drew this**, from the debug group the game pushes per process draw. This is the field that answers "which material is the lava?" without anyone looking at pixels. `-` means no group was open |
+| **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
+| `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold` |
+| `emisCol` | the colour handed to the fork as the glow |
 
 ### `shape` values
 
@@ -195,8 +198,9 @@ or rejected**, because a candidate that missed by 0.02 of saturation is a
 threshold to move and that is invisible if only acceptances are printed.
 
 ```
-dusklight.emis mat=… tex0hash=… color=1,0.42,0 luma=0.55 chroma=1
-               minLuma=0.25 minChroma=0.2 verdict=emissive applied=1
+dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
+               threshold=0.7 minLuma=0.25 minChroma=0.2 invertible=1
+               verdict=emissive applied=1
 ```
 
 | Field | Means |
@@ -204,16 +208,17 @@ dusklight.emis mat=… tex0hash=… color=1,0.42,0 luma=0.55 chroma=1
 | `mat` | the material data hash — the same value Remix keys its material cache on |
 | `tex0hash` | ties the line to something on screen through Remix's texture categorization UI |
 | `color` | what aurora said the surface presents, linear 0..1 |
-| `luma` / `chroma` | brightness and saturation of that colour, the two numbers the decision turns on |
-| `minLuma` / `minChroma` | the live thresholds, printed so an old log can be read without knowing what they were set to |
+| `score` | aurora's summed GX evidence, the same number as `emisScore` upstream |
+| `luma` / `chroma` | brightness and saturation of that colour |
+| `threshold` / `minLuma` / `minChroma` | the live cuts, printed so an old log can be read without knowing what they were set to |
+| `invertible` | 0 when the glow was declined because the albedo's texture op could not be inverted (see `remix-material-interface.md` §9). A silently wrong glow colour would be worse |
 | `verdict` | `emissive` or `rejected` |
-| `applied` | 0 when the verdict was `emissive` but `rtx.dusklight.emissive.enable` is off |
+| `applied` | 0 when the verdict was `emissive` but the glow was declined or `rtx.dusklight.emissive.enable` is off |
 
-**Aurora's half of the same decision is `selfLit=` on `matrep.sum`.** A surface
-that does not glow and has no `dusklight.emis` line at all was rejected on the
-game side; check `selfLit=` there for the reason. A surface with a
-`verdict=rejected` line was rejected on the threshold, and the numbers on that
-line say by how much.
+**Aurora's half of the same decision is `selfLit=` / `emisScore=` on
+`matrep.sum`.** A surface with no `dusklight.emis` line at all scored zero on the
+game side; `selfLit=` there says why. A `verdict=rejected` line was cut by a
+threshold, and the numbers on the line say which one and by how much.
 
 Bounded at 96 distinct candidates, with a `dusklight.emis.trunc` line if that is
 reached. The cap is deliberately small: a scene with hundreds of candidates

@@ -252,87 +252,129 @@ For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
    directly instead of being inferred from fixed-function state, that is
    strictly better. See §9.
 
-## 9. Self-illumination — built 2026-08-04, untested
+## 9. Self-illumination — rev 2, 2026-08-04, untested
 
-GX has **no emissive term**, so nothing here is a translation in the §1 sense.
-What GX has is a colour channel that can be told to take no light at all, with
-its colour authored in a register rather than sampled from the vertex stream.
-That pair is the strongest statement GX can make that a surface is meant to look
-self-lit, and it comes straight out of the model file.
+GX has **no emissive term**, and the 2026-08-04 Goron Mines session established
+something stronger: **no single GX fact identifies an emitter.**
 
-### Why "unlit" alone is not a rule
+### The two measurements that bracket the problem
 
-Measured on the 2026-08-03 22:23 session, **69 of 117 materials had GX lighting
-disabled** — 59% of the scene. Acting on that bit alone would set more than half
-the world glowing. The split is the useful part:
+| Session | Finding |
+| :-- | :-- |
+| 2026-08-03, mixed areas | 69 of 117 materials had GX lighting **disabled** — 59% of the scene. "Unlit" is far too broad to act on. |
+| 2026-08-04, Goron Mines only | Every candidate lava material has `lit=1` — GX lighting **enabled**. "Unlit" also misses the one surface this feature exists for. |
 
-| | count |
-| :-- | --: |
-| `lit=0 matSrc=GX_SRC_VTX` | 44 |
-| `lit=0 matSrc=GX_SRC_REG` | 25 |
-| `lit=1` (either source) | 48 |
+So the first revision's rule (`unlit AND register-sourced`) was wrong from both
+ends. In the Goron Mines it fired on exactly one material — a brown `965744`
+that had already been flagged as the likeliest false positive — and on nothing
+else in the room.
 
-The 44 vertex-sourced ones are §7c's baked lighting, not emitters. That leaves
-25, still far too many — most are white: UI, EFB copies, plain geometry.
+### What replaced it: a score, not a predicate
 
-### How it is split between the two halves
+Aurora sums the evidence GX does carry and the fork picks where to cut.
 
-**Aurora reports evidence. The fork decides.** The line is drawn where the
-judgement starts:
+| Evidence | Weight | Why it is evidence |
+| :-- | --: | :-- |
+| GX lighting disabled for the colour channel | 0.50 | the surface takes no light |
+| colour authored in a register, not per-vertex | 0.25 | not §7c's baked lighting |
+| a TEV stage scaled past what the console could display (`GX_CS_SCALE_2/4`) | 0.25 | **the only thing in GX that states "brighter than the display"** |
 
-| Half | Owns | Where |
-| :-- | :-- | :-- |
-| aurora | the GX facts: unlit, register-sourced, 3D, evaluable, and the colour the surface presents | `evaluate_self_lit` in `dx9_tev.cpp` |
-| fork | the thresholds that separate lava from an unlit interior wall | `rtx.dusklight.emissive.*`, `rtx_dusklight_emissive.h` |
+`rtx.dusklight.emissive.threshold` defaults to 0.70, which preserves the old
+behaviour (unlit plus one other fact). Dropping it to 0.20 admits the
+over-range materials on their own. It is a live overlay control precisely
+because nobody can derive the right cut from first principles.
 
-The thresholds are the part nobody can derive from first principles, so they
-live in options and move from the F1 overlay rather than a rebuild.
+Replayed against the Goron Mines log after the luma/chroma filter: the old rule
+gave 2 materials, over-range alone gave 3 (two of them warm 128×128 masks),
+and the union gave 5. **Which of those is the lava is still not established** —
+see the identification section below, which exists to end that question.
 
-### The transport
+### The transport, and the trap in it
 
-`D3DMATERIAL9::Emissive`. RGB is the presented colour; A is aurora's verdict
-(1 or 0). It was chosen because it is the actual D3D9 semantic for
-self-illumination and because it was **free end to end**: this backend keeps
-`D3DRS_LIGHTING` off, so nothing reads a D3D9 material, and the fork was already
-copying the whole `D3DMATERIAL9` into `LegacyMaterialData` and never reading it.
+`D3DMATERIAL9::Emissive` — RGB the presented colour, **A the evidence score**.
+Free end to end: this backend keeps `D3DRS_LIGHTING` off so nothing reads a
+D3D9 material, and the fork was already copying the whole struct unread.
 
-Two consequences worth knowing:
+**The trap:** `emissiveColorConstant` does not reach the shader untouched. The
+fixed-function block in `opaque_surface_material_interaction.slangh` runs the
+emissive colour through the **albedo's** texture op, substituting it for the
+texture sample — so setting the constant to the colour you want yields
+`op(colour, tFactor)` on screen. With `form=add:tint` that doubles the colour.
+The fork now sets the **pre-image** instead (`dusklightEmissive::preimage`) and
+declines to emit when the op cannot be inverted, rather than glowing the wrong
+colour silently. `invertible=0` in the `dusklight.emis` log marks that case.
 
-- The change **cannot alter the raw D3D9 image.** If something looks different
-  outside Remix, this is not the cause.
-- `LegacyMaterialData::computeIdentityHash` had to start hashing `Emissive`.
-  Without that, two draws differing only in the verdict collapse onto whichever
-  the material cache saw first.
+### Identification: `grp=`
+
+The recurring blocker has not been the rule, it is that **nobody can tell which
+logged material is the lava.** That is now a log field.
+
+The game pushes one `GXPushDebugGroup` per process draw, labelled with the
+process name, at the single funnel every draw passes through
+(`fpcDw_Execute`, `dusklight-ao/src/f_pc/f_pc_draw.cpp`). Aurora mirrors the
+innermost label into `GXState::currentDebugGroup()` and `matrep.sum` prints it
+as `grp=`. So every material now carries the name of the game code that drew
+it, permanently, for every future material question — not just this one.
+
+Cost: one short string per drawn process per frame. If frame time regresses
+noticeably, this is the first thing to suspect.
 
 ### Which endpoint becomes the glow
 
-The same rule §7b uses for the albedo tint: the more chromatic endpoint of the
-ramp, ties going to the brighter one. So a heart ramping `B80000 → F84040`
-glows red, and a lava ramp `FF0000 → FF6B00` glows orange.
+The more chromatic endpoint of the ramp, ties going to the brighter one — the
+same rule §7b uses for the albedo tint.
 
-The glow is a **flat colour**, not the texture. `emissiveColorConstant` is
-overridden entirely by `emissiveColorTexture` when both are set, and this game's
-textures are usually intensity masks with the colour held in a GX constant
-(§6) — so a textured glow would come out white. `rtx.dusklight.emissive.useTextureColor`
-switches to the texture for a material whose texture really is the colour.
-
-### What the rule catches
-
-Replayed against the 2026-08-03 22:23 log at the shipped defaults
-(`minLuma 0.25`, `minChroma 0.20`): **8 of 117 materials**, including a red
-ramp matching the heart, a green one matching the rupee, and two orange ones
-consistent with fire or lava. The likeliest false positive is a brown
-`965744` at chroma 0.32 — raising Minimum Saturation to 0.35 drops it and
-nothing else.
-
-**This is a replay of a log, not a test in game.** Which of the eight is lava
-has not been established; the `dusklight.emis` lines name each one so the next
-session settles it. See `material-report.md`.
+The glow is a **flat colour**, not the texture: `emissiveColorConstant` is
+overridden entirely by `emissiveColorTexture` when both are set, and this
+game's textures are usually intensity masks with the colour in a GX constant
+(§6), so a textured glow would come out white.
+`rtx.dusklight.emissive.useTextureColor` switches for a material whose texture
+really is the colour.
 
 ### What is still not built
 
-The endpoint remains a small versioned export from the fork's `d3d9.dll`, called
-per draw, carrying resolved albedo and emissive directly instead of encoding
-them into fixed-function state. Emissive now has a real channel, but it is still
-a repurposed D3D9 field with one float of verdict in it, not a stated intent.
-Work on the encoding is maintaining a fallback, not building the answer.
+The endpoint remains a small versioned export from the fork's `d3d9.dll`,
+called per draw, carrying resolved albedo and emissive directly. Emissive has a
+channel now, but it is a repurposed D3D9 field carrying one float of score
+whose value then has to be pre-inverted through an unrelated texture op. That
+is a fallback working hard, not a stated intent.
+
+**The nearer prize is §7's two-colour ramp.** See §10.
+
+## 10. The ramp Remix cannot express — and why lava reads red
+
+Measured 2026-08-04. The Goron Mines lava material is, in GX:
+
+```
+cc = [C2, C1, TEXC, ZERO]   ->   out = lerp(C2, C1, texture)
+C2 = FF0000 (red)   C1 = FFFE63 (bright yellow)
+```
+
+A ramp between two saturated colours. §2 lists everything Remix can express in
+the one stage it reads, and **none of it is a lerp between two constants**: the
+arguments available are `TEXTURE`, `DIFFUSE`, `TFACTOR` and `CURRENT`, and the
+ops reduce to `t·C` or `t + C`. So:
+
+| Reconstruction | red channel | green | blue |
+| :-- | :-- | :-- | :-- |
+| truth `lerp(A,B,t)` | 1 | 0.996·t | 0.388·t |
+| `ADD(TEXTURE, TFACTOR=A)` — what ships | 1 ✓ | t ✓ (0.4% high) | t ✗ (2.6× high) |
+| `MODULATE(TEXTURE, TFACTOR=B)` | t ✗ | 0.996·t ✓ | 0.388·t ✓ |
+
+`ADD` wins on integrated error (0.125 vs 0.333) and is what §7b selects, but its
+residual is entirely in blue: **the highlights desaturate toward white instead
+of yellowing**, so the surface reads red-and-white rather than red-to-orange.
+That is the exact shape of the 2026-08-04 report, "more red than the intense
+orangeish/yellow".
+
+`MODULATE` is not the answer either — it renders black where the material's
+floor is a real colour, which is the inverted-highlight defect §7b exists to
+remove.
+
+**There is no single-op fix. The fix is to stop using a single op.** Both sides
+are ours: aurora can send both endpoints (`D3DMATERIAL9` has `Diffuse` and
+`Ambient` still unused), and the fork can carry them to a surface field and
+evaluate `lerp(out0, out1, textureIntensity)` in the shader. That reproduces
+the game's dominant material shape (§7) **exactly** — every ramp material at
+once, not just lava. It is a shader and surface-packing change, so it is
+recorded here rather than bundled with the instrumentation above.
