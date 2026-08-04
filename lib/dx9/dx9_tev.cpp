@@ -911,6 +911,15 @@ struct AlbedoIntent {
   bool usesVertexColor = false;
   uint32_t out0 = 0;          // colour where the texture reads black
   uint32_t out1 = 0;          // colour where the texture reads white
+  // Opacity, evaluated the same way. The hint used to advertise the texture's
+  // own alpha unconditionally, which is right for a cutout but drops any
+  // constant scale on it - so a HUD effect that fades in through a konst alpha
+  // reached Remix fully opaque, drawing its whole quad instead of just the
+  // effect. TFACTOR's alpha channel is otherwise unused, so it can carry the
+  // scale without competing with the colour tint.
+  bool alphaValid = false;
+  bool alphaUsesTexture = false;
+  uint32_t alphaScale = 0xFF;  // opacity where the texture's alpha reads full
   bool hasTint = false;       // worth advertising a TFACTOR
   uint32_t tint = 0xFFFFFFFFu;
   // Which op best approximates the material in the one stage Remix reads.
@@ -1012,6 +1021,39 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
   r.out0 = endpoints[0];
   r.out1 = endpoints[1];
 
+  // Opacity, by the same method: evaluate the alpha pass with the texture's
+  // alpha at full. GX alpha operands are scalars, so one channel is enough.
+  {
+    const Operand aops[4] = {
+        alpha_operand(stage.alphaPass.a, stage, stageIdx, true, draw),
+        alpha_operand(stage.alphaPass.b, stage, stageIdx, true, draw),
+        alpha_operand(stage.alphaPass.c, stage, stageIdx, true, draw),
+        alpha_operand(stage.alphaPass.d, stage, stageIdx, true, draw),
+    };
+    float av[4][3];
+    bool ok = true;
+    bool sawTex = false;
+    bool sawVtx = false;
+    for (int i = 0; i < 4 && ok; ++i) {
+      ok = eval_operand(aops[i], 1.f, av[i], sawTex, sawVtx);
+    }
+    if (ok) {
+      const float aBias = stage.alphaOp.bias == GX_TB_ADDHALF   ? 0.5f
+                          : stage.alphaOp.bias == GX_TB_SUBHALF ? -0.5f
+                                                                : 0.f;
+      const float aScale = stage.alphaOp.scale == GX_CS_SCALE_2    ? 2.f
+                           : stage.alphaOp.scale == GX_CS_SCALE_4  ? 4.f
+                           : stage.alphaOp.scale == GX_CS_DIVIDE_2 ? 0.5f
+                                                                   : 1.f;
+      const float term = av[0][0] * (1.f - av[2][0]) + av[1][0] * av[2][0];
+      float o = (av[3][0] + (stage.alphaOp.op == GX_TEV_SUB ? -term : term) + aBias) * aScale;
+      o = o < 0.f ? 0.f : (o > 1.f ? 1.f : o);
+      r.alphaValid = true;
+      r.alphaUsesTexture = sawTex;
+      r.alphaScale = static_cast<uint32_t>(o * 255.f + 0.5f);
+    }
+  }
+
   if (!r.usesTexture) {
     r.shape = "flat";
     return r; // no texture in the colour pass; nothing for a tint to modulate
@@ -1031,23 +1073,38 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
 
   // Pick the op and constant that best reproduce the two endpoints within the
   // single stage Remix reads.
+  // A multiply always produces black where the texture is black. So the choice
+  // is decided by the *floor*, not by where the ramp ends:
+  //
+  //   floor black     -> MODULATE is exact at both ends.
+  //   floor coloured  -> MODULATE would replace the object's own colour with
+  //                      black wherever the texture is dark. ADD keeps the
+  //                      floor exactly and overshoots at the bright end, which
+  //                      reads as a blown specular rather than a hole.
+  //
+  // The 2026-08-04 session settled this by looking at real programs: these
+  // materials are `floor + scale x texture` in GX (`d` is a colour constant and
+  // the texture only modulates the term added to it), so a multiply is
+  // structurally wrong rather than merely mistuned. The cost of ADD is the
+  // missing scale on the texture, which brightens the top end.
+  //
+  // An earlier revision gated ADD on the ramp ending near white. That matched
+  // 5 materials out of 111 and left rupees and hearts rendering their
+  // highlights black - the defect this whole path exists to remove.
   uint32_t pick;
   if (rgb0 == 0) {
-    // Floor is black: `texture x out1` is exact at both ends.
     pick = rgb1;
     r.hintOp = D3DTOP_MODULATE;
-  } else if (luma_of(rgb1) >= 0xF0 && chroma_of(rgb1) <= 0x10) {
-    // Ramp to (near) white: `texture + out0` holds the coloured floor and
-    // saturates to white at the top, which a multiply cannot do.
+  } else if (luma_of(rgb0) >= 0xE8) {
+    // Descending ramp - bright where the texture is black. ADD would drive the
+    // whole surface to white, so keep the multiply and take the more coloured
+    // endpoint. Rare, and nothing here reproduces it well.
+    const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
+    pick = c1 > c0 ? rgb1 : rgb0;
+    r.hintOp = D3DTOP_MODULATE;
+  } else {
     pick = rgb0;
     r.hintOp = D3DTOP_ADD;
-  } else {
-    // A ramp between two real colours. Neither op reproduces it; multiply by
-    // whichever endpoint carries more colour, since that is the one a viewer
-    // would name as the object's colour.
-    const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
-    pick = c1 > c0 ? rgb1 : (c0 > c1 ? rgb0 : (luma_of(rgb1) >= luma_of(rgb0) ? rgb1 : rgb0));
-    r.hintOp = D3DTOP_MODULATE;
   }
   // White would be the identity for a multiply, and black would erase the
   // surface for either op; neither is worth a stage.
@@ -1069,9 +1126,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // constant slots are allocated as the real stages are emitted, and the hint
   // is written before any of them have run.
   const AlbedoIntent albedo = evaluate_albedo(draw);
-  const uint32_t hintTint = albedo.tint;
   const bool hasHintTint = albedo.hasTint;
-  if (hasHintTint) {
+  // A constant scale on the texture's alpha, carried in TFACTOR's alpha channel
+  // so it does not compete with the colour tint in the RGB channels.
+  const bool hasAlphaScale = albedo.alphaValid && albedo.alphaUsesTexture && albedo.alphaScale < 0xFFu;
+  const uint32_t hintTint =
+      ((hasAlphaScale ? albedo.alphaScale : 0xFFu) << 24) | (albedo.tint & 0x00FFFFFFu);
+  if (hasHintTint || hasAlphaScale) {
+    // materialize() compares the whole 32-bit value, so a real stage wanting a
+    // different constant simply takes the per-stage slot instead. Both are real
+    // D3D9 constants, so rasterization is unaffected either way.
     consts.tfactor = hintTint;
     consts.tfactorUsed = true;
   }
@@ -1232,7 +1296,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_TFACTOR);
             hintForm = "add:tint";
-          } else if (albedo.usesVertexColor || !albedo.valid) {
+          } else if (!albedo.valid) {
+            // Nothing could be evaluated, so fall back to the old shape.
             set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
@@ -1247,11 +1312,20 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             hintForm = "tex";
           }
-          // Opacity must be the texture's own alpha: it is what Remix
-          // alpha-tests against, and it is what gives foliage cards and grass
-          // blades their cutout shape.
-          set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-          set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+          // Opacity is the texture's own alpha: it is what Remix alpha-tests
+          // against, and it is what gives foliage cards and grass blades their
+          // cutout shape. Where the material additionally scales that alpha by
+          // a constant - a HUD effect fading in, for instance - the scale rides
+          // TFACTOR's alpha channel, because dropping it made such quads reach
+          // Remix fully opaque and draw their whole rectangle.
+          if (hasAlphaScale) {
+            set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+            set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+            set_tss(d3dStage, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
+          } else {
+            set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+            set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+          }
           if (g_dx9.tssTemp) {
             set_tss(d3dStage, D3DTSS_RESULTARG, D3DTA_TEMP);
           }
@@ -1428,12 +1502,13 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     // differently and the join key silently did not join.
     Log.info("matrep.sum mk={:016X} gxStages={} d3dStages={} albedoGx={} albedoMap={} "
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
-             "usesTex={} usesVtx={} hint={} form={} hintTex={:016X} hintLoose={} "
+             "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
-             albedo.usesVertexColor ? 1 : 0, hintDecision, hintForm,
+             albedo.usesVertexColor ? 1 : 0, albedo.alphaValid ? albedo.alphaScale : 0xFFu,
+             hintDecision, hintForm,
              reinterpret_cast<uintptr_t>(hintTexture), hintLooseWouldSuppress ? 1 : 0, tintDecision,
              hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
