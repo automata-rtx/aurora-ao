@@ -398,10 +398,12 @@ struct GXState {
   bool skinningActive = false;
 
   // Innermost GXPushDebugGroup label, mirrored into a fixed buffer so a
-  // backend can name the draw it is looking at without allocating. The game
-  // pushes one group per process draw, so this is "which piece of game code
-  // issued this draw" - the thing that turns "which material is the lava?"
-  // from a guess into a log field. See aurora docs/dx9/material-report.md.
+  // backend can name the draw it is looking at without a graphics debugger and
+  // without allocating. The game pushes one group per process draw
+  // (fpcDw_Execute), so this is "which piece of game code issued this draw" -
+  // the thing that turns "which of these logged materials is the lava?" from a
+  // guess into a log field. Emitted as grp= on every material line; see
+  // docs/dx9/material-report.md.
   static constexpr size_t MaxDebugGroupDepth = 8;
   static constexpr size_t MaxDebugGroupLabel = 48;
   std::array<std::array<char, MaxDebugGroupLabel>, MaxDebugGroupDepth> debugGroups{};

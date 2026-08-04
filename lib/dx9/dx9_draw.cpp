@@ -110,7 +110,11 @@ void apply_blend_state() noexcept {
 }
 
 // GX has two alpha comparators joined by AND/OR/XOR/XNOR; D3D9 has one.
-// Reduce where exact, otherwise use comparator 0 (docs, unsupported #12).
+// Reduce where exact, otherwise use comparator 0 and log. Not cosmetic: Remix
+// builds opacity and the alpha test from what is emitted here, so a dropped
+// bound changes what the path tracer sees, not just the raster. No irreducible
+// case has been identified in a play session yet; the warn_once keys are the
+// evidence for that. docs/dx9/unsupported-effects.md #12.
 void apply_alpha_compare() noexcept {
   const auto& ac = g_gxState.alphaCompare;
   GXCompare comp = ac.comp0;
@@ -162,7 +166,7 @@ void apply_alpha_compare() noexcept {
   set_rs(D3DRS_ALPHAREF, ref & 0xFF);
 }
 
-// GX fog -> D3D9 fog render states (docs #11).
+// GX fog -> D3D9 fog render states (docs/dx9/gx-to-d3d9-mapping.md #11).
 //
 // The BP registers hold the SDK-computed curve f(zs) = A/(B - zs) - C, which for a
 // perspective projection collapses to f(ze) = (ze - start)/(end - start) in view units.
@@ -170,14 +174,16 @@ void apply_alpha_compare() noexcept {
 // from the current projection matrix: with m22 = -n/(f-n) and m23 = -fn/(f-n) (GX NDC z in
 // [-1,0]), near = m23/(m22 - 1).
 //
-// The point of forwarding these is RTX Remix: its per-draw capture reads D3DRS_FOG* and
-// reapplies the exact D3DFOG_LINEAR ramp in its composite (or remaps it into volumetrics),
-// which restores the game's environment-driven fog under the path tracer. Raw D3D9 also
-// rasterizes with it, which matches the GX output for the linear modes the game uses.
+// This is NOT how the game's fog reaches Remix, and must not be relied on as if it were:
+// Remix keeps the FIRST non-NONE fog state it sees in a frame and discards every later one,
+// while TP sets fog per object - so which draw is submitted first decides the whole frame.
+// The fork instead drives fog, sky and sky-light from one medium built from the game's
+// kankyo state (rtx.dusklight.env.*); see dxvk-remix documentation/DusklightAtmosphere.md
+// §2.5 and §5. What is emitted here stays because it is cheap and correct per draw.
 //
-// GX range adjust (GXSetFogRangeAdj) is not forwarded: Remix's composite already fogs by
+// GX range adjust (GXSetFogRangeAdj) is not forwarded: the composite already fogs by
 // radial distance, which is what range adjust approximates. Backwards (REVEXP) fog is not
-// representable in D3D9 and stays disabled.
+// representable in D3D9 and stays disabled. docs/dx9/unsupported-effects.md #9.
 void apply_fog_state() noexcept {
   const aurora::gx::FogState& fog = g_gxState.fog;
 
@@ -287,22 +293,19 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
   const D3DMATRIX identity{{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
   // With a camera provided (GX_AURORA_SET_VIEW_MTX), split the GX combined
   // model->view into WORLD = pnMtx*viewInv (true model->world) and VIEW =
-  // camera. Rasterization is identical (WORLD*VIEW == pnMtx), but RTX Remix
-  // can then derive a real camera - without one its camera manager rejects
-  // every draw (objectToView == objectToWorld), finalizeSkinningData never
-  // runs, and skinned instances inherit WORLDMATRIX(0) as their transform,
-  // scattering body parts. See docs #3/#6/#13.
+  // camera, so Remix can derive a real camera. Without one its camera manager
+  // rejects every draw (objectToView == objectToWorld), finalizeSkinningData
+  // never runs, and skinned instances inherit WORLDMATRIX(0) as their
+  // transform, scattering body parts.
+  // docs/dx9/gx-to-d3d9-mapping.md #3/#6/#13.
   //
-  // Orthographic draws are excluded. They are the game's 2D work - HUD, menus,
-  // fullscreen filter quads - and Remix classifies ortho draws as UI, then
-  // rasterizes them as a screen overlay. Handing that path a 3D view matrix
-  // with the 2D transform folded into WORLD leaves the overlay derived from a
-  // world-space camera instead of the flat 2D setup it expects, which is why
-  // the HUD came out oversized and stretched under Remix while raw D3D9 was
-  // correct at every window size. 2D draws therefore keep the pre-camera-split
-  // fused form (VIEW = identity), which is also what they looked like before
-  // the split existed. Rasterization is unaffected either way, since
-  // WORLD * VIEW is the same product.
+  // Orthographic draws are excluded: Remix classifies them as UI and
+  // rasterizes them as a screen overlay, and the HUD is one of the two things
+  // that must rasterize correctly. Handing that path a 3D view matrix left the
+  // overlay derived from a world-space camera - signature: HUD oversized and
+  // stretched under Remix at any non-launch window size. 2D draws therefore
+  // keep the fused form (VIEW = identity).
+  // docs/dx9/unsupported-effects.md R9.
   const bool haveCam = g_camera.valid && g_gxState.projType != GX_ORTHOGRAPHIC;
   const D3DMATRIX& view = haveCam ? g_camera.view : identity;
   if (draw.skinned) {
@@ -338,17 +341,18 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
   } else if (draw.hasPnMtxIdx) {
     // Matrix-palette draws (J3D characters): the 10 GX position matrices
-    // become the world matrix palette, selected per vertex. The vertices
-    // store an explicit 1.0 weight (D3DVBF_1WEIGHTS rather than 0WEIGHTS,
-    // equivalent under fixed-function) because RTX Remix's GPU skinning
-    // requires a blend-weight stream — see decode_draw.
-    // Only the matrices this draw actually references, renumbered into a dense
-    // range by decode_draw: GX has 10 position matrices but fixed-function
-    // indexed blending only reaches D3DCAPS9::MaxVertexBlendMatrixIndex (8
-    // here), and an out-of-range blend index reads an undefined matrix, which
-    // scatters those vertices far across the world. Remix is unaffected by the
-    // cap - it reads the transform state directly and skins on the GPU - so
-    // this only ever showed up in raw D3D9.
+    // become the world matrix palette, selected per vertex. The vertices store
+    // an explicit 1.0 weight (D3DVBF_1WEIGHTS rather than 0WEIGHTS, equivalent
+    // under fixed-function) because Remix's GPU skinning refuses to run
+    // without a blend-weight stream — see decode_draw.
+    // Only the matrices this draw references, renumbered into a dense range by
+    // decode_draw: fixed-function indexed blending reaches only
+    // D3DCAPS9::MaxVertexBlendMatrixIndex (8 here), and an out-of-range index
+    // reads an undefined matrix, scattering those vertices across the world.
+    // Remix does not enforce the cap (it reads transform state and skins on
+    // the GPU), which is why this hid for weeks — useful for telling a
+    // Remix-side fault from a stream-side one, not a reason to skip the
+    // compaction, which is free. docs/dx9/unsupported-effects.md R5.
     for (uint32_t i = 0; i < draw.pnMtxCount; ++i) {
       const D3DMATRIX m = to_d3d(g_gxState.pnMtx[draw.pnMtxSlots[i]].pos);
       set_world_matrix(i, haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
@@ -362,12 +366,17 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
-    // Camera-space texgen compensation (docs #7): D3D feeds view-space
-    // inputs where GX texgen reads model-space; premultiplying the texture
-    // matrix with the model-view inverse restores GX semantics (projected
-    // shadows/light shafts, env maps). Only well-defined for rigid draws.
-    // Always derived from the COMBINED model->view - D3D's camera-space
-    // texgen input is WORLD*VIEW, which equals pnMtx on both paths.
+    // Camera-space texgen compensation (docs/dx9/gx-to-d3d9-mapping.md #7):
+    // D3D feeds view-space inputs where GX texgen reads model-space;
+    // premultiplying the texture matrix with the model-view inverse restores
+    // GX semantics (projected shadows/light shafts, env maps). Only
+    // well-defined for rigid draws. Always derived from the COMBINED
+    // model->view - D3D's camera-space texgen input is WORLD*VIEW, which
+    // equals pnMtx on both paths.
+    // Caveat: the projected (GX_TG_MTX3x4) case does not survive into Remix,
+    // which clamps/rejects projected texture transforms - fixing that belongs
+    // in the fork or in a per-vertex evaluation here, not in this matrix.
+    // docs/dx9/unsupported-effects.md R6.
     if (mtx_affine_inverse(modelView, g_worldViewInv.full)) {
       g_worldViewInv.rotation = g_worldViewInv.full;
       g_worldViewInv.rotation.m[3][0] = 0.f;
@@ -384,11 +393,11 @@ uint32_t build_indices(GXPrimitive prim, uint16_t vtxCount, std::vector<uint16_t
   out.clear();
   switch (prim) {
   case GX_QUADS:
-    // Fan order (0,1,2 / 0,2,3) rather than (0,1,2 / 2,3,0): identical
-    // triangles and winding, but it is the layout Remix's billboard detection
-    // expects - it logs "detected unsupported quad index layout for billboard
-    // creation" otherwise and falls back to treating particle quads as plain
-    // geometry.
+    // Fan order (0,1,2 / 0,2,3) rather than (0,1,2 / 2,3,0): same triangles
+    // and winding, but it is the layout Remix's billboard detection expects -
+    // it logs "detected unsupported quad index layout for billboard creation"
+    // otherwise and treats particle quads as plain geometry.
+    // docs/dx9/unsupported-effects.md R7.
     for (uint16_t v = 0; v + 3 < vtxCount; v += 4) {
       out.insert(out.end(), {v, static_cast<uint16_t>(v + 1), static_cast<uint16_t>(v + 2), v,
                              static_cast<uint16_t>(v + 2), static_cast<uint16_t>(v + 3)});

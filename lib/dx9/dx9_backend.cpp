@@ -100,9 +100,11 @@ bool matrep_should_emit(uint64_t key) noexcept {
 static void apply_default_state() noexcept {
   g_cache.invalidate();
   auto* dev = g_dx9.dev;
-  // Fixed-function baseline. Lighting is off by design in v1 (docs #8):
-  // Twilight Princess bakes world lighting into vertex colors and RTX Remix
-  // relights everything anyway.
+  // Fixed-function baseline. D3D9 T&L lighting stays off: Remix relights
+  // everything, so reproducing the GC light model buys nothing. GX's
+  // per-channel lighting-enable bit is still *read* - it decides whether
+  // vertex colour is forwarded as material colour and feeds the emissive
+  // score. docs/dx9/gx-to-d3d9-mapping.md #8.
   dev->SetRenderState(D3DRS_LIGHTING, FALSE);
   dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
   dev->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
@@ -137,7 +139,9 @@ static void fill_present_params(uint32_t width, uint32_t height) noexcept {
   pp = {};
   pp.BackBufferWidth = std::max(width, 1u);
   pp.BackBufferHeight = std::max(height, 1u);
-  // Alpha in the backbuffer so GX destination-alpha blends work (docs #11).
+  // Alpha in the backbuffer so GX destination-alpha blends work, and because
+  // Remix reads the stage's alpha to build opacity and the alpha test
+  // (docs/dx9/gx-to-d3d9-mapping.md #11).
   pp.BackBufferFormat = D3DFMT_A8R8G8B8;
   pp.BackBufferCount = 1;
   pp.MultiSampleType = D3DMULTISAMPLE_NONE; // no MSAA by design (Remix)
@@ -209,13 +213,14 @@ static bool create_device_for(uint32_t width, uint32_t height) noexcept {
   return true;
 }
 
-// Window resizes recreate the device instead of resetting it. RTX Remix does
-// not re-derive its UI overlay from a mid-run Reset: the HUD keeps the scale
-// and placement it had at device-creation size, which is why launching
-// straight into the final resolution looked correct while every resized run
-// did not - raw D3D9 follows the Reset correctly either way. Recreating costs
-// a texture-cache rebuild and a Remix renderer restart, but resizes are rare
-// and user-driven.
+// Window resizes recreate the device instead of resetting it. Remix does not
+// re-derive its UI overlay from a mid-run Reset, and the HUD is one of the two
+// things that must still rasterize correctly (Remix rasterizes UI draws rather
+// than path-tracing them). Signature: launching straight into the final
+// resolution looked correct while every resized run did not - raw D3D9 follows
+// the Reset either way, which is how the fault was localised to Remix.
+// Recreating costs a texture-cache rebuild and a Remix renderer restart, but
+// resizes are rare and user-driven. docs/dx9/unsupported-effects.md R4.
 static bool recreate_device(uint32_t width, uint32_t height) noexcept {
   if (g_dx9.dev != nullptr) {
     if (g_dx9.inOffscreen) {

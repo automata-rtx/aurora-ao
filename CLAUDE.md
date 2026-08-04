@@ -191,7 +191,10 @@ camera, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
 fixed-function and 11 Remix runtime limitations, all in
-`docs/dx9/unsupported-effects.md`.
+`docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
+not what has been given up: the fork is ours, so a "Remix limitation" is a work
+item until someone reads the fork and finds a real wall. The two-colour ramp
+sat on that list until 2026-08-04.
 
 Live defects:
 

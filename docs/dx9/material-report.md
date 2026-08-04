@@ -99,6 +99,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
+| **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
 | **`grp`** | **which piece of game code drew this**, from the debug group the game pushes per process draw. This is the field that answers "which material is the lava?" without anyone looking at pixels. `-` means no group was open |
 | **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
 | `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold` |
@@ -112,7 +113,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | :-- | :-- |
 | `tex` | plain texture, black to white — Remix needs no help |
 | `tex*c` | texture × one colour; a multiply reproduces it **exactly** |
-| `ramp` | `lerp(out0, out1, texture)` between two real colours — the common case in this game, and only approximable in the one stage Remix reads |
+| `ramp` | `lerp(out0, out1, texture)` between two real colours — the common case in this game. Reproduced **exactly** by the fork when `ramp=tfLow`/`tfHigh`; approximated in the one stage only when the ramp is declined (§10) |
 | `flat` | the colour pass never reads the texture |
 | `unevaluable` | depends on a previous stage's result, so it cannot be evaluated here |
 
@@ -122,7 +123,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | :-- | :-- |
 | `mod:tint` | `TEXTURE × TFACTOR` — exact when the floor is black |
 | `add:tint` | `TEXTURE + TFACTOR` — **whenever the floor is a colour**, because a multiply would render that floor black. See `remix-material-interface.md` §7b |
-| `mod:vtx` | `TEXTURE × DIFFUSE` — only when the material could not be evaluated at all. Vertex colour is otherwise never advertised (§7c: it carries baked lighting here) |
+| `mod:vtx` | `TEXTURE × DIFFUSE` — only when the material could not be evaluated at all. The hint does not otherwise reach for vertex colour; whether the *stream* is forwarded is a separate, per-draw decision that GX answers (§7c), reported as `vtxUse=` |
 | `tex` | the texture alone |
 
 **The quickest read: check `ramp=` first.** `tfLow` or `tfHigh` means the
@@ -194,9 +195,12 @@ Two caveats worth knowing:
 
 - This reports the *reconstruction*, not the final shaded surface. A replacement
   material can displace it later.
-- `vcBaked` reflects `rtx.vertexColorIsBakedLighting`, which is a **global**
-  transform that removes vertex-colour brightness and part of its saturation on
-  every surface. It is not per-material, and it is not the grayscale cause.
+- `vcBaked` is the transform that removes vertex-colour brightness and part of
+  its saturation. Since 2026-08-04 it is decided **per draw** from aurora's
+  `vtxUse=` verdict (`D3DMATERIAL9::Specular.r`), falling back to the global
+  `rtx.vertexColorIsBakedLighting` only where aurora says the stream is not
+  authored material colour — a single global answer was necessarily wrong for
+  one of the two cases. It is not the grayscale cause either way.
 
 ## Reading `dusklight.emis`
 
@@ -231,8 +235,8 @@ Bounded at 96 distinct candidates, with a `dusklight.emis.trunc` line if that is
 reached. The cap is deliberately small: a scene with hundreds of candidates
 means the rule is wrong, not that the cap is too low.
 
-The whole design, and what the rule caught when replayed against the
-2026-08-03 session, is in
+The whole design, and what the rule caught when replayed against the 2026-08-04
+Goron Mines session, is in
 [`remix-material-interface.md`](remix-material-interface.md) §9.
 
 ## Reading the other lines
@@ -244,11 +248,17 @@ four operands; GX computes `d + (a·(1−c) + b·c)`.
 
 `matrep.k` shows the konst and colour registers — **this is where this game keeps
 the colour that distinguishes a green rupee from a red one** — plus `lit=` and
-`matSrc=`, the two GX facts the self-illumination rule turns on. `selfLit=` on
-`matrep.sum` is those two already interpreted; these are the raw values.
+`matSrc=`, the two GX facts that decide `vtxUse=` (§7c) and that carry two of the
+three self-illumination signals (§9; the third is the TEV over-range scale).
+`selfLit=` and `vtxUse=` on `matrep.sum` are those already interpreted; these are
+the raw values.
 
-`matrep.d3d` shows what we handed D3D9, which is all Remix ever sees. Compare
-its stage 0 against `matrep.rmx` to confirm which stage Remix picked.
+`matrep.d3d` shows what we handed D3D9 through the texture stages, which is all
+Remix reconstructs a material from. Compare its stage 0 against `matrep.rmx` to
+confirm which stage Remix picked. It is **not** the whole message any more: the
+vertex-colour verdict, the emissive score and the ramp endpoints ride
+`D3DMATERIAL9` fields the fork reads directly (`remix-material-interface.md` §2),
+and those appear on `matrep.sum` rather than here.
 
 ## Extending it
 

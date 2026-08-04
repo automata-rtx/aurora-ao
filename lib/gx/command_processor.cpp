@@ -1881,6 +1881,10 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     g_gxState.texCopyDest = reinterpret_cast<const void*>(read_u64(data + pos, bigEndian));
     pos += 8;
   } else if (subCmd == GX_AURORA_REQUEST_DEPTH_SNAPSHOT) {
+    // Depth peek is wgpu-only; under d3d9 GXPeekZ therefore always reads 0.
+    // Not known to matter (Remix path-traces its own depth), but it is a real
+    // behavioural difference rather than a no-op - do not read the guard as
+    // "nothing to do here".
     if (!dx9::active()) {
       gfx::depth_peek::request_snapshot();
     }

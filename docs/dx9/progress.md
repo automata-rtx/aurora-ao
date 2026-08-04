@@ -35,7 +35,11 @@ Build target is Windows. This work is developed in a Linux container, so see
 "fixed function cannot express this" is a statement about the transport, and the
 answer is to do the work in Remix. Entries below written before 2026-08-04
 sometimes justify a decision with "raw D3D9 is unchanged" — read that as a
-safety note, not as the reason. Full statement:
+safety note, not as the reason.
+
+**Two things do still have to rasterize correctly:** the **HUD** (Remix
+rasterizes UI draws rather than path-tracing them) and **alpha** (Remix reads
+the stage's alpha to build opacity and the alpha test). Full statement:
 `remix-material-interface.md` §0.
 
 ## Where things are documented
@@ -46,7 +50,7 @@ safety note, not as the reason. Full statement:
 | How should a given GX construct map to D3D9? | `gx-to-d3d9-mapping.md` |
 | Why did this surface come out the wrong colour? | `remix-material-interface.md` |
 | What do the `matrep.*` log lines mean? | `material-report.md` |
-| What can't be expressed at all, and what does Remix constrain? | `unsupported-effects.md` |
+| What the feed can't carry today, and where that work would go? | `unsupported-effects.md` |
 | What is broken right now, across all three repos? | `dusklight-ao/docs/remix-open-issues.md` |
 
 ## Verification vocabulary
@@ -78,8 +82,8 @@ each is named so the full account is findable.
   `WORLD = pnMtx · view⁻¹`, `VIEW = view`. Without it Remix's camera manager
   rejects every draw as `CameraType::Unknown` — it treats `objectToView ==
   objectToWorld` as "no camera" — which left skinned meshes placed by palette
-  slot 0 and disabled Anti-Culling. `WORLD * VIEW` is unchanged, so raw D3D9
-  rasterization is identical. *(3.4)*
+  slot 0 and disabled Anti-Culling. `WORLD * VIEW` is unchanged, so the
+  rasterized image is identical — a safety note, not the reason. *(3.4)*
 - **The split is skipped for orthographic draws.** Remix auto-detects ortho
   draws as UI and rasterizes them as a screen overlay; handing that path a 3D
   view matrix mis-shaped the HUD. *(3.13)*
@@ -132,8 +136,9 @@ decisions it records as load-bearing:
   these docs claimed black and it cost a full test round. *(3.8)*
 - A raster-neutral **hint stage** is prepended when Remix would otherwise read
   the stage wrongly — and **only** then. Emitting it over a material Remix
-  already reads correctly is what bleached rupees, hearts and lava. *(3.8
-  introduced it, 3.19 made it conditional)*
+  already reads correctly is what bleached rupees, hearts and lava. It writes
+  TEMP, so it disturbs neither the HUD nor alpha — the two things that do still
+  have to rasterize correctly. *(3.8 introduced it, 3.19 made it conditional)*
 - **The material's albedo is *evaluated*, not pattern-matched.** The GX colour
   pass is computed with the texture pinned to black and to white; the two
   endpoints say what the surface should look like. **The floor decides the op:**
@@ -142,7 +147,9 @@ decisions it records as load-bearing:
   object's own colour with a hole. The earlier "look for a texture × constant
   multiply" model matched 6 of 111 real materials, and gating `ADD` on the ramp
   ending near white matched 5 — both because this game's materials are additive
-  two-colour ramps. *(3.20, corrected 3.21)*
+  two-colour ramps. Since 3.24 the ramp itself is reproduced exactly in the fork
+  (next bullet); this op choice is what a material takes when that path declines.
+  *(3.20, corrected 3.21)*
 - **Vertex colour is forwarded only where GX says it is material colour.** With
   the colour channel's lighting enabled the stream is the material GX then
   lights, so it carries no light of its own and a path tracer can have it; with
@@ -211,8 +218,11 @@ and fog remap is off. A mode must be chosen; see
 - **GX lighting is never evaluated** (`D3DRS_LIGHTING = FALSE`), so the game's
   own Link-following light reaches neither vertex colours nor albedo. That is
   why the sun/moon must be injected through the Remix light API rather than
-  captured — and why the GX "this channel is unlit" bit is currently decoded and
-  discarded (`remix-open-issues.md` issue 9).
+  captured. **The GX "this channel is unlit" bit is no longer discarded**: it is
+  the heaviest of the three signals in the self-illumination score *(3.23)* and
+  it is what decides whether vertex colour is forwarded *(3.25)*. It is not
+  sufficient on its own — 59% of one scene is unlit and the Goron Mines lava is
+  *lit* (`remix-open-issues.md` issue 9).
 - **Dawn is never initialized**, so every path that calls it unconditionally
   needs a `dx9::active()` guard. Two were found crashing at startup: ImGui
   texture creation and `resize_swapchain`. *(2)*
@@ -333,12 +343,18 @@ Three changes:
 `grp=` push costs one short string per drawn process per frame — if frame time
 regresses noticeably, suspect it first.
 
-Not fixed here, and now documented rather than guessed at: **Remix cannot
-express a lerp between two constants**, so the lava's `lerp(red, yellow, t)`
-reproduces as red-to-white. `remix-material-interface.md` §10 has the arithmetic
-and the design for fixing it properly.
+Not fixed here, and now documented rather than guessed at: **no stock Remix op
+expresses a lerp between two constants**, so the lava's `lerp(red, yellow, t)`
+reproduced as red-to-white. `remix-material-interface.md` §10 has the
+arithmetic. **Superseded by 3.24**, which stopped reading that as a wall — the
+fork is ours — and made the shader evaluate the combiner exactly.
 
 ### 3.22 — self-illumination: evidence here, judgement in the fork (2026-08-04)
+
+**Superseded by 3.23**, which tested this and found the premise wrong: the rule
+here *required* the colour channel to be unlit, and every Goron Mines lava
+material has `lit=1`. Evidence is scored now, not required. The split below —
+aurora reports, the fork judges — survived and is still the design.
 
 GX has no emissive term, so there was nothing to translate. What it has is a
 colour channel that takes no light with its colour authored in a register — and
@@ -348,9 +364,10 @@ design:
 
 - **aurora** reports evidence — unlit, register-sourced, 3D, evaluable, and the
   colour the surface presents — over `D3DMATERIAL9::Emissive`. That field was
-  free end to end: this backend keeps `D3DRS_LIGHTING` off, so **the change
-  cannot alter the raw D3D9 image**, and the fork was already copying the whole
-  `D3DMATERIAL9` and never reading it.
+  free end to end: this backend keeps `D3DRS_LIGHTING` off so nothing consumes a
+  D3D9 material at all, and the fork was already copying the whole
+  `D3DMATERIAL9` and never reading it. (It therefore also cannot alter the
+  rasterized image — a safety note, not why the channel was chosen.)
 - **the fork** applies the brightness and saturation thresholds, as
   `rtx.dusklight.emissive.*` options in the F1 overlay, so widening or narrowing
   the rule does not cost a rebuild.
@@ -361,7 +378,8 @@ their verdict (`selfLit=` on `matrep.sum`, `dusklight.emis` on the fork side,
 rejections included) so the next session settles it from the log.
 
 **Syntax-checked** in both configs, and **CI-green** on all 8 dusklight targets
-and the fork's 3 Windows configs. Untested in game. Regression signature:
+and the fork's 3 Windows configs. Untested in game *as written* — the test came
+immediately after and is written up in 3.23. Regression signature:
 surfaces glowing that should not — most plausibly unlit interior geometry, which
 the game authors that way because it forces interior ambient to black.
 
@@ -529,8 +547,11 @@ these were visible at all:
 | ground textures | **pure white** | correct |
 | grass / canopy / eyes | visible | broken |
 
-**Ground textures white in raw D3D9 is still open.** Remix is correct because it
-only executes one stage. Ranked suspects and the one-line experiment are in
+**Superseded 2026-08-04: white ground in raw D3D9 is not a defect.** Remix is
+correct — it only executes one stage — and the raw image is never shown to
+anyone. The compare-mode approximation underneath it is still worth reading,
+because it is a suspect for the torch-flame white circle, which *does* reach
+Remix. Ranked suspects and the one-line experiment are in
 `unsupported-effects.md`.
 
 ### 3.8 — correction: `None` is identity, not black (2026-07-24)

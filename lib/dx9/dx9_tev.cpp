@@ -383,25 +383,20 @@ inline Operand white_operand() noexcept {
 
 // --- RTX Remix material reconstruction -------------------------------------
 //
-// Remix rebuilds a draw's material from exactly ONE texture stage, so most of
-// what we emit below is invisible to it, and anything it cannot decode resolves
-// to identity - white - rather than to an error.
+// Remix rebuilds a draw's material from exactly ONE texture stage, anything it
+// cannot decode resolves to identity - WHITE - rather than to an error, and
+// that one stage's alpha becomes the whole opacity (so alpha-tested cutouts
+// live or die by it).
 //
-// This is the most misunderstood system in the project and it has been
-// described wrongly in comments twice. The authoritative account, including
-// what survives the capture path, why the hint stage below is conditional, and
-// the design rules that follow, is:
+// Hence the hint stage below: where Remix would read the real stage wrongly we
+// prepend one it reads right, and where Remix would read it correctly we must
+// NOT, because the hint reduces the material to a single op and wins the stage
+// Remix reads.
 //
-//     docs/dx9/remix-material-interface.md
-//
-// Keep it there. A comment that re-explains it will go stale against it.
-//
-// The short version, only so the code below reads sensibly: a GX material's
-// first TEV stage is rarely the finished albedo, and that one stage's alpha
-// becomes the whole opacity - which is what destroys alpha-tested cutouts. So
-// when Remix would read this stage wrongly we prepend a stage it reads right.
-// When Remix would read it correctly we must NOT, because the hint cannot
-// express a tint and would replace a good material with a worse one.
+// This is the most misunderstood system in the project and has been described
+// wrongly in comments twice. Everything else - what survives the capture path,
+// which endpoint gets advertised, the D3DMATERIAL9 side channels - lives in
+// docs/dx9/remix-material-interface.md. Keep it there.
 constexpr DWORD arg_base(DWORD ta) noexcept { return ta & ~(D3DTA_COMPLEMENT | D3DTA_ALPHAREPLICATE); }
 
 // True when this op hands Remix the texture as-is, optionally modulated by
@@ -434,19 +429,16 @@ bool op_is_plain_texture(const PassOp& op) noexcept {
   return sawTexture;
 }
 
-// Whether Remix will decode this operand at all. An operand it cannot decode
-// becomes RtTextureArgSource::None, which its shader resolves to *identity* -
-// white for colour. See docs/dx9/remix-material-interface.md for the full list
-// of what survives the capture path and what does not.
+// Whether Remix decodes this operand at all; one it cannot decode becomes
+// RtTextureArgSource::None, which its shader resolves to *identity* - white
+// for colour. A constant only survives in TFACTOR: the per-stage
+// D3DTSS_CONSTANT slot is never read. Full list:
+// docs/dx9/remix-material-interface.md §2.
 //
-// A constant only survives if it lands in TFACTOR; the per-stage
-// D3DTSS_CONSTANT slot is never read by Remix.
-//
-// An unclaimed TFACTOR counts as decodable: materialize() hands the draw's
-// first constant TFACTOR unconditionally, so a constant asked about before any
-// stage has been emitted is the one that will get it. Missing this is how the
-// July 2026 fix came to depend on albedo_tint() having already claimed the
-// slot, and therefore did nothing whenever that predicate declined.
+// An unclaimed TFACTOR counts as decodable, because materialize() hands the
+// draw's first constant TFACTOR unconditionally. Missing that is how the July
+// 2026 fix silently became a no-op whenever the predicate that used to claim
+// the slot declined.
 bool remix_decodes_arg(const Operand& o, const ConstAlloc& consts) noexcept {
   if (o.isConst) {
     return !consts.tfactorUsed || consts.tfactor == o.constValue;
@@ -460,8 +452,8 @@ bool remix_decodes_arg(const Operand& o, const ConstAlloc& consts) noexcept {
 // True when Remix, reading this stage alone, reconstructs the albedo we meant -
 // including any tint. This is the test that decides whether the hint stage
 // below is needed; emitting the hint when this is already true is what bleached
-// rupees, hearts and lava, because the hint can only say TEXTURE x DIFFUSE and
-// it wins the stage Remix reads.
+// rupees, hearts and lava, because the hint replaces a faithful stage with a
+// one-op approximation and wins the stage Remix reads.
 bool remix_decodes_albedo(const PassOp& op, const ConstAlloc& consts) noexcept {
   if (op.op != D3DTOP_MODULATE && op.op != D3DTOP_MODULATE2X && op.op != D3DTOP_MODULATE4X &&
       op.op != D3DTOP_SELECTARG1 && op.op != D3DTOP_SELECTARG2) {
@@ -489,8 +481,8 @@ bool remix_decodes_albedo(const PassOp& op, const ConstAlloc& consts) noexcept {
 //
 // CAUTION: a luminance texture tinted by a konst is a legitimate albedo (it is
 // how this game colours rupees and hearts), so "not a colour format" does not
-// mean "not the albedo". See docs/dx9/material-report.md - the report's
-// albedoFmt field exists to catch exactly that misselection.
+// mean "not the albedo". matrep.sum's colorFmt field exists to catch exactly
+// that misselection (docs/dx9/material-report.md).
 bool is_color_texture_format(uint32_t fmt) noexcept {
   switch (fmt) {
   case GX_TF_I4:
@@ -596,6 +588,8 @@ ReducedPass reduce_pass(Operand a, Operand b, Operand c, Operand d, const gx::Te
   if (isCompare) {
     // out = d + (compare ? c : 0). Assume the compare passes: masks built
     // this way keep their visible texels (dropping c made them invisible).
+    // A *suspect*, not a confirmed cause, for the torch-flame white circle -
+    // which does reach Remix (dusklight-ao/docs/remix-open-issues.md).
     warn_once(hash ^ 0x10, "tev: compare-mode op approximated as always-true (d + c)");
     if (c.is_zero() || d.is_zero()) {
       main.op = D3DTOP_SELECTARG1;
@@ -890,50 +884,45 @@ DWORD apply_texgen(uint32_t d3dStage, GXTexCoordID coordId, const DecodedDraw& d
 
 // What the material's albedo actually is, evaluated rather than pattern-matched.
 //
-// The previous version of this looked for a literal "texture x constant"
-// multiply. That model is wrong for this game: the dominant shape is
-// `lerp(colourA, colourB, textureIntensity)`, where a greyscale texture selects
-// between two authored colours - which is how one rupee texture yields seven
-// rupee colours. A multiply is only the special case where one endpoint is
-// black, and matching only that case is why 104 of 111 materials in the
-// 2026-08-03 log reported no tint at all.
+// This game's dominant shape is `lerp(colourA, colourB, textureIntensity)` - a
+// greyscale texture selecting between two authored colours, which is how one
+// rupee texture yields seven rupee colours. Pattern-matching only the
+// "texture x constant" special case is why 104 of 111 materials in the
+// 2026-08-03 log reported no tint at all. So evaluate the GX colour pass twice
+// instead, texture pinned to black then to white, and report both endpoints.
 //
-// So instead of asking "is this a tint?", evaluate the GX colour pass twice -
-// once with the texture reading black, once reading white - and report the two
-// endpoints. Remix can only express `TEXTURE x TFACTOR`, so we advertise the
-// endpoint that carries the material's colour; the other endpoint is logged so
-// the choice can be judged from a log rather than argued about.
+// Both endpoints reach the fork, which reconstructs the lerp exactly (§10); the
+// single-op hint below still has to pick one of them, for the materials where
+// the ramp is declined. Both are logged, so which was picked is answerable from
+// a log rather than by argument.
 //
-// Full account: docs/dx9/remix-material-interface.md.
+// Full account: docs/dx9/remix-material-interface.md §7, §7b, §10.
 struct AlbedoIntent {
   bool valid = false;         // the pass could be evaluated at all
   bool usesTexture = false;   // the colour pass reads its texture
   bool usesVertexColor = false;
   uint32_t out0 = 0;          // colour where the texture reads black
   uint32_t out1 = 0;          // colour where the texture reads white
-  // Opacity, evaluated the same way. The hint used to advertise the texture's
-  // own alpha unconditionally, which is right for a cutout but drops any
-  // constant scale on it - so a HUD effect that fades in through a konst alpha
-  // reached Remix fully opaque, drawing its whole quad instead of just the
-  // effect. TFACTOR's alpha channel is otherwise unused, so it can carry the
-  // scale without competing with the colour tint.
-  // Whether the per-vertex colour stream is authored material colour rather
-  // than baked lighting, and therefore safe to hand a path tracer. GX settles
-  // this: with the colour channel's lighting *enabled*, the stream is the
-  // material colour that GX then lights, so it carries no light of its own.
-  // With lighting disabled the stream is the finished channel output, which is
-  // where this game bakes room lighting and shadow.
+  // Whether the vertex colour stream is authored material colour - GX colour
+  // channel lighting ENABLED, so GX would light it and it carries no light of
+  // its own - rather than the finished channel output, which is where this game
+  // bakes room lighting and shadow. Forward the first, withhold the second.
   // docs/dx9/remix-material-interface.md §7c.
   bool vertexColorIsMaterial = false;
+  // Opacity, evaluated the same way. The hint used to advertise the texture's
+  // own alpha unconditionally, which is right for a cutout but drops any
+  // constant scale on it - so a HUD effect fading in through a konst alpha
+  // reached Remix fully opaque and drew its whole quad. TFACTOR's alpha channel
+  // is otherwise unused, so it carries the scale without competing with the
+  // colour tint.
   bool alphaValid = false;
   bool alphaUsesTexture = false;
   uint32_t alphaScale = 0xFF;  // opacity where the texture's alpha reads full
   bool hasTint = false;       // worth advertising a TFACTOR
   uint32_t tint = 0xFFFFFFFFu;
-  // Which op best approximates the material in the one stage Remix reads.
-  // MODULATE fits `texture x colour` exactly. ADD fits a ramp that ends at
-  // white, where a multiply cannot: `tex x C` always falls to black at tex=0,
-  // but the material's floor is a real colour, so multiplying would darken it.
+  // Which op best approximates the material in the one stage Remix reads - used
+  // only where the exact ramp (§10) is declined. Decided by the *floor*, not by
+  // where the ramp ends: see the op choice at the tail of evaluate_albedo.
   // Remix decodes both (docs/dx9/remix-material-interface.md §2).
   DWORD hintOp = D3DTOP_MODULATE;
   const char* shape = "unknown";
@@ -1099,25 +1088,19 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
   }
 
   // Pick the op and constant that best reproduce the two endpoints within the
-  // single stage Remix reads.
-  // A multiply always produces black where the texture is black. So the choice
-  // is decided by the *floor*, not by where the ramp ends:
+  // single stage Remix reads. Decided by the *floor*, because a multiply always
+  // produces black where the texture is black:
   //
   //   floor black     -> MODULATE is exact at both ends.
-  //   floor coloured  -> MODULATE would replace the object's own colour with
-  //                      black wherever the texture is dark. ADD keeps the
-  //                      floor exactly and overshoots at the bright end, which
-  //                      reads as a blown specular rather than a hole.
+  //   floor coloured  -> ADD keeps the floor exactly and overshoots at the
+  //                      bright end (a blown specular, not a hole). Measured:
+  //                      these are `floor + scale x texture` in GX - the heart
+  //                      is `B80000 + 0.25 x texture` - so a multiply is
+  //                      structurally wrong, not mistuned.
   //
-  // The 2026-08-04 session settled this by looking at real programs: these
-  // materials are `floor + scale x texture` in GX (`d` is a colour constant and
-  // the texture only modulates the term added to it), so a multiply is
-  // structurally wrong rather than merely mistuned. The cost of ADD is the
-  // missing scale on the texture, which brightens the top end.
-  //
-  // An earlier revision gated ADD on the ramp ending near white. That matched
-  // 5 materials out of 111 and left rupees and hearts rendering their
-  // highlights black - the defect this whole path exists to remove.
+  // An earlier revision gated ADD on the ramp ending near white: 5 materials
+  // out of 111, leaving rupees and hearts with black highlights.
+  // Measurements and the accepted cost: docs/dx9/remix-material-interface.md §7b.
   uint32_t pick;
   if (rgb0 == 0) {
     pick = rgb1;
@@ -1125,7 +1108,8 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
   } else if (luma_of(rgb0) >= 0xE8) {
     // Descending ramp - bright where the texture is black. ADD would drive the
     // whole surface to white, so keep the multiply and take the more coloured
-    // endpoint. Rare, and nothing here reproduces it well.
+    // endpoint. Rare, and the single-op hint reproduces it poorly; the exact
+    // ramp (§10) still does when TFACTOR ends up holding an endpoint.
     const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
     pick = c1 > c0 ? rgb1 : rgb0;
     r.hintOp = D3DTOP_MODULATE;
@@ -1145,17 +1129,12 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
 // ---------------------------------------------------------------------------
 // Self-illumination evidence
 // ---------------------------------------------------------------------------
-// GX has no emissive term, so nothing here can be a direct translation. What
-// GX does have is a colour channel that can be told to take no light at all,
-// with its colour authored in a register rather than sampled from the vertex
-// stream. That pair is the strongest statement GX can make that a surface is
-// meant to look self-lit, and it is what this reports.
-//
-// It reports *graded evidence*, never a verdict. The 2026-08-04 Goron Mines
-// session settled why: the lava materials are `lit=1`, so a rule that required
-// "unlit" could never have caught them, while "unlit" on its own was true of
-// 59% of an earlier scene. No single GX fact separates lava from an ordinary
-// wall, so this sums what GX does say and lets the fork pick where to cut
+// GX has no emissive term and no single GX fact identifies an emitter, so this
+// reports *graded evidence*, never a verdict. Two measurements bracket why:
+// "unlit" alone was 69 of 117 materials (59%) in one scene - far too broad to
+// act on - and the 2026-08-04 Goron Mines lava, the one surface this feature
+// exists for, is `lit=1`. The old unlit-based rule was wrong from both ends.
+// So this sums what GX does say and the fork picks where to cut
 // (rtx.dusklight.emissive.threshold, live in the F1 overlay).
 //
 // docs/dx9/remix-material-interface.md §9.
@@ -1165,11 +1144,11 @@ struct SelfLitEvidence {
   const char* why = "none";   // the evidence that fired, or why none could
 };
 
-// Weights. They are ordered by how much each fact narrows the field, measured
-// rather than chosen: `unlit` alone was 59% of one scene and `overRange` was
-// 26 of 76 materials in another, but their *conjunctions* are small. The fork's
-// default threshold sits so that the historical rule (unlit + register) still
-// passes; lowering it admits the over-range materials.
+// Weights, measured rather than chosen: each fact alone is far too broad
+// (`overRange` was 26 of 76 materials in one scene), their conjunctions small.
+// The fork's default cut (0.70) still passes the historical rule unlit+register;
+// lowering it admits the over-range materials on their own. Changing a weight
+// changes what that default means - bump both together (§9).
 constexpr float kScoreUnlit = 0.50f;     // GX lighting disabled for this channel
 constexpr float kScoreRegSrc = 0.25f;    // colour authored in a register, not per-vertex
 constexpr float kScoreOverRange = 0.25f; // a TEV stage scales past what GX can display
@@ -1238,8 +1217,10 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       ((hasAlphaScale ? albedo.alphaScale : 0xFFu) << 24) | (albedo.tint & 0x00FFFFFFu);
   if (hasHintTint || hasAlphaScale) {
     // materialize() compares the whole 32-bit value, so a real stage wanting a
-    // different constant simply takes the per-stage slot instead. Both are real
-    // D3D9 constants, so rasterization is unaffected either way.
+    // different constant takes the per-stage D3DTSS_CONSTANT slot instead -
+    // which Remix never reads, and which devices without
+    // D3DPMISCCAPS_PERSTAGECONSTANT do not have at all (it warns and reuses
+    // TFACTOR there).
     consts.tfactor = hintTint;
     consts.tfactorUsed = true;
   }
@@ -1333,12 +1314,11 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     // material's *colour* texture (preferred_albedo_stage), which is not
     // necessarily this stage's - see is_color_texture_format.
     //
-    // Writing TEMP rather than CURRENT keeps the running chain intact, so the
-    // hint is raster-neutral wherever it is placed - TEMP is only ever live
-    // within a single GX stage's own decomposition, never across stages. Only
-    // when the device has no TEMP register does it fall back to writing
-    // CURRENT, which is safe just at the head of the chain and only when
-    // nothing in this GX stage reads CURRENT back.
+    // It writes TEMP, not CURRENT, so it cannot clobber the value the real
+    // stages build on - TEMP is only ever live within a single GX stage's own
+    // decomposition, never across stages. Only where the device has no TEMP
+    // register does it write CURRENT, which is safe just at the head of the
+    // chain and only when nothing in this GX stage reads CURRENT back.
     if (!remixHintConsidered && hasTexture && d3dStage + need < MaxStages) {
       remixHintConsidered = true;
       const int albedoIdx = preferred_albedo_stage();
@@ -1361,7 +1341,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       // material a later stage may change the colour, and Remix reading only
       // this one would then be confidently wrong. The report's hintLoose field
       // measures what dropping that restriction would catch.
-      // Background: docs/dx9/remix-material-interface.md.
+      // Background: docs/dx9/remix-material-interface.md §5.
       const bool colorDecodable = remix_decodes_albedo(colorLead, consts);
       const bool decodableSuppress = sameTexture && alphaPlain && colorDecodable && numStages == 1;
       hintLooseWouldSuppress = sameTexture && alphaPlain && colorDecodable && !colorPlain && numStages != 1;
@@ -1385,16 +1365,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           apply_sampler(d3dStage, albedoStage.texMapId);
           set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, albedoStage.texCoordId, draw));
           // What the hint advertises, in priority order. Remix reads this one
-          // stage, so the two argument slots have to carry whatever matters
-          // most, and the material's own colour outranks vertex shading.
+          // stage, so its two argument slots carry whatever matters most:
           //
-          //   1. an ADD tint - the ramp case, which a multiply cannot express
-          //      and which must therefore occupy the hint stage itself
-          //   2. texture x vertex colour, when the material genuinely used the
-          //      rasterized colour; a MODULATE tint then rides the second stage
-          //      below, a pairing Remix decodes and which is proven working
-          //   3. texture x tint, when there is no vertex colour to preserve
-          //   4. the plain texture
+          //   1. add:tint   - a coloured floor, which a multiply cannot express
+          //                   and which must therefore occupy the hint itself
+          //   2. mod:vtx    - nothing evaluable; the old unconditional shape.
+          //                   A MODULATE tint rides the extra stage below (§4)
+          //   3. mod:vtxMat - the vertex stream is authored material colour
+          //                   (§7c) and must reach Remix
+          //   4. mod:tint   - no vertex colour to preserve
+          //   5. tex        - the plain texture
           if (albedo.hasTint && albedo.hintOp == D3DTOP_ADD) {
             set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_ADD);
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
@@ -1407,10 +1387,10 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
             hintForm = "mod:vtx";
           } else if (albedo.usesVertexColor && albedo.vertexColorIsMaterial) {
-            // The colour pass reads the vertex stream and GX says that stream
-            // is material colour, not baked lighting, so it has to reach Remix
-            // or the surface loses its colour. A MODULATE tint can still ride
-            // the following stage, which Remix decodes (§4).
+            // GX says this stream is material colour, not baked lighting, so it
+            // has to reach Remix or the surface loses its colour. It takes both
+            // argument slots, and unlike the mod:vtx branch this form gets no
+            // extra tint stage below (see tintNeedsOwnStage).
             set_tss(d3dStage, D3DTSS_COLOROP, D3DTOP_MODULATE);
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             set_tss(d3dStage, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
@@ -1425,12 +1405,11 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
             set_tss(d3dStage, D3DTSS_COLORARG1, D3DTA_TEXTURE);
             hintForm = "tex";
           }
-          // Opacity is the texture's own alpha: it is what Remix alpha-tests
-          // against, and it is what gives foliage cards and grass blades their
-          // cutout shape. Where the material additionally scales that alpha by
-          // a constant - a HUD effect fading in, for instance - the scale rides
-          // TFACTOR's alpha channel, because dropping it made such quads reach
-          // Remix fully opaque and draw their whole rectangle.
+          // Opacity is the texture's own alpha - what Remix alpha-tests
+          // against, and what gives foliage cards and grass blades their cutout
+          // shape. A constant scale on it (a HUD effect fading in) rides
+          // TFACTOR's alpha channel: dropping it made such quads reach Remix
+          // fully opaque and draw their whole rectangle.
           if (hasAlphaScale) {
             set_tss(d3dStage, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
             set_tss(d3dStage, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
@@ -1447,11 +1426,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
           // Carry the albedo tint, which the hint's TEXTURE x DIFFUSE cannot
           // express. Remix decodes one extra MODULATE against TFACTOR, matched
           // against the register the *previous* stage wrote - so this must sit
-          // immediately after the hint and read the register the hint wrote.
-          // Raster-neutral on the same grounds as the hint.
-          // Details: docs/dx9/remix-material-interface.md §4.
-          // Only needed when the hint stage spent both of its argument slots
-          // on texture x vertex colour; the other forms already carry the tint.
+          // immediately after the hint and read the register the hint wrote
+          // (docs/dx9/remix-material-interface.md §4). Only the mod:vtx form
+          // needs it; the tint forms already carry the tint themselves.
           const bool tintNeedsOwnStage = hasHintTint && albedo.hintOp == D3DTOP_MODULATE &&
                                          std::strcmp(hintForm, "mod:vtx") == 0;
           if (tintNeedsOwnStage && d3dStage + need >= MaxStages) {
@@ -1602,6 +1579,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // Declining is safe - the material falls back to the single-op approximation.
   const uint32_t rampLo = albedo.out0 & 0x00FFFFFFu;
   const uint32_t rampHi = albedo.out1 & 0x00FFFFFFu;
+  // Unused TFACTOR takes a sentinel above 24 bits, so it matches neither endpoint.
   const uint32_t tfRgb = consts.tfactorUsed ? (consts.tfactor & 0x00FFFFFFu) : 0xFF000000u;
   bool rampValid = false;
   bool rampTFactorIsHigh = false;
@@ -1628,8 +1606,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     rampWhy = "tfTaken";
   }
 
-  // Hand it all to Remix. Inert to rasterization - D3DRS_LIGHTING is off - so
-  // none of this can change the raw D3D9 image.
+  // Hand it all to Remix through the D3DMATERIAL9 side channel (free here:
+  // D3DRS_LIGHTING is off, so nothing else consumes it). Field map and the
+  // fork's read sites: set_remix_material in dx9_internal.hpp.
   set_remix_material(D3DCOLORVALUE{static_cast<float>((selfLit.color >> 16) & 0xFFu) / 255.f,
                                    static_cast<float>((selfLit.color >> 8) & 0xFFu) / 255.f,
                                    static_cast<float>(selfLit.color & 0xFFu) / 255.f, selfLit.score},

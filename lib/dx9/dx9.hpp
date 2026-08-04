@@ -5,7 +5,12 @@
 // Alternative execution layer behind Aurora's GX front-end, designed for RTX
 // Remix's d3d9->Vulkan runtime: fixed-function T&L (incl. indexed vertex
 // blending for skinning), texture-stage-state TEV approximation, no shaders.
-// See docs/dx9/ for the full design and mapping spec.
+//
+// The image this backend rasterizes is never shown to a player - it is the
+// feed Remix translates, and Remix's renderer is the product. The HUD and
+// alpha are the two exceptions that must still rasterize correctly. Read
+// docs/dx9/remix-material-interface.md §0 before treating raw-D3D9
+// correctness as a goal; docs/dx9/gx-to-d3d9-mapping.md is the mapping spec.
 //
 // The GX state decoding (fifo/command_processor -> g_gxState) is shared with
 // the WebGPU path; these entry points are invoked from the shared code at the
@@ -68,9 +73,11 @@ void clear_skinning() noexcept;
 
 // Camera view matrix (GX_AURORA_SET_VIEW_MTX): world->view as 12 f32 row-major
 // 3x4. When provided, draws split the GX combined model->view into
-// WORLD = model->world (pnMtx * view^-1) and VIEW = camera - rendering output
-// is identical, but RTX Remix can then reconstruct a camera, keep geometry in
-// stable world space, and replay fixed-function skinning correctly.
+// WORLD = model->world (pnMtx * view^-1) and VIEW = camera, so Remix can
+// reconstruct a camera, keep geometry in stable world space, and replay
+// fixed-function skinning. Without it Remix rejects every draw's camera
+// (objectToView == objectToWorld) - a failure state to detect, not a mode to
+// run in. See docs/dx9/gx-to-d3d9-mapping.md #3/#13.
 void set_camera_view(const float* mtx3x4) noexcept;
 
 // State relays ----------------------------------------------------------------

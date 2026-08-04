@@ -186,11 +186,11 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
   }
 }
 
-// Material intent for Remix. D3DRS_LIGHTING is off in this backend, so
-// D3DMATERIAL9 is inert to rasterization and the whole struct is free real
-// estate; the fork copies it into LegacyMaterialData. **Nothing here can change
-// the raw D3D9 image.** Field meanings, all in
-// docs/dx9/remix-material-interface.md:
+// Material intent for Remix, in a side channel that exists because the stage
+// chain cannot carry these facts. D3DRS_LIGHTING is off in this backend, so
+// nothing consumes a D3D9 material and the whole struct was free; the fork
+// copies it into LegacyMaterialData. Field meanings, all in
+// docs/dx9/remix-material-interface.md §2:
 //
 //   Emissive.rgb  the colour the surface presents      §9
 //   Emissive.a    self-illumination evidence score

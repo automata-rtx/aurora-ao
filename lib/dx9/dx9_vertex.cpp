@@ -187,14 +187,11 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   dstOffset += 4;
   const uint32_t specularOffset = dstOffset;
   dstOffset += out.hasSpecular ? 4 : 0;
-  // UV sets are emitted with the material's base texture first. D3D texcoord
-  // indices come from this assignment (apply_texgen returns texSlot[attr]), and
-  // Remix reconstructs a draw's material from whichever stage carries the
-  // *lowest* D3DTSS_TEXCOORDINDEX - so on a multi-texture material (character
-  // eyes composite an eyeball, a highlight and an eye shadow) whichever UV set
-  // happened to come first in GX order decided the albedo. Putting the base
-  // texture's UV set in slot 0 makes the intended texture win that pick. The UV
-  // data moves with the slot, so rasterization is unchanged.
+  // UV sets are emitted with the material's base texture first, because Remix
+  // reconstructs a draw's material from whichever stage carries the *lowest*
+  // D3DTSS_TEXCOORDINDEX. Otherwise GX attribute order decides the albedo - on
+  // character eyes (eyeball + highlight + shadow masks composited in one draw)
+  // that picked a mask. docs/dx9/unsupported-effects.md R1.
   int preferredAttr = -1;
   for (uint32_t s = 0; s < g_gxState.numTevStages && preferredAttr < 0; ++s) {
     const auto& stage = g_gxState.tevStages[s];
@@ -252,7 +249,14 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
   out.fvf = fvf;
 
   // Default diffuse when the stream carries no CLR0: channel-0 material color
-  // when sourced from register, else opaque white (docs #8).
+  // when sourced from register, else opaque white. Colour arriving this way is
+  // authored by definition, so the TEV mapper evaluates it as material colour
+  // rather than treating DIFFUSE as white - that erasure was a real bug.
+  // Known divergence from GX, recorded not forgotten: a draw that HAS CLR0 but
+  // sets matSrc=REG should take the register colour and does not; whether TP
+  // ever emits that is unmeasured. It is a log question - matrep.k prints
+  // matSrc= per material.
+  // docs/dx9/gx-to-d3d9-mapping.md #8, remix-material-interface.md §7c.
   uint32_t defaultDiffuse = 0xFFFFFFFFu;
   out.hasVertexColor = plan[GX_VA_CLR0].attrType != GX_NONE;
   if (plan[GX_VA_CLR0].attrType == GX_NONE) {
@@ -350,7 +354,8 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
           std::memcpy(dst + uvOffsets[t], uv, 8);
         }
         // TEXnMTXIDX: consumed from the stream, per-vertex texture matrix
-        // selection is not supported in v1 (docs, unsupported #15).
+        // selection is not implemented - the per-draw matrix is used instead.
+        // docs/dx9/unsupported-effects.md #15.
         break;
       }
       s += p.srcSize;

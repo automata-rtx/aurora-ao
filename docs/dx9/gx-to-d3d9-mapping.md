@@ -3,8 +3,21 @@
 The D3D9 backend consumes `g_gxState` + raw vertex streams at the
 `command_processor.cpp` draw chokepoint and issues immediate D3D9 calls.
 This file is the normative mapping. Sections marked **[v1]** are in scope for
-the first bring-up; **[later]** items are follow-ups; anything that can't be
-expressed at all lives in `unsupported-effects.md`.
+the first bring-up; **[later]** items are follow-ups; anything the D3D9 stream
+cannot express lives in `unsupported-effects.md` — which is a list of where the
+work moves to, not of what was abandoned (scope note below).
+
+> **Scope note, 2026-08-04.** This is a spec for *what the backend emits*, not a
+> statement of what the game can render. The rasterized D3D9 image is never
+> shown to a player: Remix's renderer is the product, D3D9 is the feed. So
+> every "unsupported"/"approximated" below means **the work moves into the fork
+> or the Remix API** — all three repos are ours — not that the effect is lost;
+> and raw-D3D9 correctness is a safety property, never a requirement. The two
+> exceptions that must still rasterize correctly are the **HUD** (§12) and
+> **alpha** (§11, §9). Canonical statement:
+> [`remix-material-interface.md`](remix-material-interface.md) §0. Passages
+> written before that date sometimes still read as if the rasterized image were
+> the product; they are corrected as they are touched.
 
 ## 1. Device & frame [v1]
 
@@ -104,8 +117,12 @@ translation (m0[3], m1[3], m2[3]) into row 3, last column (0,0,0,1).
 - **Normals:** D3D9 FF transforms normals by inverse-transpose of world
   automatically? — No: it uses the world matrix directly and
   `D3DRS_NORMALIZENORMALS = TRUE` handles scale. GX's separate nrm matrix is
-  dropped (acceptable: lighting is OFF in v1 — see §8 — so normals only feed
-  texgen, which uses the same approximation). Documented.
+  dropped. Documented. The original justification — "lighting is OFF in v1
+  (§8), so normals only feed texgen" — is a statement about D3D9's own T&L and
+  is no longer the whole story: the submitted normals are **geometry** and
+  reach Remix's path tracer. Whether the dropped nrm matrix visibly matters
+  there depends on non-uniform scale in TP's pos matrices, which is
+  **unmeasured** — do not record either answer as known.
 
 ## 4. Vertex decoding [v1] — `lib/dx9/dx9_vertex.*`
 
@@ -115,10 +132,13 @@ offset walk of `populate_pipeline_config` (`gx.cpp:683`) and
 `calculate_last_vtx_size`.
 
 Output: one interleaved FF vertex struct per draw, built in a scratch buffer,
-described by a **vertex declaration** (`CreateVertexDeclaration`) with only
-FF-legal usages (POSITION, BLENDWEIGHT, BLENDINDICES, NORMAL, COLOR0, COLOR1,
-TEXCOORD0-7). FVF codes would also work but declarations keep one code path
-for the skinned/unskinned cases. Layout (present-only fields, in this order):
+described by an **FVF code** (`SetFVF`; built in `dx9_vertex.cpp`, set in
+`dx9_internal.hpp`) using only FF-legal usages (POSITION, BLENDWEIGHT,
+BLENDINDICES, NORMAL, COLOR0, COLOR1, TEXCOORD0-7). Corrected 2026-08-04: this
+section specified `CreateVertexDeclaration`; the shipped code uses FVF, and FVF
+is the form §6a's `XYZB2|LASTBETA_UBYTE4` requirement is stated against —
+dxvk-remix does the FVF→declaration conversion itself. Layout (present-only
+fields, in this order):
 
 | Field | Type | Source |
 |-------|------|--------|
@@ -126,7 +146,7 @@ for the skinned/unskinned cases. Layout (present-only fields, in this order):
 | blend weights | FLOAT1-3 | skinning only (§6): weights 0..n-1 (last implied) |
 | blend indices | UBYTE4 (D3DDECLUSAGE_BLENDINDICES) | PNMTXIDX/3 or skin influence bones |
 | normal | FLOAT3 | GX_VA_NRM (NBT: take N, drop B/T; frac per type: s8=6, s16=14) |
-| diffuse | D3DCOLOR | GX_VA_CLR0: RGB565/RGB8/RGBX8/RGBA4/RGBA6/RGBA8 → BGRA u32; **absent → white** (chan matSrc handling in §8 may override via TFACTOR/material) |
+| diffuse | D3DCOLOR | GX_VA_CLR0: RGB565/RGB8/RGBX8/RGBA4/RGBA6/RGBA8 → BGRA u32; **absent → channel 0's `matColor` when `matSrc = GX_SRC_REG`, else opaque white** (`dx9_vertex.cpp` `defaultDiffuse`). Whether Remix is then told to *use* that colour is a separate, per-draw decision — §8 |
 | specular | D3DCOLOR | GX_VA_CLR1 (rare; COLOR1 for channel 1) |
 | uv0..uvN | FLOAT2 (FLOAT3 for projected/STQ inputs when needed) | GX_VA_TEXn: u8/s8/u16/s16 × 2^-frac, f32 direct |
 
@@ -201,7 +221,10 @@ characters:
   (`DecodedDraw::pnMtxSlots/pnMtxCount`), and only those matrices are uploaded.
   Excess beyond the cap folds onto slot 0 with a one-shot warning.
   **Remix never showed this**: it ignores the cap, reading the world-matrix
-  state directly and skinning on the GPU — the bug is raw-D3D9 only.
+  state directly and skinning on the GPU — the bug is raw-D3D9 only, which is
+  why nothing under Remix ever surfaced it. The compaction stays because it is
+  free and keeps the standalone image usable for debugging, not because that
+  image is a product.
 - Vertex gets `BLENDINDICES = UBYTE4(compactedIndex, 0,0,0)` **and one stored
   weight of 1.0**; `D3DRS_VERTEXBLEND = D3DVBF_1WEIGHTS` +
   `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`. Plain fixed-function would accept
@@ -262,18 +285,46 @@ TP's material colors flow through `colorChannelConfig/State`. v1 policy —
 **lighting off** (`D3DRS_LIGHTING = FALSE`), because Remix replaces lighting
 wholesale and the game bakes most world lighting into vertex colors:
 
-- Channel with `matSrc = GX_SRC_VTX`: diffuse comes from the vertex color
-  already in the stream. ✔ nothing to do.
+- Channel with `matSrc = GX_SRC_VTX`: the vertex color is already in the
+  stream, but **whether Remix is told to use it as material colour is decided
+  per draw, from that channel's lighting enable** (2026-08-04, CI-green,
+  untested in game). Lighting **enabled** ⇒ the stream is authored material
+  colour that GX would multiply by computed lighting ⇒ **forward it**, and a
+  path tracer supplies the light. Lighting **disabled** ⇒ the stream is the
+  finished channel output, which is where this game bakes room lighting and
+  shadow ⇒ **withhold it**. Aurora states the verdict per draw in
+  `D3DMATERIAL9::Specular.r`; the fork sets `isVertexColorBakedLighting` from
+  it rather than from the global option, which was necessarily wrong for one of
+  the two cases. `vtxUse=` in `matrep.sum` prints which applied. The rule and
+  both corrections that produced it: `remix-material-interface.md` §7c.
+  Superseded 2026-08-04: an intermediate revision stopped advertising vertex
+  colour at all. That was too blunt and threw away real material colour.
 - Channel with `matSrc = GX_SRC_REG`: bake `colorChannelState[i].matColor`
-  into the per-vertex diffuse at decode time **when no CLR attribute exists**;
-  if a CLR attribute exists but matSrc=REG, override with the register color.
+  into the per-vertex diffuse at decode time **when no CLR attribute exists**.
+  Colour arriving this way is authored by definition, so it is **evaluated as
+  material colour** — `eval_operand` used to treat `DIFFUSE` as unconditionally
+  white, which erased it.
+  This spec also said "if a CLR attribute exists but matSrc=REG, override with
+  the register color". **That is not implemented** (`dx9_vertex.cpp` sets
+  `defaultDiffuse` only when CLR0 is absent), so such a draw forwards the
+  stream colour that GX would have ignored. Whether TP ever emits that
+  combination is **unmeasured** — `matSrc=` is already on the `matrep.sum` line,
+  so it is a log question, not a judgement call. Recorded rather than silently
+  dropped, because it is a divergence from GX, not a decision.
 - `lightingEnabled` channels: v1 approximates as
   `matColor * (ambColor + Σ enabled lights…)` → **just `matColor`**, i.e.
   fullbright material color (documented). **[later]**: map GX lights to
   `D3DLIGHT9` point/spot/directional with attenuation (FF supports the math
   closely: GX cosAtt/distAtt ↔ D3D attenuation0/1/2 approximately) and enable
-  `D3DRS_LIGHTING` per draw. This improves standalone (non-Remix) visuals but
-  is irrelevant under Remix.
+  `D3DRS_LIGHTING` per draw. That would only improve the standalone (non-Remix)
+  image, which is never shown — so it earns its **[later]** on its own merits,
+  not as a deferred obligation.
+- The lighting-enable bit is **read state, not discarded state.** Besides the
+  vertex-colour verdict above it is one of the three weak signals in the
+  self-illumination score (`remix-material-interface.md` §9). Measured
+  2026-08-04: the Goron Mines lava has GX lighting **enabled**, so "lighting
+  off" is not a proxy for "emitter" — the first emissive rule required it and
+  missed the lava.
 
 ## 9. TEV → texture-stage states [v1] — `lib/dx9/dx9_tev.*`
 
@@ -292,15 +343,23 @@ wholesale and the game bakes most world lighting into vertex colors:
 > - A **hint stage** (`color = MODULATE(TEXTURE, DIFFUSE)`,
 >   `alpha = SELECTARG1(TEXTURE)`) is prepended **only when Remix would
 >   otherwise read the stage wrongly**. It writes TEMP so the real chain is
->   untouched, making it raster-neutral wherever it lands.
+>   untouched, making it raster-neutral wherever it lands. That neutrality is
+>   load-bearing for the **HUD**, which Remix rasterizes rather than
+>   path-traces; elsewhere it is a convenience the design is free to spend —
+>   `remix-material-interface.md` §5 records that a future revision may write
+>   the intended material straight into stage 0, which would also free TFACTOR
+>   and stop the §10 ramp being declined as `ramp=tfTaken`.
 > - The texture is bound only on emitted stages that actually reference
 >   `D3DTA_TEXTURE` — Remix keeps two texture candidates per draw, so
 >   duplicates from a split stage crowd out a real second texture.
 > - Unused stages are disabled **and unbound**: Remix's scan skips
 >   texture-less stages rather than stopping at the first disabled one, so a
 >   leftover binding could win the albedo slot.
-> - Multi-texture GX materials are inherently approximated, since only one
->   texture becomes the albedo.
+> - Multi-texture GX materials are approximated **today**, since only one
+>   texture becomes the albedo. "Inherently" is what this line used to say; it
+>   is a claim about *stock* Remix, and the fork is ours — §10 of
+>   `remix-material-interface.md` is the precedent for checking whether such a
+>   constraint is real before designing around it.
 
 The heart of the fixed-function mapping. GX TEV per stage computes
 `d ± (a*(1-c) + b*c) + bias, × scale` per color and alpha with arbitrary
@@ -325,7 +384,7 @@ fallbacks, all through a small normalizer:
 | `(ZERO, CPREV, RASC, ZERO)` (modulate result by vtx color) | `MODULATE(CURRENT, DIFFUSE)` |
 | `(CPREV, ZERO, ZERO, TEXC)` etc. additive | `ADD(TEXTURE, CURRENT)` |
 | `d=CPREV, a/b/c=0` (keep) | stage disabled / `SELECTARG1(CURRENT)` |
-| `(C0, C1, TEXC, ZERO)` font gradient | `LERP(TEXTURE, C1→TFACTOR, C0)` — needs 2 constants → v1 folds C0/C1 into TFACTOR+DIFFUSE approximation; exact only with per-stage constants (`D3DPMISCCAPS_PERSTAGECONSTANT`, supported by dxvk/Remix — use when caps allow) |
+| `(C0, C1, TEXC, ZERO)` two-colour ramp — font gradient, lava, this game's dominant material shape | **Reproduced exactly, no longer approximated** (2026-08-04, CI-green, untested in game): both endpoints are transmitted — one in `D3DRS_TEXTUREFACTOR`, the other in `D3DMATERIAL9::Diffuse.rgb` — and the fork's shader computes `mix(rampLo, rampHi, albedo)`, which *is* GX's `a*(1-c)+b*c`. Declined back to the single-op approximation when a real stage has already claimed TFACTOR or the pass reads vertex colour; `ramp=` in `matrep.sum` gives the reason. `remix-material-interface.md` §10. Superseded: this row used to say a lerp between two constants was expressible only via per-stage constants — that was a statement about *stock* Remix |
 
    Alpha pass gets the same treatment on the alpha ops
    (`D3DTSS_ALPHAOP/ARG1/ARG2`); `dstAlpha` override → final stage alpha =
@@ -333,8 +392,13 @@ fallbacks, all through a small normalizer:
 3. Bias/scale: `scale ×2/×4` → `D3DTOP_MODULATE2X/4X` when the op is
    modulate-shaped, `ADDSIGNED` for bias −0.5; other combos → nearest op
    (logged once per config hash, listed in unsupported doc).
-4. Compare-mode TEV ops (GX_TEV_COMP_*): **unsupported** in TSS → approximate
-   with SELECTARG1(CURRENT) + log (rare in TP main scenes).
+4. Compare-mode TEV ops (GX_TEV_COMP_*): no TSS equivalent → approximated with
+   SELECTARG1(CURRENT) + log (rare in TP main scenes). This approximation is
+   the standing **suspect** (inference, not a finding) for the torch-flame
+   white circle, which *does* reach Remix; the white ground textures it also
+   produces are **not a defect**, because that image is never shown. If the
+   torch is confirmed, the fix is to state the compare to the fork — not to
+   hunt for a better TSS shape.
 5. Konst colors: stage konst selector → one shared `D3DRS_TEXTUREFACTOR` per
    draw (first konst wins; per-stage constants used when the runtime exposes
    `PERSTAGECONSTANT`, which Remix/dxvk does). Conflicting multi-konst draws
@@ -398,11 +462,21 @@ COLOR1A1 → SPECULAR (D3DTA_SPECULAR arg), COLOR_ZERO → constant black
 | viewport | `D3DVIEWPORT9{X,Y,W,H,MinZ,MaxZ}` from `renderViewport` (znear/zfar already 0..1) |
 | line/point size | `D3DRS_POINTSIZE` for points; line width unsupported (D3D9 lines are 1px) — fine for TP |
 
+**Alpha is an exception to the scope note.** Remix builds opacity and the alpha
+test from what this section and §9 emit, so the reductions above are not
+raster-only: an irreducible dual test collapsed to `comp0` changes what reaches
+the path tracer, and a wrong alpha turns foliage into solid quads. Treat those
+log lines as defects rather than curiosities.
+
 ## 12. UI path [v1]
 
-Nothing special is required for correctness: J2D emits ortho projection +
-no-Z + alpha-blended quads through the same FIFO, and the generic pipeline
-handles it. For **Remix UI auto-detection**, the backend tags likely-UI draws
+**The HUD is one of the two things that must still rasterize correctly** —
+Remix rasterizes UI draws rather than path-tracing them (`isRenderingUI` in
+`d3d9_rtx.cpp`), so for these draws the 2D stage chain *is* the output and the
+freedom claimed in the scope note above does not apply. Nothing special is
+required for correctness beyond that: J2D emits ortho projection + no-Z +
+alpha-blended quads through the same FIFO, and the generic pipeline handles it.
+For **Remix UI auto-detection**, the backend tags likely-UI draws
 (ortho projection + `depthCompare == false`) and could later switch them to
 pre-transformed `D3DFVF_XYZRHW` vertices — **[later]** behind a config flag
 (`dx9RhwUi`), since Remix's default heuristics (ortho + no depth) usually
@@ -414,8 +488,9 @@ suffice.
 - `SetTransform` WORLD/VIEW/PROJECTION per draw. With the game's
   `GXSetViewMtx` feed (§3): WORLD = true model→world, VIEW = the real
   camera — Remix reconstructs a proper camera and stable world space.
-  Fallback without it: fused model→view in WORLD, identity VIEW (raw-D3D9
-  correct, Remix-degraded).
+  Without it: fused model→view in WORLD, identity VIEW. That rasterizes
+  correctly and is still useless, because Remix rejects it (below) — it is a
+  failure state to detect, not a mode to fall back to.
 - Fixed-function skinning via `D3DTS_WORLDMATRIX(i)` + indexed blending —
   Remix hashes rest-pose vertices and replays bones. Every blended draw
   carries an explicit BLENDWEIGHT stream (never bare `D3DVBF_0WEIGHTS`),
@@ -428,14 +503,31 @@ suffice.
   objectToWorld := cameraViewToWorld × objectToView` → identity for our
   draws, since the skinned output is already world-space). World-space bone
   readouts (e.g. the `ReadBoneTransform` graph component) are meaningful.
-  Without the camera call (fused fallback), bones are model→view with
+  Without the camera call (the fused path), bones are model→view with
   identity VIEW — Remix's camera manager then rejects every draw
   (`objectToView == objectToWorld` ⇒ `CameraType::Unknown`), no camera
   exists, `finalizeSkinningData` is skipped, and each skinned draw keeps
   `WORLDMATRIX(0)` (its packet's slot-0 joint) as instance transform —
-  character parts scatter. The fused mode is therefore raw-D3D9-only.
+  character parts scatter. So the fused mode yields a correct rasterized image
+  and a broken product: a draw arriving without `GXSetViewMtx` is a defect to
+  fix, not a supported configuration.
 - `SetTexture(stage 0..n)`. Which stage becomes the albedo is Remix's choice,
   not ours — see `remix-material-interface.md`; the mapper's job is to make the
   stage it picks readable rather than to assume stage order decides.
 - Alpha-tested cutouts via ALPHATEST render states (Remix "cutout" category).
+  **Alpha is the second thing that must still be right**: Remix builds opacity
+  and the alpha test from the stage's alpha op and args, so an alpha shortcut
+  that costs nothing in colour terms turns foliage into solid quads.
+- **`D3DMATERIAL9` is a side channel, not a lighting input.** `D3DRS_LIGHTING`
+  is off (§8), so the struct is inert to rasterization and the fork copies it
+  into `LegacyMaterialData` (`set_remix_material`, `dx9_internal.hpp`):
+  `Emissive.rgb` the colour the surface presents, `Emissive.a` the
+  self-illumination **evidence score** the fork cuts at
+  `rtx.dusklight.emissive.threshold` (live in the F1 overlay),
+  `Diffuse.rgb` the ramp endpoint TFACTOR does not carry, `Diffuse.a` "this is
+  a ramp", `Ambient.r` "TFACTOR holds the texture-white endpoint",
+  `Specular.r` "the vertex colour stream is authored material colour".
+  Field meanings are owned by `remix-material-interface.md` §§7c, 9, 10. This
+  is the "prefer stating over encoding" rule in practice: a per-draw fact
+  transmitted directly beats one inferred from fixed-function state.
 - No pixel/vertex shaders, no MSAA, no sRGB states, no queries.

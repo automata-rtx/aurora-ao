@@ -7,9 +7,10 @@ so that does not happen a fourth time.
 
 Companions: [`material-report.md`](material-report.md) is the log that lets you
 observe this interface instead of reasoning about it.
-[`unsupported-effects.md`](unsupported-effects.md) catalogues what cannot cross
-it at all. [`gx-to-d3d9-mapping.md`](gx-to-d3d9-mapping.md) is the translation
-spec this constrains.
+[`unsupported-effects.md`](unsupported-effects.md) catalogues what the D3D9
+stream cannot carry, and therefore where the work belongs instead.
+[`gx-to-d3d9-mapping.md`](gx-to-d3d9-mapping.md) is the translation spec this
+constrains.
 
 ---
 
@@ -49,7 +50,13 @@ everything above:
 Aurora reduces a GX TEV program into D3D9 fixed-function texture stages. Remix
 does **not execute** those stages. It reads **one** of them, plus two booleans
 and one colour, and reconstructs a PBR material by pattern-matching a small set
-of recognised shapes. Everything else Aurora emits is invisible to Remix.
+of recognised shapes. Nothing else in the *stage chain* reaches it.
+
+The stage chain is no longer the whole interface. Since 2026-08-04 the fork also
+reads several `D3DMATERIAL9` fields that aurora fills in deliberately — that is
+how the vertex-colour verdict (§7c), the self-illumination score (§9) and the
+two-colour ramp (§10) cross. They are listed in §2. Adding another is a normal
+move here, not a last resort: per §0 the fork is ours.
 
 Historically the stage chain was doing two jobs — a *rasterizer program* and a
 *message to Remix* — and most defects here came from optimising one and damaging
@@ -77,6 +84,22 @@ Verified in the fork (`dxvk-remix`) rather than assumed:
 
 **Args it decodes:** `TEXTURE`, `DIFFUSE` (the vertex colour), `TFACTOR`,
 `CURRENT`. **Nothing else.**
+
+### The side channels — this fork only, not stock Remix
+
+`D3DRS_LIGHTING` is off in this backend, so nothing consumes a D3D9 material and
+the whole `D3DMATERIAL9` struct was free. Aurora fills it; the fork reads it.
+Every one of these exists because the stage chain could not carry the fact, and
+each is §0 applied — extend the fork rather than contort the stream.
+
+| Field | Carries | Read in the fork | Detail |
+| :-- | :-- | :-- | :-- |
+| `Specular.r` | per-draw verdict "the vertex stream is authored material colour" | `d3d9_rtx_utils.cpp` → `isVertexColorBakedLighting` | §7c |
+| `Emissive.rgb` | the glow colour, **pre-inverted** through the albedo's texture op | `rtx_instance_manager.cpp` | §9 |
+| `Emissive.a` | the self-illumination evidence score, 0..1 | cut at `rtx.dusklight.emissive.threshold` | §9 |
+| `Diffuse.rgb` | the ramp endpoint TFACTOR does not hold → `RtSurface::rampOtherColor` | `rtx_instance_manager.cpp` | §10 |
+| `Diffuse.a` | "this material is a ramp" → `textureFlags` bit 15 | same | §10 |
+| `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
 
 ### The three things that do not survive, and are easy to emit by accident
 
@@ -179,6 +202,9 @@ The question is only which D3D9 slot a constant lands in:
 > to TFACTOR.** Only one of the two survives. Aurora's `materialize()` gives the
 > draw's *first* constant TFACTOR unconditionally, so in practice this means:
 > do not let an unimportant constant claim TFACTOR ahead of the albedo tint.
+> A third route now exists — give the colour a side channel of its own and read
+> it in the fork (§2, §10) — but TFACTOR costs nothing and is already read, so
+> spend the channel on what TFACTOR cannot hold.
 
 ## 7. The shape this game actually uses — measured, not assumed
 
@@ -211,6 +237,9 @@ Consequences for anything touching this area:
   falls to black where the texture is dark, so multiplying a floor-coloured ramp
   *darkens* it. Remix also decodes `ADD`, which fits that shape: `tex + floor`
   keeps the floor and saturates to white. Pick the op from the endpoints.
+  **Since 2026-08-04 this is the fallback path only** — §10 sends both endpoints
+  to the fork and the shader evaluates the ramp exactly, so the op choice
+  decides only what a *declined* ramp gets.
 - **"The texture is greyscale" is normal and correct here.** Any rule of the form
   "an intensity-format texture is not the albedo" is wrong for this game.
   `is_color_texture_format()` exists for a real reason (character eyes composite
@@ -224,9 +253,16 @@ Consequences for anything touching this area:
 
 ## 7b. Choosing what to advertise — measured 2026-08-04
 
-Remix reads one op with one constant. Truth is `lerp(floor, top, texture)`.
-Neither available op reproduces that, so the choice is about **which end to get
-right**, and the answer is settled rather than a matter of taste:
+> **Superseded in part, later the same day.** §10 carries both endpoints to the
+> fork and evaluates the ramp exactly, so for any material reporting
+> `ramp=tfLow`/`tfHigh` nothing in this section decides what is drawn. It still
+> governs every material where the ramp is **declined** (`ramp=tfTaken`,
+> `usesVtx`, `flat`, `unevaluable`), which is why the measurements stay.
+
+The one stage carries one op with one constant. Truth is
+`lerp(floor, top, texture)`. Neither op reproduces that, so the choice is about
+**which end to get right**, and the answer is settled rather than a matter of
+taste:
 
 | Floor | Op | Why |
 | :-- | :-- | :-- |
@@ -279,11 +315,11 @@ The third row was a silent bug worth calling out: `eval_operand` treated
 that constant evaluated as if it had none. Those materials now evaluate
 correctly, which also makes them eligible for the §10 ramp.
 
-Aurora reports the verdict per draw in `D3DMATERIAL9::Specular.r`, and the fork
-uses it to set `isVertexColorBakedLighting` per draw instead of taking the
+Aurora reports the verdict per draw in `D3DMATERIAL9::Specular.r` (§2), and the
+fork uses it to set `isVertexColorBakedLighting` per draw instead of taking the
 global option — which was necessarily wrong for one of the two cases.
 `vtxUse=` on `matrep.sum` prints which of `material`, `bakedLight` or `const`
-applied.
+applied. **CI-green, untested in game** as of 2026-08-04.
 
 **The case that remains a judgement call:** a draw with lighting disabled whose
 vertex colour is genuinely authored — a per-vertex tint or fade on an effect,
@@ -295,7 +331,8 @@ colour gradient it should have, that is this, and the log will say `vtxUse=baked
 For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
 
 1. **Remix reads one stage.** Any meaning placed in a later stage is lost unless
-   it is the §4 TFACTOR pattern.
+   it is the §4 TFACTOR pattern — or you give it a side channel of its own and
+   teach the fork to read it (§2).
 2. **Undecodable means white, not broken.** Losses are silent and look
    intentional. Assume nothing is reporting them.
 3. **Repairs must be conditional.** A transformation that helps a broken
@@ -308,8 +345,12 @@ For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
 7. **Prefer stating over encoding.** Where a per-draw fact can be transmitted
    directly instead of being inferred from fixed-function state, that is
    strictly better. See §9.
+8. **"Remix cannot express X" is a claim about *stock* Remix.** The fork is
+   ours. Check whether the constraint is real before designing around it — the
+   two-colour ramp was written down as inexpressible and then reproduced
+   exactly, a week later than it needed to be (§10).
 
-## 9. Self-illumination — rev 2, 2026-08-04, untested
+## 9. Self-illumination — rev 2, 2026-08-04, CI-green and untested in game
 
 GX has **no emissive term**, and the 2026-08-04 Goron Mines session established
 something stronger: **no single GX fact identifies an emitter.**
@@ -396,9 +437,11 @@ channel now, but it is a repurposed D3D9 field carrying one float of score
 whose value then has to be pre-inverted through an unrelated texture op. That
 is a fallback working hard, not a stated intent.
 
-**The nearer prize is §7's two-colour ramp.** See §10.
+**The nearer prize was §7's two-colour ramp, and it has been taken** — §10 shows
+what a purpose-built channel plus a shader change buys, and it is the pattern
+this export would generalise.
 
-## 10. The two-colour ramp — reproduced exactly, 2026-08-04, untested
+## 10. The two-colour ramp — reproduced exactly, 2026-08-04, CI-green and untested in game
 
 Measured 2026-08-04, the Goron Mines lava material is, in GX:
 
@@ -407,9 +450,11 @@ cc = [C2, C1, TEXC, ZERO]   ->   out = C2*(1-texture) + C1*texture
 C2 = FF0000 (red)   C1 = FFFE63 (bright yellow)
 ```
 
-A lerp between two saturated colours, per channel. §2 lists what Remix reads in
-its one stage — args `TEXTURE`, `DIFFUSE`, `TFACTOR`, `CURRENT`, ops reducing to
-`t·C` or `t + C` — and **none of it is a lerp between two constants**:
+A lerp between two saturated colours, per channel. §2 lists what the one-stage
+decode reads — args `TEXTURE`, `DIFFUSE`, `TFACTOR`, `CURRENT`, ops reducing to
+`t·C` or `t + C` — and **none of it is a lerp between two constants**. That is a
+fact about *stock* Remix's stage decode; these docs recorded it as a permanent
+limitation for a week, and it was not one:
 
 | Reconstruction | red | green | blue |
 | :-- | :-- | :-- | :-- |

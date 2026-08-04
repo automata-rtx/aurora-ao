@@ -9,8 +9,9 @@ namespace aurora::dx9 {
 void texture_cache_initialize() noexcept;
 void texture_cache_shutdown() noexcept;
 void texture_cache_begin_frame() noexcept;
-// Releases D3DPOOL_DEFAULT resources ahead of a device Reset. (v1 keeps
-// everything in the managed pool; hook kept for the future EFB-copy targets.)
+// Releases D3DPOOL_DEFAULT resources ahead of a device Reset - Reset fails
+// while any of them is alive. Covers the EFB copy targets and the offscreen
+// targets; static textures are D3DPOOL_MANAGED and survive.
 void texture_cache_release_default_pool() noexcept;
 
 // Resolves the texture bound to a GX texmap (static / palette / EFB-copy
