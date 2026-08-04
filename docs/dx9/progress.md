@@ -240,9 +240,16 @@ actually join (the two sides formatted the pointer differently), and the fork's
 dedup key included `tFactor`, whose value tracks fog and time of day — 828
 distinct values exhausted the 1024 cap in 14 seconds.
 
-**Syntax-checked: NO** (no MinGW toolchain available). The evaluator was instead
-validated by re-implementing it against the 111 real materials captured in the
-2026-08-03 log. **Untested in game.**
+**CI-green** — dusklight run 30864069703 built Windows MSVC x86_64 against this
+commit and uploaded artifacts. (It was not syntax-checked locally; no MinGW
+toolchain was available. The evaluator's *logic* was validated separately by
+re-implementing it against the 111 real materials captured in the 2026-08-03
+log.) **Untested in game.**
+
+The fork half of the same change set did *not* build first time — a padding
+assert in the report's dedup key was wrong — which is worth recording because it
+is the one part of this work a compiler could catch and the local harness could
+not.
 
 ### 3.19 — the greyscale defect was our own hint stage (2026-08-03)
 
