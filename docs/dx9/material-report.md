@@ -24,9 +24,11 @@ hand over two files.
 ## What it costs
 
 Aurora's half is **always on**, capped at 512 distinct material configurations
-per run. Remix's half is behind `rtx.dusklight.matrep` (default off, `NoSave`),
-capped at 1024. A session costs kilobytes. Both print a `matrep.trunc` line
-exactly once if they hit the cap — so truncation is never silent.
+per run. Remix's `matrep.rmx` half is behind `rtx.dusklight.matrep` (default off,
+`NoSave`), capped at 1024; its `dusklight.emis` half is behind
+`rtx.dusklight.emissive.log` (default **on**), capped at 96. A session costs
+kilobytes. Every one of them prints a `.trunc` line exactly once if it hits its
+cap — so truncation is never silent.
 
 ## Where the lines come from
 
@@ -37,6 +39,7 @@ exactly once if they hit the cap — so truncation is never silent.
 | `matrep.k` | aurora | once, the GX constants + lighting bit |
 | `matrep.d3d` | aurora | one per D3D9 stage actually emitted |
 | `matrep.rmx` | fork, `processTextures` tail | once per distinct reconstructed material |
+| `dusklight.emis` | fork, instance manager | once per distinct self-illumination candidate |
 
 Aurora's lines land in the game log (`<CachePath>/logs/<timestamp>.log`);
 Remix's land in `rtx-remix/logs/remix-dxvk.log`. **Both files are needed.**
@@ -75,7 +78,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            shape=ramp out0=B80000 out1=FFFFFF usesTex=1 usesVtx=0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
-           vtxColor=default-white
+           vtxColor=default-white selfLit=yes emisCol=B80000
 ```
 
 | Field | Means |
@@ -95,6 +98,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
+| **`selfLit`** | `yes` if GX says this surface takes no light and its colour is authored, otherwise **why not**: `lit` (GX lighting on), `vtxSrc` (unlit but vertex-sourced, so baked lighting), `ortho` (a 2D draw), `noColor` (nothing evaluable to take a colour from) |
+| `emisCol` | the colour handed to the fork as the glow, when `selfLit=yes` |
 
 ### `shape` values
 
@@ -183,6 +188,41 @@ Two caveats worth knowing:
   transform that removes vertex-colour brightness and part of its saturation on
   every surface. It is not per-material, and it is not the grayscale cause.
 
+## Reading `dusklight.emis`
+
+Self-illumination, the fork's half. One line per distinct candidate, **accepted
+or rejected**, because a candidate that missed by 0.02 of saturation is a
+threshold to move and that is invisible if only acceptances are printed.
+
+```
+dusklight.emis mat=… tex0hash=… color=1,0.42,0 luma=0.55 chroma=1
+               minLuma=0.25 minChroma=0.2 verdict=emissive applied=1
+```
+
+| Field | Means |
+| :-- | :-- |
+| `mat` | the material data hash — the same value Remix keys its material cache on |
+| `tex0hash` | ties the line to something on screen through Remix's texture categorization UI |
+| `color` | what aurora said the surface presents, linear 0..1 |
+| `luma` / `chroma` | brightness and saturation of that colour, the two numbers the decision turns on |
+| `minLuma` / `minChroma` | the live thresholds, printed so an old log can be read without knowing what they were set to |
+| `verdict` | `emissive` or `rejected` |
+| `applied` | 0 when the verdict was `emissive` but `rtx.dusklight.emissive.enable` is off |
+
+**Aurora's half of the same decision is `selfLit=` on `matrep.sum`.** A surface
+that does not glow and has no `dusklight.emis` line at all was rejected on the
+game side; check `selfLit=` there for the reason. A surface with a
+`verdict=rejected` line was rejected on the threshold, and the numbers on that
+line say by how much.
+
+Bounded at 96 distinct candidates, with a `dusklight.emis.trunc` line if that is
+reached. The cap is deliberately small: a scene with hundreds of candidates
+means the rule is wrong, not that the cap is too low.
+
+The whole design, and what the rule caught when replayed against the
+2026-08-03 session, is in
+[`remix-material-interface.md`](remix-material-interface.md) §9.
+
 ## Reading the other lines
 
 `matrep.gx` shows the material the game asked for — one line per TEV stage, with
@@ -191,8 +231,9 @@ can never drift from the enums themselves. `cc=[a,b,c,d]` is the colour pass's
 four operands; GX computes `d + (a·(1−c) + b·c)`.
 
 `matrep.k` shows the konst and colour registers — **this is where this game keeps
-the colour that distinguishes a green rupee from a red one** — plus `lit=`, the
-GX colour-channel lighting bit that indicates a self-lit surface.
+the colour that distinguishes a green rupee from a red one** — plus `lit=` and
+`matSrc=`, the two GX facts the self-illumination rule turns on. `selfLit=` on
+`matrep.sum` is those two already interpreted; these are the raw values.
 
 `matrep.d3d` shows what we handed D3D9, which is all Remix ever sees. Compare
 its stage 0 against `matrep.rmx` to confirm which stage Remix picked.

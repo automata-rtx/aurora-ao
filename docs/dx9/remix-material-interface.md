@@ -252,21 +252,87 @@ For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
    directly instead of being inferred from fixed-function state, that is
    strictly better. See §9.
 
-## 9. The direction this is going
+## 9. Self-illumination — built 2026-08-04, untested
 
-The interface above is a *lossy channel with a silent failure mode*, and both
-halves of it are ours. The intended endpoint is that Aurora stops encoding
-material intent into fixed-function stages and hoping Remix's heuristics recover
-it, and instead **states** it: a small versioned export from the fork's
-`d3d9.dll`, called per draw, carrying the resolved albedo tint and emissive.
+GX has **no emissive term**, so nothing here is a translation in the §1 sense.
+What GX has is a colour channel that can be told to take no light at all, with
+its colour authored in a register rather than sampled from the vertex stream.
+That pair is the strongest statement GX can make that a surface is meant to look
+self-lit, and it comes straight out of the model file.
 
-That is not built. It is recorded here so that work on the encoding is
-understood as maintaining a fallback rather than as the long-term answer. The
-fallback still matters — it must stay correct for the case where the game and
-the DLL are built from different points.
+### Why "unlit" alone is not a rule
 
-**Emissive belongs on that same channel.** GX carries a per-draw "this colour
-channel is not lit" bit that comes straight out of the model file — authored
-intent for a self-lit surface. Aurora decodes it today and uses none of it, and
-the fork has no route by which an opaque captured draw can be made emissive at
-all. Neither half exists yet; see `dusklight-ao/docs/remix-open-issues.md`.
+Measured on the 2026-08-03 22:23 session, **69 of 117 materials had GX lighting
+disabled** — 59% of the scene. Acting on that bit alone would set more than half
+the world glowing. The split is the useful part:
+
+| | count |
+| :-- | --: |
+| `lit=0 matSrc=GX_SRC_VTX` | 44 |
+| `lit=0 matSrc=GX_SRC_REG` | 25 |
+| `lit=1` (either source) | 48 |
+
+The 44 vertex-sourced ones are §7c's baked lighting, not emitters. That leaves
+25, still far too many — most are white: UI, EFB copies, plain geometry.
+
+### How it is split between the two halves
+
+**Aurora reports evidence. The fork decides.** The line is drawn where the
+judgement starts:
+
+| Half | Owns | Where |
+| :-- | :-- | :-- |
+| aurora | the GX facts: unlit, register-sourced, 3D, evaluable, and the colour the surface presents | `evaluate_self_lit` in `dx9_tev.cpp` |
+| fork | the thresholds that separate lava from an unlit interior wall | `rtx.dusklight.emissive.*`, `rtx_dusklight_emissive.h` |
+
+The thresholds are the part nobody can derive from first principles, so they
+live in options and move from the F1 overlay rather than a rebuild.
+
+### The transport
+
+`D3DMATERIAL9::Emissive`. RGB is the presented colour; A is aurora's verdict
+(1 or 0). It was chosen because it is the actual D3D9 semantic for
+self-illumination and because it was **free end to end**: this backend keeps
+`D3DRS_LIGHTING` off, so nothing reads a D3D9 material, and the fork was already
+copying the whole `D3DMATERIAL9` into `LegacyMaterialData` and never reading it.
+
+Two consequences worth knowing:
+
+- The change **cannot alter the raw D3D9 image.** If something looks different
+  outside Remix, this is not the cause.
+- `LegacyMaterialData::computeIdentityHash` had to start hashing `Emissive`.
+  Without that, two draws differing only in the verdict collapse onto whichever
+  the material cache saw first.
+
+### Which endpoint becomes the glow
+
+The same rule §7b uses for the albedo tint: the more chromatic endpoint of the
+ramp, ties going to the brighter one. So a heart ramping `B80000 → F84040`
+glows red, and a lava ramp `FF0000 → FF6B00` glows orange.
+
+The glow is a **flat colour**, not the texture. `emissiveColorConstant` is
+overridden entirely by `emissiveColorTexture` when both are set, and this game's
+textures are usually intensity masks with the colour held in a GX constant
+(§6) — so a textured glow would come out white. `rtx.dusklight.emissive.useTextureColor`
+switches to the texture for a material whose texture really is the colour.
+
+### What the rule catches
+
+Replayed against the 2026-08-03 22:23 log at the shipped defaults
+(`minLuma 0.25`, `minChroma 0.20`): **8 of 117 materials**, including a red
+ramp matching the heart, a green one matching the rupee, and two orange ones
+consistent with fire or lava. The likeliest false positive is a brown
+`965744` at chroma 0.32 — raising Minimum Saturation to 0.35 drops it and
+nothing else.
+
+**This is a replay of a log, not a test in game.** Which of the eight is lava
+has not been established; the `dusklight.emis` lines name each one so the next
+session settles it. See `material-report.md`.
+
+### What is still not built
+
+The endpoint remains a small versioned export from the fork's `d3d9.dll`, called
+per draw, carrying resolved albedo and emissive directly instead of encoding
+them into fixed-function state. Emissive now has a real channel, but it is still
+a repurposed D3D9 field with one float of verdict in it, not a stated intent.
+Work on the encoding is maintaining a fallback, not building the answer.

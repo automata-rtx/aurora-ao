@@ -166,7 +166,7 @@ characters on both paths, EFB colour copies, stable texture hashing, real
 camera, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
-fixed-function and 9 Remix runtime limitations, all in
+fixed-function and 10 Remix runtime limitations, all in
 `docs/dx9/unsupported-effects.md`.
 
 Live defects:
@@ -186,7 +186,10 @@ Live defects:
    defect — it is Remix's RTX injection boundary. Full analysis in
    `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
-**No emissive path exists anywhere in the chain** (open issue 9): GX carries a
-per-draw "this surface is self-lit" bit that this backend decodes and discards,
-and the fork has no route by which an opaque captured draw can be made emissive.
-Design direction in `docs/dx9/remix-material-interface.md` §9.
+**Self-illumination exists as of 2026-08-04 and is untested** (open issue 9).
+GX has no emissive term, so this is not a translation: aurora reports the
+evidence GX does carry (a colour channel that takes no light, with its colour
+authored in a register) over `D3DMATERIAL9::Emissive`, and the fork applies the
+thresholds — which are options in the F1 overlay, not constants, because 59% of
+materials are unlit and what separates lava from an interior wall is a
+judgement. `docs/dx9/remix-material-interface.md` §9.

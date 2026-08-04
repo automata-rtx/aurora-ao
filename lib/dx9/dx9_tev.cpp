@@ -1115,6 +1115,60 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
   return r;
 }
 
+// ---------------------------------------------------------------------------
+// Self-illumination evidence
+// ---------------------------------------------------------------------------
+// GX has no emissive term, so nothing here can be a direct translation. What
+// GX does have is a colour channel that can be told to take no light at all,
+// with its colour authored in a register rather than sampled from the vertex
+// stream. That pair is the strongest statement GX can make that a surface is
+// meant to look self-lit, and it is what this reports.
+//
+// It reports *evidence*, never a verdict on brightness: 69 of the 117 materials
+// in the 2026-08-04 session had lighting disabled, so "unlit" on its own would
+// light up more than half the scene. The thresholds that separate lava from an
+// ordinary unlit interior wall live in the fork (rtx.dusklight.emissive.*) so
+// they move from the F1 overlay instead of a rebuild.
+//
+// docs/dx9/remix-material-interface.md §9.
+struct SelfLitEvidence {
+  bool selfLit = false;
+  uint32_t color = 0;         // 0x00RRGGBB, the colour the surface presents
+  const char* why = "yes";    // why not, when it is not
+};
+
+SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
+  SelfLitEvidence e;
+  const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
+  if (chan.lightingEnabled) {
+    e.why = "lit";
+    return e;
+  }
+  if (chan.matSrc != GX_SRC_REG) {
+    // Unlit with a vertex-stream colour is this game's baked-lighting shape,
+    // not a self-lit surface (remix-material-interface.md §7c).
+    e.why = "vtxSrc";
+    return e;
+  }
+  if (g_gxState.projType == GX_ORTHOGRAPHIC) {
+    e.why = "ortho";
+    return e;
+  }
+  if (!albedo.valid || !albedo.usesTexture) {
+    // Nothing evaluable to take a colour from.
+    e.why = "noColor";
+    return e;
+  }
+  // The endpoint that carries the material's colour, same rule the albedo hint
+  // uses: prefer the more chromatic end, break ties towards the brighter one.
+  const uint32_t rgb0 = albedo.out0 & 0x00FFFFFFu;
+  const uint32_t rgb1 = albedo.out1 & 0x00FFFFFFu;
+  const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
+  e.color = (c1 > c0 || (c1 == c0 && luma_of(rgb1) >= luma_of(rgb0))) ? rgb1 : rgb0;
+  e.selfLit = true;
+  return e;
+}
+
 } // namespace
 
 uint32_t apply_tev(const DecodedDraw& draw) noexcept {
@@ -1126,6 +1180,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // constant slots are allocated as the real stages are emitted, and the hint
   // is written before any of them have run.
   const AlbedoIntent albedo = evaluate_albedo(draw);
+  const SelfLitEvidence selfLit = evaluate_self_lit(albedo);
   const bool hasHintTint = albedo.hasTint;
   // A constant scale on the texture's alpha, carried in TFACTOR's alpha channel
   // so it does not compete with the colour tint in the RGB channels.
@@ -1478,6 +1533,13 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_TEXTUREFACTOR, consts.tfactor);
   }
 
+  // Hand the self-illumination evidence to Remix. Inert to rasterization -
+  // D3DRS_LIGHTING is off - so this cannot change the raw D3D9 image.
+  set_emissive_evidence(static_cast<float>((selfLit.color >> 16) & 0xFFu) / 255.f,
+                        static_cast<float>((selfLit.color >> 8) & 0xFFu) / 255.f,
+                        static_cast<float>(selfLit.color & 0xFFu) / 255.f,
+                        selfLit.selfLit ? 1.f : 0.f);
+
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
   // all exist at once. Reading guide: docs/dx9/material-report.md.
@@ -1503,7 +1565,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     Log.info("matrep.sum mk={:016X} gxStages={} d3dStages={} albedoGx={} albedoMap={} "
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
-             "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={}",
+             "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} selfLit={} emisCol={:06X}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1512,7 +1574,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              reinterpret_cast<uintptr_t>(hintTexture), hintLooseWouldSuppress ? 1 : 0, tintDecision,
              hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
-                                 : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"));
+                                 : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
+             selfLit.why, selfLit.color);
 
     // Per-stage GX detail: the material the game asked for, not our reduction
     // of it. GX enum names come from lib/gx/gx_fmt.hpp.

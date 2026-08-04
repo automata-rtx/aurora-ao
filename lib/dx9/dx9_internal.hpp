@@ -114,6 +114,11 @@ struct StateCache {
   std::array<bool, 16> worldValid{};
   std::array<D3DMATRIX, MaxStages> texMtx{};
   std::array<bool, MaxStages> texMtxValid{};
+  // Self-illumination evidence for Remix, carried in D3DMATERIAL9::Emissive.
+  // Mirrored because SetMaterial dirties the fixed-function vertex constants
+  // on every call, and this value changes per material rather than per draw.
+  D3DCOLORVALUE emissive{};
+  bool emissiveValid = false;
 
   void invalidate() noexcept {
     rsValid.fill(false);
@@ -124,6 +129,7 @@ struct StateCache {
       v.fill(false);
     }
     texturesValid.fill(false);
+    emissiveValid = false;
     fvfValid = false;
     projValid = viewValid = false;
     worldValid.fill(false);
@@ -178,6 +184,24 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
     g_cache.textures[stage] = tex;
     g_cache.texturesValid[stage] = true;
   }
+}
+
+// Self-illumination evidence for Remix. D3DRS_LIGHTING is off in this backend,
+// so D3DMATERIAL9 is inert to rasterization and the whole struct is free real
+// estate; the fork copies it into LegacyMaterialData and reads Emissive there.
+// A is the verdict (1 = GX says this surface takes no light and its colour is
+// authored), RGB is the colour the surface presents. Thresholds that turn this
+// into emission live in the fork. See docs/dx9/remix-material-interface.md §9.
+inline void set_emissive_evidence(float r, float g, float b, float verdict) noexcept {
+  if (g_cache.emissiveValid && g_cache.emissive.r == r && g_cache.emissive.g == g &&
+      g_cache.emissive.b == b && g_cache.emissive.a == verdict) {
+    return;
+  }
+  D3DMATERIAL9 mat{};
+  mat.Emissive = D3DCOLORVALUE{r, g, b, verdict};
+  g_dx9.dev->SetMaterial(&mat);
+  g_cache.emissive = mat.Emissive;
+  g_cache.emissiveValid = true;
 }
 
 inline void set_fvf(DWORD fvf) noexcept {

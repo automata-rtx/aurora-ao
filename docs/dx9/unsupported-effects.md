@@ -46,6 +46,7 @@ the D3D9 stream is correct — raw D3D9 renders these cases properly.
 | R7 | **Billboard detection expects fan-order quad indices** (`unsupported quad index layout for billboard creation`) | Particle quads miss Remix's billboard path | Quads emit `(0,1,2)(0,2,3)` |
 | R8 | **New GUI input method registers raw keyboard with `RIDEV_NOLEGACY`**, killing `WM_KEY*` process-wide | Game input dead under Remix while Remix hotkeys work | `rtx.useNewGuiInputMethod = False` in `rtx.conf` (documented game-side) |
 | R9 | Remix **auto-detects orthographic draws as UI** and rasterizes them as a screen overlay | Handing that path a 3D view matrix (the camera split) mis-shapes the HUD | The camera split is skipped for `GX_ORTHOGRAPHIC` draws |
+| R10 | **Emissive colour is a constant *or* a texture, never both.** `emissiveColorTexture` overrides `emissiveColorConstant` outright, and the texture is sampled raw — no texture op, no tFactor | A self-lit surface glows either flat or in whatever the texture holds. This game keeps a material's colour in a GX constant and its textures are usually intensity masks, so a textured glow comes out **white** | The authored constant is used by default; `rtx.dusklight.emissive.useTextureColor` switches per-run. See [`remix-material-interface.md`](remix-material-interface.md) §9 |
 
 ## Watch list (decide during bring-up)
 

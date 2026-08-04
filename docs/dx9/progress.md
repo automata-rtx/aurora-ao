@@ -137,6 +137,12 @@ decisions it records as load-bearing:
 - **Vertex colour is not advertised to Remix**: it carries baked lighting here,
   which a path tracer must not receive in the albedo. Real stages keep it, so
   raw D3D9 is unchanged. *(3.21)*
+- **Self-illumination is split: aurora reports evidence, the fork judges.** GX's
+  "this channel takes no light" bit is true of **59% of materials**, so it is
+  evidence, never a rule. Aurora sends it plus `matSrc` and the presented colour
+  over `D3DMATERIAL9::Emissive` — free, because `D3DRS_LIGHTING` is off here so
+  no D3D9 material is ever read; the brightness and saturation thresholds live
+  in the fork's options so they move without a rebuild. *(3.22)*
 - The hint advertises the material's **colour** texture where there is one, and
   a stage that *reads* its texture in preference to one that merely binds it —
   character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
@@ -208,6 +214,35 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.22 — self-illumination: evidence here, judgement in the fork (2026-08-04)
+
+GX has no emissive term, so there was nothing to translate. What it has is a
+colour channel that takes no light with its colour authored in a register — and
+that bit alone was **69 of 117 materials** in the last session, so acting on it
+would have set 59% of the scene glowing. Splitting the two halves is the whole
+design:
+
+- **aurora** reports evidence — unlit, register-sourced, 3D, evaluable, and the
+  colour the surface presents — over `D3DMATERIAL9::Emissive`. That field was
+  free end to end: this backend keeps `D3DRS_LIGHTING` off, so **the change
+  cannot alter the raw D3D9 image**, and the fork was already copying the whole
+  `D3DMATERIAL9` and never reading it.
+- **the fork** applies the brightness and saturation thresholds, as
+  `rtx.dusklight.emissive.*` options in the F1 overlay, so widening or narrowing
+  the rule does not cost a rebuild.
+
+Replayed against the 2026-08-03 22:23 log the shipped defaults fire on **8 of
+117** materials. Which of the eight is lava is not established; both halves log
+their verdict (`selfLit=` on `matrep.sum`, `dusklight.emis` on the fork side,
+rejections included) so the next session settles it from the log.
+
+**Syntax-checked**, both configs. Untested in game. Regression signature:
+surfaces glowing that should not — most plausibly unlit interior geometry, which
+the game authors that way because it forces interior ambient to black.
+
+Design and the measurement: `remix-material-interface.md` §9. Log format:
+`material-report.md`.
 
 ### 3.21 — the floor decides the op; alpha scale; vertex colour withheld (2026-08-04)
 
