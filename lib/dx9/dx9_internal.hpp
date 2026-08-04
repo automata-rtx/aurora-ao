@@ -114,11 +114,11 @@ struct StateCache {
   std::array<bool, 16> worldValid{};
   std::array<D3DMATRIX, MaxStages> texMtx{};
   std::array<bool, MaxStages> texMtxValid{};
-  // Self-illumination evidence for Remix, carried in D3DMATERIAL9::Emissive.
+  // Material intent for Remix, carried in the otherwise unused D3DMATERIAL9.
   // Mirrored because SetMaterial dirties the fixed-function vertex constants
-  // on every call, and this value changes per material rather than per draw.
-  D3DCOLORVALUE emissive{};
-  bool emissiveValid = false;
+  // on every call, and these change per material rather than per draw.
+  D3DMATERIAL9 remixMaterial{};
+  bool remixMaterialValid = false;
 
   void invalidate() noexcept {
     rsValid.fill(false);
@@ -129,7 +129,7 @@ struct StateCache {
       v.fill(false);
     }
     texturesValid.fill(false);
-    emissiveValid = false;
+    remixMaterialValid = false;
     fvfValid = false;
     projValid = viewValid = false;
     worldValid.fill(false);
@@ -186,22 +186,30 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
   }
 }
 
-// Self-illumination evidence for Remix. D3DRS_LIGHTING is off in this backend,
-// so D3DMATERIAL9 is inert to rasterization and the whole struct is free real
-// estate; the fork copies it into LegacyMaterialData and reads Emissive there.
-// A is the verdict (1 = GX says this surface takes no light and its colour is
-// authored), RGB is the colour the surface presents. Thresholds that turn this
-// into emission live in the fork. See docs/dx9/remix-material-interface.md §9.
-inline void set_emissive_evidence(float r, float g, float b, float verdict) noexcept {
-  if (g_cache.emissiveValid && g_cache.emissive.r == r && g_cache.emissive.g == g &&
-      g_cache.emissive.b == b && g_cache.emissive.a == verdict) {
+// Material intent for Remix. D3DRS_LIGHTING is off in this backend, so
+// D3DMATERIAL9 is inert to rasterization and the whole struct is free real
+// estate; the fork copies it into LegacyMaterialData. **Nothing here can change
+// the raw D3D9 image.** Field meanings, all in
+// docs/dx9/remix-material-interface.md:
+//
+//   Emissive.rgb  the colour the surface presents      §9
+//   Emissive.a    self-illumination evidence score
+//   Diffuse.rgb   the ramp endpoint TFACTOR does not carry   §10
+//   Diffuse.a     1 when this material is a two-colour ramp
+//   Ambient.r     1 when TFACTOR carries the texture-white endpoint
+inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
+                               float tFactorIsHigh) noexcept {
+  D3DMATERIAL9 mat{};
+  mat.Emissive = emissive;
+  mat.Diffuse = ramp;
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
+  if (g_cache.remixMaterialValid &&
+      std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
     return;
   }
-  D3DMATERIAL9 mat{};
-  mat.Emissive = D3DCOLORVALUE{r, g, b, verdict};
   g_dx9.dev->SetMaterial(&mat);
-  g_cache.emissive = mat.Emissive;
-  g_cache.emissiveValid = true;
+  g_cache.remixMaterial = mat;
+  g_cache.remixMaterialValid = true;
 }
 
 inline void set_fvf(DWORD fvf) noexcept {

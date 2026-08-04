@@ -198,8 +198,9 @@ from a debug group the game pushes per process draw. Three investigations have
 stalled on "which of these logged materials is the thing on screen"; that
 question is retired. Use it.
 
-**Remix cannot express a lerp between two constants**, which is this game's
-dominant material shape, so every two-colour ramp is approximated and the lava
-reads red-to-white instead of red-to-orange. The arithmetic and the fix are in
-`docs/dx9/remix-material-interface.md` §10 — designed, not built. This is
-currently the largest single win available on the material path.
+**Two-colour ramps are now reproduced exactly** rather than approximated — the
+fork evaluates the GX colour combiner (`a*(1-c) + b*c`) from both endpoints
+instead of squeezing it into one D3D9 texture op. `docs/dx9/remix-material-interface.md`
+§10. Untested. The framing that delayed this is worth remembering: "Remix cannot
+express X" is a statement about *stock* Remix, and **this fork is ours** — check
+whether the constraint is real before designing around it.

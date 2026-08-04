@@ -1555,11 +1555,53 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_TEXTUREFACTOR, consts.tfactor);
   }
 
-  // Hand the self-illumination evidence to Remix. Inert to rasterization -
-  // D3DRS_LIGHTING is off - so this cannot change the raw D3D9 image.
-  set_emissive_evidence(static_cast<float>((selfLit.color >> 16) & 0xFFu) / 255.f,
-                        static_cast<float>((selfLit.color >> 8) & 0xFFu) / 255.f,
-                        static_cast<float>(selfLit.color & 0xFFu) / 255.f, selfLit.score);
+  // The two-colour ramp, which is this game's dominant material shape and which
+  // no stock Remix texture op can express (docs/dx9/remix-material-interface.md
+  // §10). The fork reconstructs `lerp(out0, out1, texture)` exactly, but only if
+  // it can find both endpoints: one rides TFACTOR, the other rides
+  // D3DMATERIAL9::Diffuse.
+  //
+  // TFACTOR is a shared render state and a real stage can claim it ahead of the
+  // hint, so this checks what it actually ended up holding rather than assuming.
+  // Declining is safe - the material falls back to the single-op approximation.
+  const uint32_t rampLo = albedo.out0 & 0x00FFFFFFu;
+  const uint32_t rampHi = albedo.out1 & 0x00FFFFFFu;
+  const uint32_t tfRgb = consts.tfactorUsed ? (consts.tfactor & 0x00FFFFFFu) : 0xFF000000u;
+  bool rampValid = false;
+  bool rampTFactorIsHigh = false;
+  uint32_t rampOther = 0;
+  const char* rampWhy = "no";
+  if (!albedo.valid || !albedo.usesTexture) {
+    rampWhy = "unevaluable";
+  } else if (albedo.usesVertexColor) {
+    // The endpoints were evaluated against one vertex colour; a streamed one
+    // would make them wrong per-vertex.
+    rampWhy = "usesVtx";
+  } else if (rampLo == rampHi) {
+    rampWhy = "flat";
+  } else if (tfRgb == rampHi) {
+    rampValid = true;
+    rampTFactorIsHigh = true;
+    rampOther = rampLo;
+    rampWhy = "tfHigh";
+  } else if (tfRgb == rampLo) {
+    rampValid = true;
+    rampOther = rampHi;
+    rampWhy = "tfLow";
+  } else {
+    rampWhy = "tfTaken";
+  }
+
+  // Hand it all to Remix. Inert to rasterization - D3DRS_LIGHTING is off - so
+  // none of this can change the raw D3D9 image.
+  set_remix_material(D3DCOLORVALUE{static_cast<float>((selfLit.color >> 16) & 0xFFu) / 255.f,
+                                   static_cast<float>((selfLit.color >> 8) & 0xFFu) / 255.f,
+                                   static_cast<float>(selfLit.color & 0xFFu) / 255.f, selfLit.score},
+                     D3DCOLORVALUE{static_cast<float>((rampOther >> 16) & 0xFFu) / 255.f,
+                                   static_cast<float>((rampOther >> 8) & 0xFFu) / 255.f,
+                                   static_cast<float>(rampOther & 0xFFu) / 255.f,
+                                   rampValid ? 1.f : 0.f},
+                     rampTFactorIsHigh ? 1.f : 0.f);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1587,7 +1629,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
-             "selfLit={} emisScore={:.2f} emisCol={:06X} grp={}",
+             "selfLit={} emisScore={:.2f} emisCol={:06X} ramp={} rampOther={:06X} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1597,7 +1639,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
-             selfLit.why, selfLit.score, selfLit.color,
+             selfLit.why, selfLit.score, selfLit.color, rampWhy, rampOther,
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction

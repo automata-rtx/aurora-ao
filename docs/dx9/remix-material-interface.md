@@ -341,40 +341,81 @@ is a fallback working hard, not a stated intent.
 
 **The nearer prize is §7's two-colour ramp.** See §10.
 
-## 10. The ramp Remix cannot express — and why lava reads red
+## 10. The two-colour ramp — reproduced exactly, 2026-08-04, untested
 
-Measured 2026-08-04. The Goron Mines lava material is, in GX:
+Measured 2026-08-04, the Goron Mines lava material is, in GX:
 
 ```
-cc = [C2, C1, TEXC, ZERO]   ->   out = lerp(C2, C1, texture)
+cc = [C2, C1, TEXC, ZERO]   ->   out = C2*(1-texture) + C1*texture
 C2 = FF0000 (red)   C1 = FFFE63 (bright yellow)
 ```
 
-A ramp between two saturated colours. §2 lists everything Remix can express in
-the one stage it reads, and **none of it is a lerp between two constants**: the
-arguments available are `TEXTURE`, `DIFFUSE`, `TFACTOR` and `CURRENT`, and the
-ops reduce to `t·C` or `t + C`. So:
+A lerp between two saturated colours, per channel. §2 lists what Remix reads in
+its one stage — args `TEXTURE`, `DIFFUSE`, `TFACTOR`, `CURRENT`, ops reducing to
+`t·C` or `t + C` — and **none of it is a lerp between two constants**:
 
-| Reconstruction | red channel | green | blue |
+| Reconstruction | red | green | blue |
 | :-- | :-- | :-- | :-- |
-| truth `lerp(A,B,t)` | 1 | 0.996·t | 0.388·t |
-| `ADD(TEXTURE, TFACTOR=A)` — what ships | 1 ✓ | t ✓ (0.4% high) | t ✗ (2.6× high) |
-| `MODULATE(TEXTURE, TFACTOR=B)` | t ✗ | 0.996·t ✓ | 0.388·t ✓ |
+| truth | 1 | 0.996·t | 0.388·t |
+| `ADD(TEXTURE, TFACTOR=C2)` | 1 ✓ | t (0.4% high) | t — **2.6× high** |
+| `MODULATE(TEXTURE, TFACTOR=C1)` | t ✗ | 0.996·t ✓ | 0.388·t ✓ |
 
 `ADD` wins on integrated error (0.125 vs 0.333) and is what §7b selects, but its
-residual is entirely in blue: **the highlights desaturate toward white instead
-of yellowing**, so the surface reads red-and-white rather than red-to-orange.
-That is the exact shape of the 2026-08-04 report, "more red than the intense
-orangeish/yellow".
+residual is entirely in blue, so **highlights desaturate toward white instead of
+yellowing** — the surface reads red-and-white. That was the 2026-08-04 report,
+"more red than the intense orangeish/yellow". `MODULATE` is not the answer
+either: it renders black where the floor is a colour, which is the
+inverted-highlight defect §7b exists to remove.
 
-`MODULATE` is not the answer either — it renders black where the material's
-floor is a real colour, which is the inverted-highlight defect §7b exists to
-remove.
+### The fix: stop using one op
 
-**There is no single-op fix. The fix is to stop using a single op.** Both sides
-are ours: aurora can send both endpoints (`D3DMATERIAL9` has `Diffuse` and
-`Ambient` still unused), and the fork can carry them to a surface field and
-evaluate `lerp(out0, out1, textureIntensity)` in the shader. That reproduces
-the game's dominant material shape (§7) **exactly** — every ramp material at
-once, not just lava. It is a shader and surface-packing change, so it is
-recorded here rather than bundled with the instrumentation above.
+Both halves are ours, so the ramp is now carried explicitly and evaluated in the
+shader as what GX actually computes:
+
+```
+albedo = mix(rampLo, rampHi, albedo);   // per channel, albedo = the texture sample
+```
+
+That is `a*(1-c) + b*c` — the GX colour combiner, not an approximation of it.
+It is exact for **every** ramp material at once, not just lava.
+
+### How it fits with no room to spare
+
+| Piece | Where | Note |
+| :-- | :-- | :-- |
+| endpoint 1 | `D3DRS_TEXTUREFACTOR` | already sent; nothing new |
+| endpoint 2 | `D3DMATERIAL9::Diffuse.rgb` → `RtSurface::rampOtherColor` → `data15.w` | `data15.w` was permanent zero padding |
+| "is a ramp" | `Diffuse.a` → `textureFlags` bit 15 | bits 15-16 were unused |
+| "which endpoint tFactor holds" | `Ambient.r` → `textureFlags` bit 16 | |
+
+**The GPU `Surface` struct does not grow.** It is sized to exactly two 128-byte
+cachelines and the spare bits were already there. No precision is lost either:
+GX colour registers are 8 bits per channel and so is the transport.
+
+### When the ramp is declined
+
+TFACTOR is a **shared render state** and a real stage can claim it before the
+hint does. Aurora therefore checks what TFACTOR actually ended up holding rather
+than assuming, and declines when it is neither endpoint. `ramp=` on
+`matrep.sum` gives the reason:
+
+| `ramp=` | Means |
+| :-- | :-- |
+| `tfLow` / `tfHigh` | reproduced exactly; TFACTOR holds the texture-black / texture-white endpoint |
+| `tfTaken` | a real stage claimed TFACTOR, so only one endpoint is reachable — falls back to §7b |
+| `usesVtx` | the colour pass reads the rasterized vertex colour, so two constants do not describe it |
+| `flat` / `unevaluable` | nothing to ramp between |
+
+Declining is always safe: the material falls back to the single-op
+approximation, which is what shipped before this.
+
+### What this does not cover
+
+- **Multi-stage materials.** Only the pass aurora evaluates is reproduced; a
+  material whose colour depends on a previous stage's result is still
+  `unevaluable` (§7).
+- **Replacement materials.** If one displaces the legacy material, the ramp
+  applies to the replacement's albedo — the same exposure the existing tFactor
+  multiply already has, not a new one.
+- `rtx.dusklight.rampMaterials` turns it off live, which is also how to A/B it
+  against the approximation.

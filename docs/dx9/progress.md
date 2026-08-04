@@ -137,6 +137,11 @@ decisions it records as load-bearing:
 - **Vertex colour is not advertised to Remix**: it carries baked lighting here,
   which a path tracer must not receive in the albedo. Real stages keep it, so
   raw D3D9 is unchanged. *(3.21)*
+- **Two-colour ramps are reproduced, not approximated.** `lerp(A, B, texture)`
+  is this game's dominant material shape and no stock Remix op expresses it, so
+  the fork evaluates the GX combiner directly from two endpoints carried in
+  spare surface bits. Aurora declines when TFACTOR was claimed by a real stage,
+  and the material falls back to the single-op approximation. *(3.24)*
 - **Self-illumination is split: aurora scores evidence, the fork judges.** No
   single GX fact identifies an emitter — "takes no light" is true of 59% of one
   scene *and* false for the Goron Mines lava. Aurora sums three weak signals and
@@ -218,6 +223,35 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.24 — reproduce the GX colour combiner instead of approximating it (2026-08-04)
+
+**The framing was wrong, not just the numbers.** "No single Remix op can express
+a lerp between two constants" is a fact about *stock* Remix — and this fork is
+ours. So the ramp is no longer approximated: both endpoints are carried to the
+surface and the shader evaluates
+
+```
+albedo = mix(rampLo, rampHi, albedo);   // per channel
+```
+
+which is `a*(1-c) + b*c`, the GX colour combiner itself. Exact for **every** ramp
+material at once, not just the lava that prompted it.
+
+It fits with **no growth of the GPU `Surface` struct** (sized to exactly two
+128-byte cachelines) and **no precision loss** (GX registers are 8 bits per
+channel and so is the transport): one endpoint already rode `TFACTOR`, the other
+takes `data15.w` which was permanent zero padding, and the two flags take
+`textureFlags` bits 15-16 which were unused.
+
+Aurora declines when `TFACTOR` was claimed by a real stage rather than the hint,
+because then only one endpoint is reachable; `ramp=` on `matrep.sum` gives the
+reason and the material falls back to the previous approximation.
+
+**Syntax-checked** (aurora half). Untested in game. Regression signature: ramp
+materials rendering as a flat colour or with inverted light/dark would mean the
+endpoints are swapped; `rtx.dusklight.rampMaterials` turns it off live for an
+A/B against the approximation.
 
 ### 3.23 — the emissive premise was wrong; label every draw (2026-08-04)
 

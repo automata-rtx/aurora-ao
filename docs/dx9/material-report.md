@@ -79,7 +79,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white selfLit=unlit+reg emisScore=0.75
-           emisCol=B80000 grp=d_a_obj_lv3Water
+           emisCol=B80000 ramp=tfLow rampOther=F84040 grp=d_a_obj_lv3Water
 ```
 
 | Field | Means |
@@ -103,6 +103,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
 | `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold` |
 | `emisCol` | the colour handed to the fork as the glow |
+| **`ramp`** | whether the two-colour ramp is reproduced exactly (§10): `tfLow` / `tfHigh` yes, `tfTaken` / `usesVtx` / `flat` / `unevaluable` no. Anything but `tfLow`/`tfHigh` means the material fell back to the single-op approximation |
+| `rampOther` | the endpoint TFACTOR does not carry |
 
 ### `shape` values
 
@@ -123,9 +125,12 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `mod:vtx` | `TEXTURE × DIFFUSE` — only when the material could not be evaluated at all. Vertex colour is otherwise never advertised (§7c: it carries baked lighting here) |
 | `tex` | the texture alone |
 
-**The quickest read: compare `out0`/`out1` against `tfactor`.** If the material
-ramps `B80000 → FFFFFF` and `tfactor=FFB80000` with `form=add:tint`, the colour
-survived. If `out1` is a strong colour and `tfUsed=0`, it did not.
+**The quickest read: check `ramp=` first.** `tfLow` or `tfHigh` means the
+material is reproduced *exactly* and `form=` no longer describes what the shader
+evaluates — it is the fallback that would have been used. Anything else means
+the approximation is in play, and then `form=` matters: compare `out0`/`out1`
+against `tfactor`. If `out1` is a strong colour and `tfUsed=0`, no colour
+reached Remix at all.
 
 ### `hint` values
 
@@ -168,8 +173,10 @@ matrep.rmx id=… first=0 tex0ptr=… tex0hash=…
            vcBaked=1 albedo="TEX * VertexColor0"
 ```
 
-`albedo="…"` is a literal rendering of the expression the shader will evaluate.
-**It is the end of the argument.** `TEX * 1.0` means a colour term was dropped;
+`albedo="…"` is a literal rendering of the expression the shader will evaluate —
+**unless `ramp=1` on the same line**, in which case the shader takes the
+two-colour path instead and this string is the fallback it replaced.
+Otherwise it is the end of the argument. `TEX * 1.0` means a colour term was dropped;
 `TEX * VertexColor0` with `vtxColor=default-white` upstream means the hint
 bleached it; `TEX * tFactor(…)` means the tint survived.
 
