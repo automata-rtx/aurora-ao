@@ -204,6 +204,32 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
+### 3.21 — the floor decides the op; alpha scale; vertex colour withheld (2026-08-04)
+
+**3.20 was tested: colours came back, but every item had an inverted highlight.**
+Reading the real GX programs settled why. These materials are additive — the
+heart is literally `out = B80000 + 0.25 × texture` — so advertising a multiply
+was structurally wrong, and a multiply renders black wherever the texture is
+black. That black *was* the "inverted glint".
+
+Three changes, each from a specific line in the session log:
+
+1. **The floor decides the op**, not the top. A coloured floor takes `ADD`,
+   which holds it exactly; only a black floor keeps `MODULATE`. The previous
+   near-white gate matched 5 materials out of 111. Cost: `ADD` cannot reproduce
+   the texture's scale, so highlights are brighter than the original.
+2. **A constant scale on the texture's alpha now reaches Remix**, via TFACTOR's
+   alpha channel. 18 of 111 materials are `konst × TEXA`; dropping the konst is
+   why HUD fade-ins drew their whole quad opaque.
+3. **Vertex colour is no longer advertised.** Owner testing of
+   `rtx.vertexColorIsBakedLighting` showed the vertex colours carry baked
+   lighting, which a path tracer must not receive in the albedo. Real stages are
+   untouched, so raw D3D9 is unchanged. This corrects a claim `kankyo-remix.md`
+   had carried for weeks.
+
+**CI-green.** Untested in game. The broadest risk is (3): surfaces that relied
+on vertex colour may read flatter or brighter.
+
 ### 3.20 — the material model was wrong; evaluate instead of pattern-match (2026-08-04)
 
 **3.19 was tested. It was safe but nearly inert — 3 materials out of 111.** The

@@ -88,6 +88,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | **`shape`** | what the material *is* — see below |
 | **`out0` / `out1`** | **the colour the GX program produces where the texture reads black, and where it reads white.** This is ground truth: it is what the surface should look like |
 | `usesTex` / `usesVtx` | whether the colour pass reads its texture / the rasterized vertex colour |
+| **`alphaScale`** | opacity where the texture's alpha reads full, `FF` when unscaled. Below `FF` means the material fades its texture alpha by a constant, and that scale rides TFACTOR's alpha channel — dropping it made HUD effects draw their whole quad |
 | `hint` | whether the hint stage was emitted — see below |
 | **`form`** | what the hint advertised — see below |
 | `hintLoose` | 1 if suppression was declined *only* because the material is multi-stage |
@@ -109,9 +110,9 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 
 | Value | Means |
 | :-- | :-- |
-| `mod:tint` | `TEXTURE × TFACTOR` — exact for `tex*c` |
-| `add:tint` | `TEXTURE + TFACTOR` — for a ramp that ends at white, where a multiply would darken the coloured floor |
-| `mod:vtx` | `TEXTURE × DIFFUSE`, with any tint riding a following stage |
+| `mod:tint` | `TEXTURE × TFACTOR` — exact when the floor is black |
+| `add:tint` | `TEXTURE + TFACTOR` — **whenever the floor is a colour**, because a multiply would render that floor black. See `remix-material-interface.md` §7b |
+| `mod:vtx` | `TEXTURE × DIFFUSE` — only when the material could not be evaluated at all. Vertex colour is otherwise never advertised (§7c: it carries baked lighting here) |
 | `tex` | the texture alone |
 
 **The quickest read: compare `out0`/`out1` against `tfactor`.** If the material

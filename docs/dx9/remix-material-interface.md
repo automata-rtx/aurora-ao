@@ -183,6 +183,56 @@ Consequences for anything touching this area:
   that *reads* its texture hands Remix an empty program — the second cause of
   the same defect.
 
+## 7b. Choosing what to advertise — measured 2026-08-04
+
+Remix reads one op with one constant. Truth is `lerp(floor, top, texture)`.
+Neither available op reproduces that, so the choice is about **which end to get
+right**, and the answer is settled rather than a matter of taste:
+
+| Floor | Op | Why |
+| :-- | :-- | :-- |
+| black | `MODULATE(top)` | exact at both ends |
+| coloured | **`ADD(floor)`** | a multiply yields black wherever the texture is black, replacing the object's own colour with a hole |
+| near-white | `MODULATE` | a descending ramp; `ADD` would drive the whole surface white |
+
+**The evidence.** These materials are additive in GX — the heart is literally
+`out = B80000 + 0.25 × texture`, with a colour constant in the `d` term and the
+texture only modulating what is added to it. So a multiply is *structurally*
+wrong, not mistuned. Advertising one made rupees and hearts render their
+highlights black, which is what a multiply does to a coloured floor.
+
+**The accepted cost:** `ADD` cannot reproduce the scale on the texture, so
+highlights come out brighter than the original. On a glint that reads as a blown
+specular. If that ever needs fixing, the missing datum is the texture's
+brightness distribution — add it to the report rather than guessing.
+
+> A previous revision gated `ADD` on the ramp ending near white. That matched
+> **5 materials out of 111** and is the reason a fix that "worked" still left
+> every item with an inverted highlight. The floor is what decides.
+
+**Opacity follows the same principle.** The hint used to advertise the texture's
+alpha unconditionally, which is right for a cutout but drops any constant scale
+on it — 18 of 111 materials are `konst × texture-alpha`. A HUD effect fading in
+through that konst reached Remix fully opaque and drew its whole quad. The scale
+now rides `TFACTOR`'s alpha channel, which the colour tint does not use.
+
+## 7c. Vertex colour is baked lighting here — do not forward it
+
+**Corrected 2026-08-04, against a claim these docs carried for weeks.**
+`kankyo-remix.md` stated that GX lighting "isn't baked into vertices, so there
+is no double-counting risk". Testing `rtx.vertexColorIsBakedLighting` disproved
+it: turning that normalisation *off* makes shaded areas visibly **darker**, so
+the vertex colours do carry baked lighting and shadow.
+
+A path tracer relights the scene. Handing it baked lighting in the albedo
+double-counts, and the shading it computes lands on top of shading that is
+already painted in.
+
+So the hint no longer advertises `DIFFUSE` at all. **The real D3D9 stages still
+use vertex colour**, so raw D3D9 rasterization is unchanged — only what Remix
+reads is different. Remix's own `rtx.vertexColorIsBakedLighting` becomes
+irrelevant to the albedo as a result; leave it at its default.
+
 ## 8. Design rules, collected
 
 For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
