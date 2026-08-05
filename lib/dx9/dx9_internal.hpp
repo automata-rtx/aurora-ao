@@ -197,6 +197,12 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //   Diffuse.rgb   the ramp endpoint TFACTOR does not carry   §10
 //   Diffuse.a     1 when this material is a two-colour ramp
 //   Ambient.r     1 when TFACTOR carries the texture-white endpoint
+//   Ambient.g     1-based index of the HD texture replacement for this draw's albedo
+//                 texture, 0 for none. Carried as a float because the channel is one;
+//                 indices stay exactly representable far past any realistic pack size
+//                 (a float holds every integer to 2^24). The fork joins it against the
+//                 materials the game created through the Remix API and substitutes the
+//                 loaded file. docs/dx9/texture-replacements.md
 //   Specular.r    1 when the vertex colour stream is authored material
 //                 colour rather than baked lighting                §7c
 //   Specular.g    1 when aurora evaluated a presentable colour here. 0 for the
@@ -209,11 +215,12 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //                 the lights do. This is the basis of the emissive rule  §9
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
-                               float evaluated, float colorAuthored, float selfLit) noexcept {
+                               float evaluated, float colorAuthored, float selfLit,
+                               uint32_t texRepIndex) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
-  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, static_cast<float>(texRepIndex), 0.f, 0.f};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

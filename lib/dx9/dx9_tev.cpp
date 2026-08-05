@@ -1336,6 +1336,20 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   bool hintLooseWouldSuppress = false;
   IDirect3DBaseTexture9* hintTexture = nullptr;
 
+  // HD replacement index for the texture the fork will treat as this material's albedo.
+  // Remix keeps at most two textures per draw and assigns colorTextures[0] from the lowest
+  // sampling stage, so track the lowest d3dStage that actually gets a texture bound rather
+  // than assuming the hint stage wins - it is emitted inside the same loop as the ordinary
+  // stages and, when D3DPMISCCAPS_TSSARGTEMP is available, need not be stage 0.
+  uint32_t albedoTexRepIndex = 0;
+  uint32_t albedoTexRepStage = UINT32_MAX;
+  const auto noteTexRep = [&](uint32_t stage, uint32_t index) noexcept {
+    if (stage < albedoTexRepStage) {
+      albedoTexRepStage = stage;
+      albedoTexRepIndex = index;
+    }
+  };
+
   // Identity of this material configuration, used to report each distinct one
   // once. Hashed over the GX stage configs, so two materials that differ only
   // in which texture object is bound collapse together - which is what we want,
@@ -1455,13 +1469,15 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
         hintDecision = "skip:unsafeCurrent";
       }
       if (!alreadyPlain && currentSafe) {
-        IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId);
+        uint32_t hintTexRepIndex = 0;
+        IDirect3DBaseTexture9* tex = resolve_texmap(albedoStage.texMapId, &hintTexRepIndex);
         if (tex == nullptr) {
           hintDecision = "skip:noTexture";
         }
         if (tex != nullptr) {
           hintDecision = "emitted";
           hintTexture = tex;
+          noteTexRep(d3dStage, hintTexRepIndex);
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, albedoStage.texMapId);
           set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, albedoStage.texCoordId, draw));
@@ -1573,10 +1589,12 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       // candidate and keeps only two per draw, so duplicates can crowd out a
       // second real texture.
       if (hasTexture && (op_reads(colorOp, D3DTA_TEXTURE) || op_reads(alphaOp, D3DTA_TEXTURE))) {
-        IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId);
+        uint32_t stageTexRepIndex = 0;
+        IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId, &stageTexRepIndex);
         set_texture(d3dStage, tex);
         if (tex != nullptr) {
           apply_sampler(d3dStage, stage.texMapId);
+          noteTexRep(d3dStage, stageTexRepIndex);
         }
         set_tss(d3dStage, D3DTSS_TEXCOORDINDEX, apply_texgen(d3dStage, stage.texCoordId, draw));
       } else {
@@ -1721,7 +1739,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      albedo.vertexColorIsMaterial ? 1.f : 0.f,
                      selfLit.evaluated ? 1.f : 0.f,
                      selfLit.colorAuthored ? 1.f : 0.f,
-                     selfLit.readsRaster ? 0.f : 1.f);
+                     selfLit.readsRaster ? 0.f : 1.f,
+                     albedoTexRepIndex);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1750,7 +1769,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
              "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
-             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} grp={}",
+             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} texrep={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1765,6 +1784,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              rampWhy, rampOther,
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
+             albedoTexRepIndex,
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction

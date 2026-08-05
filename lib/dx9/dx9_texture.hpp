@@ -17,7 +17,14 @@ void texture_cache_release_default_pool() noexcept;
 // Resolves the texture bound to a GX texmap (static / palette / EFB-copy
 // placeholder), creating + caching the D3D9 texture on demand. May return
 // nullptr (draw binds no texture; TEV mapper falls back accordingly).
-IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept;
+//
+// outRemixIndex, when non-null, receives the 1-based index of the HD replacement registered
+// for this texture, or 0 for none. The replacement is deliberately NOT uploaded here: the
+// D3D9 texture stays the original so its Remix hash - and therefore its entry in Remix's
+// texture tagging grid, and every rtx.conf category keyed on it - is identical to a run with
+// no pack installed. The index travels to the fork in D3DMATERIAL9::Ambient.g and the fork
+// substitutes the loaded file at draw time. docs/dx9/texture-replacements.md.
+IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id, uint32_t* outRemixIndex = nullptr) noexcept;
 
 // Applies wrap/filter/LOD sampler state for the texmap onto a D3D stage.
 void apply_sampler(uint32_t stage, GXTexMapID id) noexcept;
