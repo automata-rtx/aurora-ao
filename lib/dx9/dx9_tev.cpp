@@ -1740,7 +1740,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.evaluated ? 1.f : 0.f,
                      selfLit.colorAuthored ? 1.f : 0.f,
                      selfLit.readsRaster ? 0.f : 1.f,
-                     albedoTexRepIndex);
+                     albedoTexRepIndex,
+                     albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state

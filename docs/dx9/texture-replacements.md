@@ -1,278 +1,211 @@
 # HD texture packs on the D3D9 backend
 
-**Status: investigation, no code written.** Everything below is read out of the
-three repos at the commits named at the end. Where a claim is inference rather
-than something read, it says so.
+**Implemented 2026-08-05. Syntax-checked on the aurora side; the fork and game
+sides are not buildable here. Nothing has been tested in game.**
 
-**Question asked:** can Dusklight's existing high-res texture replacements be
-fed through the fixed-function D3D9 stream so Remix picks them up, without the
-original low-res textures also reaching Remix's texture categorization list?
+Dusklight's Dolphin-format replacement packs now reach RTX Remix on the D3D9
+backend. **Their bytes never travel through D3D9.** The game's own textures are
+still what D3D9 uploads and therefore what Remix hashes, so texture tagging,
+`rtx.conf` categories and USD bindings behave exactly as they do with no pack
+installed. The pack is loaded by Remix from its own files and substituted at
+draw time.
 
-**Answer: yes.** The registry half already runs in D3D9 mode; only the
-consumption half is WebGPU-bound, and the seam to cut at is one function call
-above the wgpu upload. Because the substitution happens where the D3D9 texture
-is *created*, no `IDirect3DTexture9` is ever made for a replaced original, so
-Remix never hashes one and the categorization list does not grow at all.
-
-This document supersedes the dismissal in
-[`unsupported-effects.md`](unsupported-effects.md) #17 and
-[`architecture-notes.md`](architecture-notes.md) §Textures, both of which said
-aurora-side packs "only matter to the standalone image". That is right for
-path-traced surfaces and **wrong for the HUD** — see §2.
+This replaces an earlier revision of this document that proposed substituting
+the replacement bytes inside aurora at D3D9 texture creation. That design worked
+but cost every texture hash in the game; §7 says why it was dropped.
 
 ---
 
-## 1. What already works, and what does not
+## 1. Why not just upload the replacement to D3D9
 
-The replacement system splits cleanly into a **registry** (which file replaces
-which GX texture) and a **consumer** (turn that file into a GPU texture). Only
-the consumer is tied to WebGPU.
+Two reasons, one fatal.
 
-| Half | Where | Runs in D3D9 mode today? |
-| :-- | :-- | :-- |
-| Directory scan, filename parsing, key building, priority/wildcard resolution, LRU budget | `lib/gfx/texture_replacement.cpp` | **Yes.** Pure CPU; touches no wgpu symbol. |
-| Registration from the game | dusklight `src/dusk/texture_replacements.cpp` → `aurora::texture::load_replacement_directory` | **Yes.** `dusk::texture_replacements::reload()` is called at `src/m_Do/m_Do_main.cpp:701`, unconditionally once a backend other than `BACKEND_NULL` came up. |
-| Registration from mods | dusklight `src/dusk/mods/svc/texture.cpp:180,199` → `register_virtual_replacement` | **No — but not for a texture reason.** The mechanism is registry-only and would work; mod *discovery* is skipped wholesale on this backend (`m_Do_main.cpp:901`), so nothing ever calls it. See §5.5. |
-| Decode the file to CPU pixels | `load_file_replacement` / `load_virtual_replacement` (`texture_replacement.cpp:726-732`) → `gfx::ConvertedTexture` | **Yes.** DDS/PNG decode, no device involved. |
-| Upload to a GPU texture | `create_converted_texture_handle` (`texture_replacement.cpp:738`) → `g_device.CreateTexture` | **No.** `g_device` is never initialized in D3D9 mode. |
+**Format.** D3D9 takes A8R8G8B8, DXT1/3/5 and little else. Packs using BC7, BC5
+or ASTC cannot be expressed at all.
 
-So the registry is populated in D3D9 mode right now — from the user directory
-`<ConfigPath>/texture_replacements/`, which is the route an HD pack takes — and
-is simply never asked.
-The only callers of `find_replacement()` are `resolve_static_texture` and
-`resolve_static_palette_texture` in `lib/gx/gx.cpp:177,212`, both on the wgpu
-path. `lib/dx9/dx9_texture.cpp` goes straight from the GX source bytes to
-`convert_texture()` and never consults the registry.
+**Tagging, and this is the fatal one.** Remix hashes subresource 0 of every
+D3D9 texture (`d3d9_common_texture.cpp:666-689`) and feeds the result to
+`ImGUI::AddTexture`, which is the *sole* writer of `g_imguiTextureMap`
+(`dxvk_imgui.cpp:651`) — the map the texture categorization grid iterates
+(`:2360`). The same hash is what `rtx.conf` category lists and USD material
+bindings are keyed on, because `LegacyMaterialData::updateCachedHash()` is
+literally `m_cachedHash = colorTextures[0].getImageHash()`
+(`rtx_materials.h:1869`).
 
-**The seam is `ConvertedTexture`** (`lib/gfx/texture_convert.hpp`): format,
-width, height, mip count, and one packed byte blob. That is precisely what
-`dx9_texture.cpp` already consumes from `convert_texture()`. The public
-`find_replacement()` returns a `gfx::TextureHandle` (a wgpu texture) — one step
-too far.
+Change the bytes and every one of those moves. Installing a pack would silently
+invalidate a remaster; editing one texture in a pack would silently invalidate
+that material. Keeping the original in D3D9 is not a compromise here — it is the
+only arrangement in which the tags mean anything stable.
 
-## 2. Why this is worth doing even though "Remix replaces textures anyway"
+## 2. The mechanism
 
-Two reasons. The first is the one the existing docs missed.
+```
+aurora, load time    every file-backed replacement gets a dense 1-based index
+                     (ReplacementEntry::remixIndex, assigned at registration)
 
-### 2a. The HUD is rasterized, so Remix's replacement system never touches it
+game, first frames   enumerate_selected_replacements() -> for each entry:
+                       remixapi_CreateMaterial{ hash  = 0xD05C<<48 | index,
+                                                albedoTexture = <absolute .dds>,
+                                                pNext = MaterialInfoOpaqueEXT }
+                     16 per frame; the fork reads the DDS header synchronously
+                     on its CS thread, so a whole pack in one frame is a hitch
 
-`D3D9Rtx::isRenderingUI()` (`src/d3d9/d3d9_rtx.cpp:561`) classifies a draw as UI
-when the projection is orthographic with z-write off — `rtx.orthographicIsUI`
-defaults to `true` (`src/d3d9/d3d9_rtx.h:40`). Dusklight's HUD is exactly that,
-which is why the camera split is already skipped for ortho draws (progress §3.13).
+aurora, per draw     resolve_texmap() reports the index for the texture it just
+                     resolved; the lowest bound stage wins
+                     -> D3DMATERIAL9::Ambient.g = index, Ambient.b = its stage
 
-UI draws are rasterized on top of the traced image; they never reach
-`getReplacementMaterial` (`rtx_scene_manager.cpp:791`), which is on the
-path-traced material path. **So a Remix USD mod cannot sharpen the HUD.** The
-pixels Remix rasterizes are the pixels we put in the D3D9 texture, and nothing
-else. Feeding the HD pack through D3D9 is the only lever there is.
-
-A useful side effect: because the classification is *projection*-based and not
-hash-based, changing HUD texture contents does not disturb UI detection. (The
-hash-keyed `rtx.uiTextures` set is the other route into `isRenderingUI` and we
-do not rely on it.)
-
-### 2b. For path-traced surfaces it removes albedo from the authoring job
-
-`getReplacementMaterial` is keyed on `LegacyMaterialData::getHash()`, and that
-hash is literally the stage-0 texture's content hash — `rtx_materials.h:1869`:
-
-```cpp
-void updateCachedHash() {
-  m_cachedHash = colorTextures[0].getImageHash();
-}
+fork, per draw
+  ray-traced         determineMaterialData(): overwrite AlbedoOpacityTexture on
+                     the already-converted legacy material
+  rasterized (HUD)   D3D9DeviceEx::BindTexture(): bind the loaded view instead
+                     of the game's own
 ```
 
-So if the D3D9 texture already carries HD albedo, a Remix material replacement
-for that hash only needs to supply normal / roughness / metalness. That is the
-stated goal, and it follows directly.
+**`remixapi_CreateMaterial` is used purely as a file loader.** Its material is
+never bound as a material. It is the only tested path in this runtime from a
+file path to a resident `TextureRef`, it already carries the `.dds`-only gate,
+and its handle is caller-chosen (`info->hash` verbatim), so we can namespace it.
 
-## 3. Keeping the originals out of Remix's categorization list
+**Why an index rather than a hash join.** Aurora would otherwise have to
+reproduce Remix's `XXH3` over subresource 0, which depends on Remix's mip
+packing, our `LockRect` pitch, and `rtx.useObsoleteHashOnTextureUpload` staying
+false. None of those is a contract. The index is a number aurora owns.
 
-The concern is correct and this project has already been bitten by the same
-mechanism (progress §3.5: "VRAM climb past 32 GB and the categorization list
-flicker"). The chain, read end to end:
+## 3. Two substitution sites, because Remix splits the frame
 
-1. `D3D9CommonTexture::SetupForRtxFrom` (`src/d3d9/d3d9_common_texture.cpp:666-690`)
-   hashes **subresource 0 only**, `XXH3_64bits(buffer->mapPtr(0), buffer->info().size)`.
-2. It then calls `ImGUI::AddTexture(imageHash, …)` (`:688`).
-3. `ImGUI::AddTexture` (`src/dxvk/imgui/dxvk_imgui.cpp:651`) inserts into
-   `g_imguiTextureMap` (`:171`) — one entry per distinct hash.
-4. `showTextureSelectionGrid` (`:2326`) iterates that map to build the
-   categorization grid, and it is not free at scale: when it runs out of
-   `VkDescriptorPoolCreateInfo::maxSets` it logs and **truncates the list**
-   (`:2412`).
+This is the part that is easy to get wrong. **A UI draw never reaches material
+resolution at all.** `makeDrawCallType` returns `{Rasterized, true}` for it
+(`d3d9_rtx.cpp:519-524`), `internalPrepareDraw` returns
+`PreserveDrawCallAndItsState`, and the draw then samples the view that
+`BindTexture` bound. No material of any kind is consulted.
 
-An entry is removed only by `ClearHash()`, i.e. when the D3D9 texture dies.
+So substituting only in `determineMaterialData` would leave the **HUD** — one of
+the two things that still has to rasterize correctly — at the game's own
+resolution, which is the single biggest thing a pack is wanted for. Hence the
+second site.
 
-**Therefore: substitute at creation, not after.** If `resolve_texmap` builds the
-D3D9 texture from the replacement pixels instead of the GX pixels, no D3D9
-texture object exists for the original, so steps 1-4 never run for it. The list
-holds exactly the same *number* of entries as today; only the contents and the
-hashes change. Nothing extra to suppress.
+Classification is not aurora's problem and deliberately so: the fork already
+decides, per draw, before either site runs. A texture used in both a HUD draw
+and a world draw needs no decision — whichever site the draw reaches finds the
+same handle.
 
-Note the scope of "not in memory": the GX source bytes stay in the game's own
-asset heap, because they are the key the replacement is looked up by. They are
-never uploaded, never hashed by Remix, and never occupy VRAM.
+**`Ambient.b` carries the stage the index refers to.** Only *dirty* textures
+rebind, so a multi-texture draw can rebind a stage this material's index says
+nothing about; without the stage check that bind would take the albedo's
+replacement, which is the wrong texture rather than a missing one. The
+consequence is that on the rasterized path only the albedo stage is
+substituted — a missed improvement on multi-texture UI draws, not a wrong pixel.
 
-## 4. Shape of the change
+## 4. What this costs, and what it does not
 
-Two files, plus one invalidation hook.
+**It does not cost hash stability.** Aurora's upload path is untouched. Pack on
+and pack off produce the same `tex0hash` values for the same scene, which is
+also the cheapest way to check this has not regressed.
 
-**1. `lib/gfx/texture_replacement.{hpp,cpp}` — add a backend-neutral accessor.**
-Something like `find_replacement_pixels(obj[, tlut])` returning the decoded CPU
-blob. It reuses `find_source_replacement_key_locked`, `select_entry`, the
-wildcard rules and the LRU budget unchanged; only the terminal step differs
-(`create_converted_texture_handle` → return the bytes).
+**It does not grow the categorization list.** No D3D9 texture is created for a
+replacement, so nothing new can enter `g_imguiTextureMap`. The list is the same
+length it is today, holding the same textures.
 
-Returning `gfx::ConvertedTexture` directly is fine, despite it carrying a
-`wgpu::TextureFormat`. No file under `lib/dx9/` mentions wgpu in its own source,
-but every one of them already includes the Dawn headers transitively:
-`dx9_internal.hpp` → `lib/gx/gx.hpp` → `lib/gfx/common.hpp` →
-`<webgpu/webgpu_cpp.h>`. So this adds no coupling that is not there today, and
-the accessor can hand back the loader's own struct.
+**It does cost `.dds`.** Remix's asset loader rejects anything else
+(`rtx_asset_data_manager.cpp:578-591`) while aurora's registry accepts `.png`
+too. PNG entries are skipped with a bounded log rather than failing quietly.
 
-*(One harness caveat: the MinGW syntax check shims Dawn, so whether a
-`wgpu::TextureFormat` switch in `dx9_texture.cpp` compiles under it depends on
-how complete that shim's enum is. A real build is unaffected.)*
+**Pack rules that follow:**
 
-The cache in `s_cacheByKey` currently stores a `TextureHandle`; for the D3D9
-path it would have to hold the CPU blob instead. Two backends never run at once,
-so a variant or a mode switch is enough — but this is the one part of the change
-that is not purely additive.
-
-**2. `lib/dx9/dx9_texture.cpp` — consult it in `resolve_texmap` (`:475`).**
-After the `texObjId` fast path and after `ContentKey` is computed
-(`make_content_key`, `:166`), before `build_static` / `build_palette` (`:303`,
-`:322`). On a hit, create the D3D9 texture from the *replacement's* dims, mip
-count and format; on a miss, exactly today's behaviour.
-
-Memoize the decision on `ContentKey`, so the lookup runs once per distinct
-content rather than once per draw. `ContentKey` hashes the whole source mip
-chain, which subsumes the base level the replacement key is built from, so equal
-`ContentKey`s mean the same replacement decision — to exactly the extent that
-the existing content store is already trusted not to collide. No new risk, but
-it is a hash, not a byte comparison. (This does not make the *first* lookup
-free; see §5.4.)
-
-**3. Cache invalidation.** Every registry mutation calls
-`clear_static_texture_cache()` (`texture_replacement.cpp:1036,1074,1102,1128,1134,1169`),
-which sets a flag consumed **only** in `lib/gx/gx.cpp:163,197` — the wgpu path.
-Without a D3D9 equivalent, the graphics-tuner toggle
-(`dusk/ui/graphics_tuner.cpp:102` → `texture_replacements::set_enabled`) and mod
-load/unload silently do nothing on d3d9. `gx.cpp:414` already calls into
-`dx9::on_evict_copy_texture`, so there is an established pattern for the hook.
-
-Whether a runtime toggle is even *desirable* is a separate question — see §5.1.
-
-## 5. What it costs
-
-### 5.1 Hash churn is the real price, and it is not small
-
-Because Remix's material hash *is* the bytes we upload (§2b), and because
-`rtx.conf` category lists (`rtx.uiTextures`, `rtx.ignoreTextures`, …) are keyed
-the same way, **every USD material binding and every hash-keyed rtx.conf entry
-is a function of the pack's file contents.** Enabling the pack re-keys the whole
-scene once. Editing one pack texture re-keys that one material.
-
-Practical consequence: choose the pack, freeze it, *then* author the Remix
-side — and treat the pack as part of the game↔fork protocol rather than as a
-user-facing toggle. A settings switch that silently invalidates a remaster is
-worse than no switch.
-
-This cuts with the project's "translate, don't tag" rule rather than against it:
-we are not adding tags, we are changing what the existing hashes are derived
-from. But it is the reason this should not ship as a casual option.
-
-### 5.2 Format coverage
-
-| Loader produces | D3D9 target | Notes |
-| :-- | :-- | :-- |
-| `RGBA8Unorm` (all PNG, `png_io.cpp:93`; some DDS) | `D3DFMT_A8R8G8B8` | `upload_rgba8` already does the swizzle. |
-| `BGRA8Unorm` (DDS) | `D3DFMT_A8R8G8B8` | Already in D3D9 channel order — straight copy. |
-| `BC1RGBAUnorm` | `D3DFMT_DXT1` | Direct. |
-| `BC3RGBAUnorm` | `D3DFMT_DXT5` | Direct. |
-| `BC5RGUnorm`, `BC7RGBAUnorm`, all ASTC (`dds_io.cpp:143-227`) | — | **No D3D9 equivalent.** CPU-decode or reject with a bounded log. |
-
-Dolphin-format HD packs are overwhelmingly PNG, DXT1 and DXT5, so coverage is
-good. *(Inference: from the format conventions of Dolphin packs, not measured
-against any specific Twilight Princess pack.)*
-
-### 5.3 Memory is not obviously worse and can be better
-
-Every GC texture already reaches D3D9 as 32bpp `D3DFMT_A8R8G8B8`:
-`convert_texture` decompresses CMPR to RGBA8 (`texture_convert.cpp:632`) and
-`create_from_rgba8` (`dx9_texture.cpp:285`) always creates `A8R8G8B8`. A 256×256
-CMPR texture is 32 KB on disc and **256 KB in D3D9 today**. A 512×512 DXT1
-replacement is 128 KB — half the current cost at four times the pixels.
-
-Uncompressed packs are the expensive case: 4× linear is 16× the bytes, and it is
-charged twice, because `D3DPOOL_MANAGED` maps to
-`D3D9_COMMON_TEXTURE_MAP_MODE_BACKED` in the fork
-(`src/d3d9/d3d9_common_texture.h:549-557`), which keeps a host-memory buffer
-alongside the `VkImage` — and that buffer is what Remix hashes, so it cannot
-simply be dropped. **Recommend DDS/BC packs over PNG packs**, and say so
-wherever this gets documented for users.
-
-### 5.4 First-touch decode lands on the game thread
-
-`find_replacement` loads and decodes the file synchronously while holding
-`s_registryMutex`. On the wgpu path that already happens, but in D3D9 mode
-`resolve_texmap` runs inside the FIFO drain between `BeginScene`/`EndScene`, so
-a first sighting hitches in a worse place. Not a blocker; worth a preload pass
-or an async decode if it shows up.
-
-### 5.5 Mod-supplied replacements would still not load
-
-Mods are disabled wholesale on this backend: `m_Do_main.cpp:901` drops every mod
-search directory when the backend is D3D9, because mod graphics stages are inert
-without WebGPU and a native mod that touches the renderer crashed the process at
-load. So `register_virtual_replacement` never gets called and a texture pack
-shipped *inside a mod* does not reach the registry — regardless of anything in
-this document.
-
-Only the user directory `<ConfigPath>/texture_replacements/` works on d3d9.
-Widening that would mean letting texture-only mods through the discovery gate,
-which is a separate change with its own crash-risk argument to make. Worth
-knowing before promising pack authors anything.
-
-### 5.6 What this does not fix
-
-Nothing here changes EFB copies, palette-format *dynamic* textures, or anything
-else in `unsupported-effects.md`. Replacements are for static GX textures only —
-which is what the packs address anyway.
-
-## 6. If it is implemented, what would tell us it worked
-
-Per project rule 4, the instrumentation to add alongside:
-
-- One bounded, deduplicated log line per replaced texture at creation:
-  source key (the `tex1_…` name, `build_texture_replacement_name` already
-  formats it), replacement dims/format, and the resulting D3D9 format. Capped
-  with a truncation notice.
-- A one-line summary at the end of the first scene: N textures resolved, M
-  replaced, K rejected for unsupported format.
-- `matrep.*` already logs texture size and format per material
-  ([`material-report.md`](material-report.md)); replaced textures will show
-  their new dimensions there, which is the cross-check that the substitution
-  reached Remix rather than just the D3D9 cache.
-
-Regression signature if it goes wrong: HUD and world textures render at the
-right *size* but wrong *content* (a mis-sized upload reading past the blob), or
-Remix's texture list doubles in length (substitution happening after creation
-instead of instead of it — the exact failure this design exists to avoid).
-
----
-
-## Sources
-
-Read at:
-
-| Repo | Commit |
+| Rule | Why |
 | :-- | :-- |
-| `aurora-ao` | `a0f31ba` (`Fixed-Function-dev`) |
-| `dusklight-ao` | `8ea5aa1` (`Fixed-Function-dev`) |
-| `dxvk-remix` | `3ae3dcd` (`Fixed-Function-dev`) |
+| `.dds` only | Remix's loader accepts nothing else |
+| Ship mips | rasterized draws generate no sampler feedback; `forceFullMips` is on by default to compensate, but a single-mip large texture still warns |
+| BC1/BC2/BC3/BC4/BC5/BC7 are fine | loaded by Remix, not by D3D9 |
+| ASTC is unverified | the adapter format gate almost certainly rejects it on desktop GPUs. Do not design around it |
+| No `$` TLUT wildcards on animated-palette art | one file would collapse every palette phase onto one image |
 
-Nothing in this document was tested in game, and no code was changed to produce
-it.
+## 5. Where the code is
+
+| Repo | File | What |
+| :-- | :-- | :-- |
+| aurora | `include/aurora/texture.hpp` | `ReplacementDescriptor`, `enumerate_selected_replacements()` |
+| aurora | `lib/gfx/texture_replacement.{hpp,cpp}` | `remixIndex` on each entry; `find_replacement_index()`, which resolves the key without decoding a file or touching a GPU |
+| aurora | `lib/dx9/dx9_texture.cpp` | `ContentEntry::remixIndex`, resolved once per distinct content; `resolve_texmap()` out-param |
+| aurora | `lib/dx9/dx9_tev.cpp` | records the lowest bound stage's index; `matrep.sum texrep=` |
+| aurora | `lib/dx9/dx9_internal.hpp` | `Ambient.g` = index, `Ambient.b` = stage |
+| dusklight | `src/dusk/remix_bridge.cpp` | `updateTextureReplacements()`, the creation budget, `env.texrep*` readouts |
+| dusklight | `src/dusk/settings.*` | `game.remixTextureReplacements`, launch-only |
+| fork | `rtx_dusklight_texrep.{h,cpp}` | handle decode, residency, both substitutions, counters |
+| fork | `rtx_scene_manager.cpp` | ray-traced site + the preserve-path guard |
+| fork | `d3d9_device.cpp` | rasterized site |
+
+**Protocol 7.** The game and the fork are a single versioned protocol; build
+both from the same commit point.
+
+## 6. Failure modes and their signatures
+
+| Failure | What it looks like | How to tell |
+| :-- | :-- | :-- |
+| Game never handed the pack over | pack does nothing | overlay: `Game: N selected, 0 handed over`. If N is 0 too, the directory is empty or nothing parsed |
+| Fork ignored it | pack does nothing | overlay: handed over > 0 but `0 draws tagged` — the D3D9 stream is not carrying the index, i.e. an aurora older than the fork |
+| PNG pack | pack does nothing, log is loud | `texrep: skipping <file> - Remix loads .dds only`, and `texrepSkipped` climbs |
+| Wrong stage indexed | a multi-texture surface sharpens the wrong layer | `matrep.sum texrep=` versus which texture the same line reports as the albedo |
+| Still streaming | surfaces sharpen a moment after appearing | `still loading` in the overlay. By design — the alternative is binding an empty slot, which renders black |
+| Preserve-path latch | a room stays low-res for its whole life, sharpens after a reload | this is what the `awaitingReplacement` guard exists to prevent; if seen, that guard is not firing |
+| HUD unchanged while the world sharpens | HUD soft | `rtx.dusklight.texrep.applyToRaster` off, or the HUD draw is multi-texture and the pack replaces a non-albedo stage |
+| Tagging broken | a texture loses its grid entry, or an `rtx.conf` category stops working | **should be impossible here.** `tex0hash=` differing between pack-on and pack-off means aurora's upload path was changed |
+| Launch hitch | stutter proportional to pack size | `handed over` climbing across frames is intended; a single-frame jump means the budget is not applied |
+
+**Known gap, not addressed:** with `TerrainBaker::enableBaking()` on, terrain
+bakes the legacy texture — the baker consults `getReplacementMaterial` only.
+Signature: terrain stays low-res while everything else sharpens.
+
+## 7. Rejected alternatives
+
+- **Substitute the replacement bytes into D3D9** (the earlier revision of this
+  document). Simpler, and it is the only way to sharpen a *non-albedo* HUD
+  stage — but it re-keys every texture hash in the game, so installing or
+  editing a pack silently invalidates every tag, category and USD binding.
+  Also cannot carry BC7/BC5/ASTC.
+- **Return external materials from `getReplacementMaterial`.**
+  `determineMaterialData` would then call `mergeLegacyMaterial` on them, and API
+  materials are built with all dirty flags clear — the merge copies a
+  default-constructed `OpaqueMaterialData` over every field, erasing the
+  high-res texture. It would look exactly like "the replacement did not load".
+  The one-field swap after `as<OpaqueMaterialData>()` also preserves the sampler
+  override and the ignore-alpha flag, both of which the USD replacement path
+  drops.
+- **Submit the geometry through `remixapi_CreateMesh`/`DrawInstance`.** Loses
+  tagging entirely (`setupCategoriesForTexture` is never called on that path),
+  and loses the two-colour ramp and the whole self-illumination rule, because
+  both read `D3DMATERIAL9` and the API's instance structs have no field for it.
+  Every lava and fire surface would stop glowing, silently.
+- **A 1×1 or synthetic D3D9 proxy, to keep the original out of memory.**
+  Byte-identical proxies collapse onto one hash, so many textures become one
+  grid entry; per-texel alpha is destroyed, and the D3D9 alpha test compares it;
+  and for UI draws the proxy is literally what the player sees.
+- **Splitting policy in aurora on `g_gxState.projType`.** Aurora's texture cache
+  is content-keyed across draws, so a texture used in both 2D and 3D would have
+  to be built twice under two keys, and UI hashes would churn with the pack.
+
+## 8. Verified / inferred / unknown
+
+**Verified in source:** the tagging chain and that it runs before any material
+work; that `getReplacementMaterial` cannot reach `m_extMaterials`; that a UI
+draw consults no material; that `remixapi_MaterialInfo` takes paths only, that
+only `.dds` is accepted, that the read is synchronous on the CS thread, that the
+handle is `info->hash` verbatim with 0 rejected, and that re-registering a
+handle is ignored rather than an update; that `topath` copies the path
+synchronously, so the caller's wide string need not outlive the call; that
+`makePreloadSource` drops every texture path unless a material EXT is chained;
+that `ManagedTexture::requestMips` is atomic and `MAX_MIPS` is 32.
+
+**Inferred, not measured:** that the lowest bound D3D9 stage is always the one
+the fork assigns `colorTextures[0]`; that `tryRequestMips` is sufficient to hold
+a raster-substituted texture at full resolution against the streamer's own
+recomputation; that a Dolphin-format pack replaces the GX *source* texture and
+so should still be modulated by the TEV op, tFactor and the ramp.
+
+**Unknown:** whether `m_extMaterials` survives a D3D9 device recreation —
+nothing in either repo establishes it, so the game re-creates on device change
+rather than assume; whether ASTC-in-DDS is accepted anywhere in the chain.
+
+**Nothing here has been run.** The aurora half is syntax-checked in both the
+d3d9-on and d3d9-off configs; the fork and game halves are not buildable in this
+container.

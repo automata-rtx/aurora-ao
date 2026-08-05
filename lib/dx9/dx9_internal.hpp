@@ -203,6 +203,12 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //                 (a float holds every integer to 2^24). The fork joins it against the
 //                 materials the game created through the Remix API and substitutes the
 //                 loaded file. docs/dx9/texture-replacements.md
+//   Ambient.b     the D3D9 stage Ambient.g refers to. Only meaningful when Ambient.g is
+//                 non-zero. The ray-traced path does not need it - Remix takes its albedo
+//                 from the lowest sampling stage, which is the one we measured - but the
+//                 rasterized path substitutes per texture bind, and a multi-texture draw
+//                 can rebind a *different* stage while this material is current. Without
+//                 the stage that bind would take the albedo's replacement
 //   Specular.r    1 when the vertex colour stream is authored material
 //                 colour rather than baked lighting                §7c
 //   Specular.g    1 when aurora evaluated a presentable colour here. 0 for the
@@ -216,11 +222,12 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
-                               uint32_t texRepIndex) noexcept {
+                               uint32_t texRepIndex, uint32_t texRepStage) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
-  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, static_cast<float>(texRepIndex), 0.f, 0.f};
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, static_cast<float>(texRepIndex),
+                              static_cast<float>(texRepStage), 0.f};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
