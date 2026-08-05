@@ -251,6 +251,43 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
+### 3.29 — HD texture packs on d3d9: feasible, and #17 was wrong about the HUD (2026-08-05)
+
+**Investigation only. No code changed.**
+[`texture-replacements.md`](texture-replacements.md) is the write-up.
+
+The registry half of the replacement system **already runs in D3D9 mode** —
+`dusk::texture_replacements::reload()` fires at `m_Do_main.cpp:701` for any
+backend but `BACKEND_NULL`, and registration never touches wgpu. What is missing
+is the consumer: `find_replacement()` returns a wgpu `TextureHandle` built by
+`g_device.CreateTexture`, and `lib/dx9/dx9_texture.cpp` never asks. The seam is
+one call earlier, at the `gfx::ConvertedTexture` the DDS/PNG loaders already
+produce.
+
+**The originals stay out of Remix's list for free, if the substitution happens
+at creation.** Remix hashes a D3D9 texture in `SetupForRtxFrom`
+(`d3d9_common_texture.cpp:666`) and feeds `g_imguiTextureMap` via
+`ImGUI::AddTexture`; that map *is* the categorization grid, and it truncates
+when it outruns the descriptor pool. Build the D3D9 texture from the
+replacement instead of from the GX bytes and no texture object exists for the
+original, so nothing to hash and nothing to suppress. Entry count is unchanged
+from today.
+
+**Correction to `unsupported-effects.md` #17 and `architecture-notes.md`
+§Textures**, both of which said aurora-side packs "only matter to the standalone
+image". True for path-traced surfaces; **false for the HUD.** `isRenderingUI`
+(`d3d9_rtx.cpp:561`, `orthographicIsUI` default true) classifies our HUD by
+projection, those draws are rasterized, and rasterized draws never reach
+`getReplacementMaterial`. The D3D9 texture is the only lever on HUD fidelity
+that exists. Both documents corrected.
+
+**The cost to weigh before any code:** `LegacyMaterialData::updateCachedHash()`
+is `m_cachedHash = colorTextures[0].getImageHash()` (`rtx_materials.h:1869`), so
+every USD binding and every hash-keyed `rtx.conf` entry is a function of the
+pack's bytes. Enabling the pack re-keys the scene once; editing one pack texture
+re-keys that material. Pick the pack, freeze it, then author — and treat it as
+part of the protocol rather than as a runtime toggle.
+
 ### 3.28 — self-lit is the rule; the score is retired (2026-08-05)
 
 **The score never should have been the cut.** Three revisions used one and all

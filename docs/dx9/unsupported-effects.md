@@ -35,7 +35,7 @@ configuration.
 | 14 | **Z textures / depth-format texture reads** (`GX_TF_Z*`) | Depth-of-field-ish effects | Not bound (black) | Post effects dropped by design |
 | 15 | **Per-vertex texture-matrix selection** (`GX_VA_TEXnMTXIDX`) | Env-mapped skinned parts | Stream consumed, effect ignored (uses per-draw matrix) | Minor; material replacement |
 | 16 | **GX lighting fidelity** (per-vertex GC light model incl. attnFn/diffFn specifics) | World/actor lighting where not vertex-baked | v1 unlit (material color × vertex color); a D3DLIGHT9 approximation was never wanted | Remix relights everything, so the GC light model is not the thing to reproduce. What matters is not double-counting: vertex colour is forwarded only where GX says the stream is authored material colour rather than baked light, per draw ([`remix-material-interface.md`](remix-material-interface.md) §7c) |
-| 17 | **Texture replacement packs (Dolphin-format)** on d3d9 | HD pack users | Not loaded in v1 | Remix replacement system supersedes |
+| 17 | **Texture replacement packs (Dolphin-format)** on d3d9 | HD pack users | Registry is populated in d3d9 mode but never consulted; `lib/dx9/dx9_texture.cpp` builds from the GX bytes | **Corrected 2026-08-05.** "Remix supersedes this" is true for path-traced surfaces and **false for the HUD**, which Remix rasterizes and never runs through `getReplacementMaterial` — the D3D9 texture is the only lever on HUD fidelity. Feasibility, design and costs: [`texture-replacements.md`](texture-replacements.md) |
 | 18 | **Bloom / post-processing chain** | dusk sky glow etc. | Skipped by design (project rule) | Remix bloom/tonemap |
 
 ## RTX Remix runtime limitations (not fixed-function limits)

@@ -126,13 +126,21 @@ From `lib/gx/gx.hpp` (`GXState`):
 - Cache identity: `texObjId` + `texDataVersion` (and TLUT equivalents) —
   destroyed via `GX_AURORA_DESTROY_TEXOBJ/TLUT` (hook `evict_texture_object`).
 - Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and
-  DDS loading exist; v1 of the D3D9 backend skips replacement packs
-  (documented), can be added later via the same DDS decoding. Not a gap under
-  Remix: replacement is Remix's own job there, and since 2026-08-04 that
-  extends to API-submitted assets too (content-derived mesh hashes +
-  `submitExternalDraw` consulting `getReplacementMaterial` in the fork —
-  CI-green, no capture taken in game yet).
-  Aurora-side packs would only matter to the standalone image.
+  DDS loading exist; v1 of the D3D9 backend skips replacement packs. The
+  *registry* is populated in D3D9 mode regardless (registration is pure CPU);
+  what is missing is the consumer — `find_replacement()` returns a wgpu
+  `TextureHandle`, and `lib/dx9/dx9_texture.cpp` goes straight from the GX
+  source bytes to `convert_texture()`.
+  **Corrected 2026-08-05:** this used to end "aurora-side packs would only
+  matter to the standalone image". That holds for path-traced surfaces —
+  replacement is Remix's own job there, and since 2026-08-04 that extends to
+  API-submitted assets too (content-derived mesh hashes + `submitExternalDraw`
+  consulting `getReplacementMaterial` in the fork — CI-green, no capture taken
+  in game yet). It does **not** hold for the HUD: Remix rasterizes UI draws and
+  never runs them through `getReplacementMaterial`, so the D3D9 texture is the
+  only thing that decides HUD fidelity. Full investigation, including how to
+  keep the originals out of Remix's categorization list:
+  [`texture-replacements.md`](texture-replacements.md).
 - EFB copies: `GXCopyTex` → BP 0x52 → `copy_tex(dest, clear)` — the wgpu path
   resolves the current pass into a texture keyed by the destination pointer
   (`copyTextures`). Game uses this for shadow silhouettes (packed RGBA),
