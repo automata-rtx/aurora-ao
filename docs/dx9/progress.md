@@ -247,6 +247,29 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
+### 3.26 — the glow is the albedo (2026-08-04)
+
+**Tested.** The lava needed the "Emit The Texture" toggle to look right and was
+otherwise "an almost solid red"; the heart needed it too. The cause was the
+design, not tuning: a flat emissive constant at intensity 2 swamps the albedo,
+so a molten surface reads as one uniform hot colour with no crust. The texture
+toggle only helped because it happened to vary across the surface.
+
+So the constant is gone. A self-lit surface glows the colour it appears, and
+after 3.24 that colour is already computed one block earlier in the shader —
+`emissiveColor = albedo`. GX has no emissive term to disagree with the albedo,
+so reconstructing one separately only invited it to be wrong.
+
+Net removal: the pre-image inversion, the `invertible=` log field and the
+`useTextureColor` option all existed to get a constant through the albedo's
+texture op intact, and none survives.
+
+Also settled by the same session: **the lava scores 0.25, on the over-range
+signal alone** (`selfLit=over`) — the TEV-scale evidence, which is the one that
+actually finds it. `unlit` cannot, because the lava has GX lighting on.
+
+**Syntax-checked**, both configs. Untested in game.
+
 ### 3.25 — vertex colour, forwarded selectively (2026-08-04)
 
 3.21 stopped advertising `DIFFUSE` altogether because vertex colour carries
@@ -337,7 +360,8 @@ Three changes:
 3. **A real bug in 3.22's glow colour**, found by reading the shader rather than
    by testing: `emissiveColorConstant` is re-run through the *albedo's* texture
    op, so the glow arrived as `colour + tFactor`. The fork now sets the
-   pre-image and declines when the op cannot be inverted.
+   pre-image and declines when the op cannot be inverted. **(Superseded by
+   3.26: the glow is the albedo, so there is no constant to pre-invert.)**
 
 **Syntax-checked** in both configs. Untested in game. Regression signature: the
 `grp=` push costs one short string per drawn process per frame — if frame time

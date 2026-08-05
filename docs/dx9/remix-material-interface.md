@@ -95,7 +95,7 @@ each is §0 applied — extend the fork rather than contort the stream.
 | Field | Carries | Read in the fork | Detail |
 | :-- | :-- | :-- | :-- |
 | `Specular.r` | per-draw verdict "the vertex stream is authored material colour" | `d3d9_rtx_utils.cpp` → `isVertexColorBakedLighting` | §7c |
-| `Emissive.rgb` | the glow colour, **pre-inverted** through the albedo's texture op | `rtx_instance_manager.cpp` | §9 |
+| `Emissive.rgb` | the colour the surface presents — used for the brightness/saturation cut only, not as the glow | `rtx_instance_manager.cpp` | §9 |
 | `Emissive.a` | the self-illumination evidence score, 0..1 | cut at `rtx.dusklight.emissive.threshold` | §9 |
 | `Diffuse.rgb` | the ramp endpoint TFACTOR does not hold → `RtSurface::rampOtherColor` | `rtx_instance_manager.cpp` | §10 |
 | `Diffuse.a` | "this material is a ramp" → `textureFlags` bit 15 | same | §10 |
@@ -393,14 +393,19 @@ see the identification section below, which exists to end that question.
 Free end to end: this backend keeps `D3DRS_LIGHTING` off so nothing reads a
 D3D9 material, and the fork was already copying the whole struct unread.
 
-**The trap:** `emissiveColorConstant` does not reach the shader untouched. The
-fixed-function block in `opaque_surface_material_interaction.slangh` runs the
-emissive colour through the **albedo's** texture op, substituting it for the
-texture sample — so setting the constant to the colour you want yields
-`op(colour, tFactor)` on screen. With `form=add:tint` that doubles the colour.
-The fork now sets the **pre-image** instead (`dusklightEmissive::preimage`) and
-declines to emit when the op cannot be inverted, rather than glowing the wrong
-colour silently. `invertible=0` in the `dusklight.emis` log marks that case.
+**What the glow colour is.** Not a constant — the **reconstructed albedo**.
+A self-lit surface glows the colour it appears, and after §10 that colour is
+already computed one block earlier in the shader, so the emissive path just
+takes it (`surface.emissiveFollowsAlbedo`, `textureFlags` bit 19).
+
+That was learned the expensive way on 2026-08-04. The first version set
+`emissiveColorConstant` to the presented colour, which meant inverting it
+through the albedo's texture op first, because the shader re-applies that op to
+whatever is set there. It worked and still looked wrong: **a flat colour at
+intensity 2 swamps the albedo**, so the Goron Mines lava read as one uniform hot
+wash with no crust, described in testing as "an almost solid red". Taking the
+albedo removed the constant, the inversion, the `invertible=` log field and the
+`useTextureColor` option in one go.
 
 ### Identification: `grp=`
 
@@ -422,20 +427,14 @@ noticeably, this is the first thing to suspect.
 The more chromatic endpoint of the ramp, ties going to the brighter one — the
 same rule §7b uses for the albedo tint.
 
-The glow is a **flat colour**, not the texture: `emissiveColorConstant` is
-overridden entirely by `emissiveColorTexture` when both are set, and this
-game's textures are usually intensity masks with the colour in a GX constant
-(§6), so a textured glow would come out white.
-`rtx.dusklight.emissive.useTextureColor` switches for a material whose texture
-really is the colour.
+The glow is not a separate colour at all — see "What the glow colour is" above.
 
 ### What is still not built
 
 The endpoint remains a small versioned export from the fork's `d3d9.dll`,
 called per draw, carrying resolved albedo and emissive directly. Emissive has a
-channel now, but it is a repurposed D3D9 field carrying one float of score
-whose value then has to be pre-inverted through an unrelated texture op. That
-is a fallback working hard, not a stated intent.
+channel now, but it is a repurposed D3D9 field carrying one float of score.
+That is a fallback working hard, not a stated intent.
 
 **The nearer prize was §7's two-colour ramp, and it has been taken** — §10 shows
 what a purpose-built channel plus a shader change buys, and it is the pattern

@@ -230,7 +230,7 @@ threshold to move and that is invisible if only acceptances are printed.
 
 ```
 dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
-               threshold=0.7 minLuma=0.25 minChroma=0.2 invertible=1
+               threshold=0.7 minLuma=0.25 minChroma=0.2
                verdict=emissive applied=1
 ```
 
@@ -242,7 +242,6 @@ dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
 | `score` | aurora's summed GX evidence, the same number as `emisScore` upstream |
 | `luma` / `chroma` | brightness and saturation of that colour |
 | `threshold` / `minLuma` / `minChroma` | the live cuts, printed so an old log can be read without knowing what they were set to |
-| `invertible` | 0 when the glow was declined because the albedo's texture op could not be inverted (see `remix-material-interface.md` §9). A silently wrong glow colour would be worse |
 | `verdict` | `emissive` or `rejected` |
 | `applied` | 0 when the verdict was `emissive` but the glow was declined or `rtx.dusklight.emissive.enable` is off |
 
