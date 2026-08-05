@@ -78,8 +78,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            shape=ramp out0=B80000 out1=FFFFFF usesTex=1 usesVtx=0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
-           vtxColor=default-white selfLit=unlit+reg emisScore=0.75
-           emisCol=B80000 emisEval=1 emisAuthored=1 blend=opaque
+           vtxColor=default-white selfLit=noRas+reg emisScore=0.75
+           emisCol=B80000 emisEval=1 emisAuthored=1 blend=opaque ras=0
            ramp=tfLow rampOther=F84040 grp=-
 ```
 
@@ -102,11 +102,12 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
 | **`grp`** | which piece of game code drew this, from a `GXPushDebugGroup` the game has open. **Currently always `-`** — see below |
-| **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
+| **`selfLit`** | which self-illumination evidence fired: `noRas`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring. **`noRas` means the TEV colour program never reads the lit channel** — not that lighting is off, which is a different thing and was scored by mistake until 2026-08-05 |
 | `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold`. **Zero is a real answer** — the Goron Mines lava scores it |
 | `emisCol` | the colour aurora says the surface presents |
 | `emisEval` | 1 when aurora evaluated a presentable colour here at all. 0 for HUD/orthographic and unevaluable draws, which the fork never considers however low its threshold goes. This is what lets a score of zero still be a candidate |
 | `emisAuthored` | 1 when that colour came entirely from TEV constants, with no vertex-stream contribution. The fork's `requireAuthoredColor` gate |
+| **`ras`** | 1 when some TEV colour stage reads `GX_CC_RASC`/`RASA`. Compare against `lit=` on the `matrep.k` line: they disagreed on 10 of 77 materials in one session, and where they disagree **this one is what the surface actually does** |
 | **`blend`** | the framebuffer blend: `off`, `opaque`, `alpha`, **`additive`**, **`additiveAlpha`**, `multiply`, `subtract`, `logic`, `other`. The two bold ones are the only unambiguous "this emits light" statement in GX, and Remix acts on them *before* the emissive score is consulted — see `remix-material-interface.md` §9 |
 | **`ramp`** | whether the two-colour ramp is reproduced exactly (§10): `tfLow` / `tfHigh` yes, `tfTaken` / `usesVtx` / `flat` / `unevaluable` no. Anything but `tfLow`/`tfHigh` means the material fell back to the single-op approximation |
 | `rampOther` | the endpoint TFACTOR does not carry |

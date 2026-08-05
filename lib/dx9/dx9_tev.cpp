@@ -1199,6 +1199,10 @@ struct SelfLitEvidence {
   // Always true at the one call site; the fork reads it to tell "aurora
   // evaluated this material and scored 0" apart from "no aurora present".
   bool evaluated = false;
+  // Whether the TEV colour program reads the rasterized (lit) channel at all.
+  // Reported alongside matrep.k's lit= because the two disagree on 10 of 77
+  // materials, and where they disagree this one is right.
+  bool readsRaster = false;
 };
 
 // Weights, measured rather than chosen: each fact alone is far too broad
@@ -1206,7 +1210,7 @@ struct SelfLitEvidence {
 // The fork's default cut (0.70) still passes the historical rule unlit+register;
 // lowering it admits the over-range materials on their own. Changing a weight
 // changes what that default means - bump both together (§9).
-constexpr float kScoreUnlit = 0.50f;     // GX lighting disabled for this channel
+constexpr float kScoreUnlit = 0.50f;     // TEV colour program never reads the lit channel
 constexpr float kScoreRegSrc = 0.25f;    // colour authored in a register, not per-vertex
 constexpr float kScoreOverRange = 0.25f; // a TEV stage scales past what GX can display
 
@@ -1228,9 +1232,34 @@ SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
   e.colorAuthored = !albedo.usesVertexColor;
 
   const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
-  const bool unlit = !chan.lightingEnabled;
-  // Unlit *with* a vertex-stream colour is this game's baked-lighting shape
-  // (§7c), so the register source is scored separately rather than required.
+
+  // "Takes no light" means the TEV *colour program* never reads the rasterized
+  // channel - not that the channel config says lighting is off. Measured
+  // 2026-08-05 over a Goron Mines session, and the difference is the whole
+  // defect: 10 of 77 materials have lighting enabled and still never read
+  // RASC, so their colour is fixed regardless of the lights. The Goron Mines
+  // lava is one of them, which is why it scored 0.00 for two sessions.
+  //
+  // The old test was also wrong in the other direction: lighting *disabled*
+  // with RASC read and matSrc=GX_SRC_VTX is this game's baked room lighting
+  // (§7c) - the opposite of an emitter - and it used to score the full 0.50.
+  bool readsRas = false;
+  for (uint32_t i = 0; i < std::max<uint32_t>(g_gxState.numTevStages, 1); ++i) {
+    const auto& cp = g_gxState.tevStages[i].colorPass;
+    for (const GXTevColorArg arg : {cp.a, cp.b, cp.c, cp.d}) {
+      if (arg == GX_CC_RASC || arg == GX_CC_RASA) {
+        readsRas = true;
+        break;
+      }
+    }
+    if (readsRas) {
+      break;
+    }
+  }
+  e.readsRaster = readsRas;
+  const bool unlit = !readsRas;
+  // Scored separately rather than required: a register source says the channel
+  // colour is authored rather than being §7c's per-vertex baked lighting.
   const bool regSrc = chan.matSrc == GX_SRC_REG;
   // A TEV scale above 1 multiplies the stage result past 1.0, which the console
   // then clamps. It is the only thing in GX that states "brighter than the
@@ -1246,8 +1275,10 @@ SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
 
   e.score = (unlit ? kScoreUnlit : 0.f) + (regSrc ? kScoreRegSrc : 0.f) +
             (overRange ? kScoreOverRange : 0.f);
-  e.why = unlit ? (regSrc ? (overRange ? "unlit+reg+over" : "unlit+reg")
-                          : (overRange ? "unlit+over" : "unlit"))
+  // "noRas" rather than "unlit": the fact scored is that the colour program
+  // never reads the lit channel, which is not the same as lighting being off.
+  e.why = unlit ? (regSrc ? (overRange ? "noRas+reg+over" : "noRas+reg")
+                          : (overRange ? "noRas+over" : "noRas"))
                 : (regSrc ? (overRange ? "reg+over" : "reg") : (overRange ? "over" : "none"));
 
   // The endpoint that carries the material's colour, same rule the albedo hint
@@ -1710,7 +1741,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
              "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
-             "blend={} ramp={} rampOther={:06X} vtxUse={} grp={}",
+             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1721,7 +1752,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
              selfLit.why, selfLit.score, selfLit.color, selfLit.evaluated ? 1 : 0,
-             selfLit.colorAuthored ? 1 : 0, blend_name(), rampWhy, rampOther,
+             selfLit.colorAuthored ? 1 : 0, blend_name(), selfLit.readsRaster ? 1 : 0,
+             rampWhy, rampOther,
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");

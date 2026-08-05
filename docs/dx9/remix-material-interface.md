@@ -364,11 +364,29 @@ feature exists for every GX fact reads zero.**
 | :-- | :-- |
 | 2026-08-03, mixed areas | 69 of 117 materials had GX lighting **disabled** — 59% of the scene. "Unlit" is far too broad to act on. |
 | 2026-08-04, Goron Mines | Every candidate lava material has `lit=1` — GX lighting **enabled**. "Unlit" also misses the surface the feature exists for. |
-| 2026-08-04 + 2026-08-05, same scene twice | The main lava ramp (`mk=D572C706…`, `mk=1C95BA4B…`, 32×32 `GX_TF_IA8`, `tfactor=FFFF0000`, ramp `FF0000 → FFFE63`) scores **0.00** — lighting on, channel colour from the vertex stream, no over-range stage. Identical in both runs. |
+| 2026-08-04 + 2026-08-05, same scene twice | The main lava ramp (`mk=D572C706…`, `mk=1C95BA4B…`, 32×32 `GX_TF_IA8`, `tfactor=FFFF0000`, ramp `FF0000 → FFFE63`) scored **0.00** under rev 2's signals. |
+| 2026-08-05, replayed over the same log | **The `unlit` signal was measuring the wrong thing.** 36 of 77 materials have a TEV colour program that never reads `GX_CC_RASC`; only 45 have the channel config's lighting flag off; **10 have lighting *on* and still never read it**, and the lava is one of those 10. Its whole colour program is `cc=[C2, C1, TEXC, ZERO]` then a pass-through — there is no raster input anywhere in it. |
 
 That third row is the one that matters. A score of zero here is a **real
 answer**, not a missing one, so the cut has to be able to reach zero — and at
 zero the score contributes nothing and something else has to carry the rule.
+
+### The signal that was wrong, and how it was wrong in both directions
+
+Rev 2 scored `colorChannelConfig[GX_COLOR0].lightingEnabled == false`. That is a
+statement about the *channel*, not about whether the TEV program uses it.
+
+- **Missed emitters.** A material can enable the channel and never read `RASC`.
+  Its colour is then completely independent of the lights, which is exactly what
+  "self-lit" means. 10 of 77 in one session, including the Goron Mines lava.
+- **Admitted the opposite of an emitter.** Lighting *disabled* with `RASC` read
+  and `matSrc = GX_SRC_VTX` is this game's baked room lighting (§7c) arriving
+  through the raster channel. Rev 3 scored that the full 0.50.
+
+Rev 3 scores **"no TEV colour stage reads `GX_CC_RASC` or `GX_CC_RASA`"**. Both
+facts are now reported — `ras=` on `matrep.sum` next to `lit=` on `matrep.k` —
+because they disagree often enough that reading one for the other is how this
+was missed twice.
 
 ### The score, and what actually decides
 
@@ -376,13 +394,15 @@ Aurora sums the evidence GX does carry; the fork picks where to cut.
 
 | Evidence | Weight | Why it is evidence |
 | :-- | --: | :-- |
-| GX lighting disabled for the colour channel | 0.50 | the surface takes no light |
+| **the TEV colour program never reads the rasterized channel** (`GX_CC_RASC`/`RASA`) | 0.50 | the colour is fixed regardless of the lights — the surface takes no light *in fact* |
 | colour authored in a register, not per-vertex | 0.25 | not §7c's baked lighting |
 | a TEV stage scaled past what the console could display (`GX_CS_SCALE_2/4`) | 0.25 | **the only thing in GX that states "brighter than the display"** |
 
-`rtx.dusklight.emissive.threshold` **defaults to 0.0** as of rev 3, because at
-0.70 — and at any value above zero — the main lava is not a candidate at all.
-Three gates do the work instead, all live in the F1 overlay:
+`rtx.dusklight.emissive.threshold` **defaults to 0.0**, and three colour gates
+do the work. With the corrected raster signal a threshold of 0.50 is also a
+usable strict setting — see the replay below.
+
+All three gates are live in the F1 overlay:
 
 | Gate | Default | What it excludes |
 | :-- | :-- | :-- |
@@ -392,6 +412,28 @@ Three gates do the work instead, all live in the F1 overlay:
 
 Raise the threshold toward 0.50 if too much of the world glows; the log prints
 every candidate's score, so it can be aimed rather than guessed.
+
+**Replayed against the 2026-08-05 Goron Mines log**, the shipped defaults accept
+**9 of 77 materials**:
+
+| Material | Colour | Luma | Chroma | Shape | Reads raster? |
+| :-- | :-- | --: | --: | :-- | :-- |
+| `EFF68502` | `FFF0A0` | 0.92 | 0.37 | `tex*c` | no |
+| `7E31CACC` | `FF6432` | 0.55 | 0.80 | `ramp` | no |
+| `40D45477` | `FF6B00` | 0.55 | 1.00 | `ramp` | no |
+| `02C00D51` | `826944` | 0.42 | 0.24 | `ramp` | no |
+| `7F4CD246` | `965744` | 0.41 | 0.32 | `tex*c` | no |
+| `72361C91` | `785A32` | 0.37 | 0.27 | `ramp` | **yes** |
+| `D572C706` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
+| `1C95BA4B` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
+| `9866CEA2` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
+
+All four lava and fire materials are in it, and the blast radius is three
+browns rather than half the room. Rejections: 30 never evaluated (HUD or no
+colour), 21 too grey, 15 colour mixed from the vertex stream, 2 too dark.
+
+Note the single `readsRASC` row — the olive `785A32`, and the likeliest false
+positive of the nine. Raising the threshold to 0.50 drops exactly that one.
 
 **This is a judgement, not a translation, and it is stated as one.** GX cannot
 distinguish lava from a red banner. The rule is "saturated, bright, authored
@@ -416,10 +458,10 @@ GX records nothing about what a self-lit surface should emit, so every answer
 here is a *reading*. Rev 2 hard-coded one and it was the wrong one; rev 3 makes
 it a control.
 
-| Mode | The shader emits | Measured |
+| Mode | The shader emits | On the lava specifically |
 | :-- | :-- | :-- |
-| 0 Reconstructed Albedo | the albedo it has just built, §10 ramp included | rev 2's only behaviour. Untested on its own — it shipped in the same build as the ramp, on a surface that was not emissive, so nothing in the 2026-08-05 log speaks to it |
-| **1 Albedo Texture** (default) | the albedo texture through the material's own texture op | this is what the "Emit The Texture" toggle did on 2026-08-04, and what the owner reported as the right look for the lava **and** the heart pickup |
+| **0 Reconstructed Albedo** (default) | the albedo it has just built, §10 ramp included | `lerp(FF0000, FFFE63, texture)` — the texture drives the colour and both survive. This is the mode that answers "the texture *and* the colour, with neither overpowering the other" |
+| 1 Albedo Texture | the albedo texture through the material's own single D3D9 op | the op here is `ADD` against a red TFACTOR, so it emits `texture + red`: red pinned at 1.0, bright end washed to white. It looked right on 2026-08-04 **only because the albedo was that same approximation then** — that preference does not survive the ramp |
 | 2 Presented Colour | `Emissive.rgb` verbatim | reported 2026-08-04 as "an almost solid red" — one flat hot colour, no crust |
 
 Mode 2 no longer needs the pre-image inversion rev 2 deleted: `emissiveSource`
