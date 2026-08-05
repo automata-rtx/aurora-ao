@@ -100,7 +100,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
-| **`grp`** | **which piece of game code drew this**, from the debug group the game pushes per process draw. This is the field that answers "which material is the lava?" without anyone looking at pixels. `-` means no group was open |
+| **`grp`** | which piece of game code drew this, from a `GXPushDebugGroup` the game has open. **Currently always `-`** — see below |
 | **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
 | `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold` |
 | `emisCol` | the colour handed to the fork as the glow |
@@ -201,6 +201,26 @@ Two caveats worth knowing:
   `rtx.vertexColorIsBakedLighting` only where aurora says the stream is not
   authored material colour — a single global answer was necessarily wrong for
   one of the two cases. It is not the grayscale cause either way.
+
+### `grp=` does not work yet — verified 2026-08-04
+
+It was added to end the recurring "which of these logged materials is the thing
+on screen?" question, and it does not. Every material in a Goron Mines session
+reported `grp=-`.
+
+**The hook was in the wrong place, and the reason generalises.** It pushed a
+group in `fpcDw_Execute`, which is the funnel every process draw is
+*scheduled* through — not the one GX commands are *issued* through. TP actor
+draw methods call `mDoExt_modelEntryDL`, which enters the model into a J3D draw
+buffer; the FIFO writes happen later when `dDlst_list_c` walks that buffer, by
+which time the group has been popped.
+
+The push has been removed rather than left in place looking functional. Doing
+it properly means labelling where the draw buffer is *executed*, with the label
+carried there from registration — real J3D plumbing, not a one-liner.
+
+Until then, identifying a material means the texture hash (`tex0hash` on
+`matrep.rmx`, which Remix's own texture UI shows) or its colour signature.
 
 ## Reading `dusklight.emis`
 
