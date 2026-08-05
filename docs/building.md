@@ -54,3 +54,4 @@ See [examples/simple.c](../examples/simple.c) for a minimal application template
 - `AURORA_ENABLE_CARD` (default: ON) - Enable CARD implementation based on kabufuda
 - `AURORA_ENABLE_RMLUI` (default: OFF) - Enable HTML/CSS based UI library
 - `AURORA_CACHE_USE_ZSTD` (default: ON) - Compress WebGPU cache entries with zstd
+- `AURORA_ENABLE_D3D9` (default: ON on Windows, forced OFF elsewhere) - Enable the Direct3D 9 fixed-function backend, which exists to feed RTX Remix; see [dx9/README.md](dx9/README.md)

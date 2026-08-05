@@ -30,24 +30,15 @@ constexpr uint32_t kKeepStaticFrames = 300;
 constexpr uint32_t kKeepCopyFrames = 600;
 
 // --------------------------------------------------------------------------
-// Static textures.
+// Static textures: content-addressed store, texObjId as an alias layer.
 //
-// RTX Remix identifies game textures by a content hash and keeps references
-// to the underlying D3D9 texture objects across frames, so texture *objects*
-// must be stable even though the game re-creates GXTexObj wrappers freely
-// (dusklight's dDlst 2D lists build a stack-local texobj per draw, every
-// frame, each with a fresh texObjId whose RAII wrapper evicts it right after
-// the draw). Keying D3D9 textures by texObjId therefore caused a
-// create+destroy cycle per draw per frame under Remix - its texture list
-// churned ("textures spamming in and out") and every recreated object's
-// VRAM piled up in Remix-side caches.
-//
-// Instead, the textures themselves are owned by a content-addressed store:
-// key = dims/format/mips + hash of the source bytes (+ TLUT bytes for
-// palette formats). texObjId entries are just an alias layer that lets the
-// per-draw hot path skip hashing; evicting an id (GXDestroyTexObj) never
-// destroys the D3D9 texture, so the next identical GXInitTexObj resurrects
-// the same object. Unused content entries age out via kKeepStaticFrames.
+// Load-bearing for Remix, which holds references to D3D9 texture *objects*
+// across frames while the game recreates GXTexObj wrappers per draw per frame
+// (dDlst 2D lists). Keying by texObjId meant a create+destroy cycle per draw:
+// Remix's texture list churned ("textures spamming in and out") and VRAM grew
+// without bound. Key = dims/format/mips + hash of the source bytes (+ TLUT for
+// palette formats); evicting an id never destroys the texture.
+// Full rationale: docs/dx9/gx-to-d3d9-mapping.md #5.
 // --------------------------------------------------------------------------
 
 struct ContentKey {

@@ -114,6 +114,11 @@ struct StateCache {
   std::array<bool, 16> worldValid{};
   std::array<D3DMATRIX, MaxStages> texMtx{};
   std::array<bool, MaxStages> texMtxValid{};
+  // Material intent for Remix, carried in the otherwise unused D3DMATERIAL9.
+  // Mirrored because SetMaterial dirties the fixed-function vertex constants
+  // on every call, and these change per material rather than per draw.
+  D3DMATERIAL9 remixMaterial{};
+  bool remixMaterialValid = false;
 
   void invalidate() noexcept {
     rsValid.fill(false);
@@ -124,6 +129,7 @@ struct StateCache {
       v.fill(false);
     }
     texturesValid.fill(false);
+    remixMaterialValid = false;
     fvfValid = false;
     projValid = viewValid = false;
     worldValid.fill(false);
@@ -178,6 +184,44 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
     g_cache.textures[stage] = tex;
     g_cache.texturesValid[stage] = true;
   }
+}
+
+// Material intent for Remix, in a side channel that exists because the stage
+// chain cannot carry these facts. D3DRS_LIGHTING is off in this backend, so
+// nothing consumes a D3D9 material and the whole struct was free; the fork
+// copies it into LegacyMaterialData. Field meanings, all in
+// docs/dx9/remix-material-interface.md §2:
+//
+//   Emissive.rgb  the colour the surface presents      §9
+//   Emissive.a    self-illumination evidence score - REPORTED, NOT USED §9
+//   Diffuse.rgb   the ramp endpoint TFACTOR does not carry   §10
+//   Diffuse.a     1 when this material is a two-colour ramp
+//   Ambient.r     1 when TFACTOR carries the texture-white endpoint
+//   Specular.r    1 when the vertex colour stream is authored material
+//                 colour rather than baked lighting                §7c
+//   Specular.g    1 when aurora evaluated a presentable colour here. 0 for the
+//                 HUD and for draws with nothing to take a colour from    §9
+//   Specular.b    1 when the material has a colour of its own - authored in
+//                 TEV constants, not mixed from the vertex stream and not a
+//                 bare texture pass-through                              §9
+//   Specular.a    1 when the material is SELF-LIT: no TEV colour stage reads
+//                 the rasterized channel, so its colour is fixed whatever
+//                 the lights do. This is the basis of the emissive rule  §9
+inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
+                               float tFactorIsHigh, float vertexColorIsMaterial,
+                               float evaluated, float colorAuthored, float selfLit) noexcept {
+  D3DMATERIAL9 mat{};
+  mat.Emissive = emissive;
+  mat.Diffuse = ramp;
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
+  mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
+  if (g_cache.remixMaterialValid &&
+      std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
+    return;
+  }
+  g_dx9.dev->SetMaterial(&mat);
+  g_cache.remixMaterial = mat;
+  g_cache.remixMaterialValid = true;
 }
 
 inline void set_fvf(DWORD fvf) noexcept {
@@ -311,6 +355,17 @@ inline T read_val(const uint8_t* p, bool be) noexcept {
 void warn_once(uint64_t key, const char* what) noexcept;
 // Same de-duplication, logged at info level (diagnostics, not problems).
 void info_once(uint64_t key, const char* what) noexcept;
+
+// Material translation report: what the GX material was, what we handed D3D9,
+// and every decision taken in between. Always on and bounded, because the
+// project's rule is that a log answers the question rather than the owner.
+// Format, field meanings and worked examples: docs/dx9/material-report.md.
+inline constexpr size_t kMatrepMaxMaterials = 512;
+// True the first time this material key is seen, false afterwards and once the
+// cap is reached (which logs matrep.trunc exactly once). Callers log the lines
+// themselves through their own Module, so GX enums format via
+// lib/gx/gx_fmt.hpp rather than through a second set of name tables.
+bool matrep_should_emit(uint64_t key) noexcept;
 
 } // namespace aurora::dx9
 

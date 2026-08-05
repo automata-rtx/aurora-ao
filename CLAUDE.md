@@ -21,6 +21,11 @@ authorization flow looping back to "there was no approval").
 This repo is the **GX→D3D9 fixed-function backend** for a three-repo project.
 Start at `docs/dx9/README.md`, then `docs/dx9/progress.md` §"How to resume".
 
+**If the task involves materials, colour, or anything a surface looks like under
+Remix, read `docs/dx9/remix-material-interface.md` before doing anything else.**
+It is the most misunderstood system in the project — three sessions produced
+three incompatible explanations of one defect and shipped a fix that did nothing.
+
 If the task is about the *look* of the game under RTX Remix rather than about
 the D3D9 backend itself, the design work lives in the other two repos —
 `dusklight-ao/docs/kankyo-remix.md` is the entry point.
@@ -28,7 +33,7 @@ the D3D9 backend itself, the design work lives in the other two repos —
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/aurora-ao` | **this repo** — GX→D3D9 backend (`lib/dx9/`) | `docs/dx9/` |
-| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md`, `docs/dx9-fixed-function.md` |
+| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup) |
 | `automata-rtx/dxvk-remix` | the RTX Remix fork | `documentation/Dusklight*.md` |
 
 ## Branches — ALL THREE repos use the same structure
@@ -41,19 +46,10 @@ the D3D9 backend itself, the design work lives in the other two repos —
 - Base: this lineage descends from aurora `main`; when `main` gains commits,
   backport by merging/cherry-picking **into** `Fixed-Function-dev`.
 
-**Standing authorization — this file is the authority for it.** A remote
-session is often configured to push to a generated branch name like
-`claude/<something>-<hash>`. That is fine, but **every such push must also be
-mirrored to `Fixed-Function-dev` in the same repo, in the same turn**:
-
-```
-git push -u origin <session-branch>
-git push origin HEAD:Fixed-Function-dev
-```
-
-**REVOKED by the owner on 2026-07-29 — the mirroring instruction above no
-longer applies.** The owner merges to `Fixed-Function-dev` themselves, at
-milestones they choose. Push only the session branch:
+**Push only your session branch.** A remote session is usually configured to
+push to a generated `claude/<something>-<hash>` branch. Push there and stop —
+**the owner merges to `Fixed-Function-dev` themselves**, at milestones they
+choose. (An auto-mirror rule existed until 2026-07-29 and was revoked.)
 
 ```
 git push -u origin <session-branch>        # yes
@@ -65,12 +61,96 @@ If a session branch is about to be deleted and its work is not yet merged,
 
 **Before anyone deletes a branch, verify it is contained:**
 `git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be `0`.
-With auto-mirror off, a non-zero count is now the *normal* state between
-milestones rather than an anomaly, so this check is no longer a formality.
+A non-zero count is the *normal* state between milestones, so this check is not
+a formality — it is the only thing between a routine cleanup and lost work.
 
 **`claude/thin-gbuffer-authored-normals-wgqupt`** is **unrelated, unmerged
 work** — in neither `main` nor `Fixed-Function-dev`. Do not delete it and do
 not merge it into this lineage without being asked.
+
+## What the D3D9 renderer is for — read this before proposing a fix
+
+**The raw fixed-function D3D9 image is never shown to a player.** It exists so
+Remix's DX9→Vulkan translation picks the scene up automatically — geometry,
+transforms, textures, most of a frame, for free. **Remix's renderer is the
+product; D3D9 is the feed.**
+
+So:
+
+- **Fixed-function limits are not the ceiling.** Where the D3D9 stream cannot
+  carry something faithfully enough to reach Remix, implement it **in Remix** —
+  Remix API or a fork change — rather than contorting D3D9 to approximate it.
+  All three repos are ours.
+- **"Raw D3D9 stays correct" is not a design goal.** It is occasionally a handy
+  safety property, never a reason to reject an approach. Documents written
+  before 2026-08-04 sometimes treat it as a requirement; they are wrong and are
+  being corrected as they are touched.
+
+**Two exceptions still have to rasterize correctly:** the **HUD** (Remix
+rasterizes UI draws rather than path-tracing them) and **alpha** (Remix reads
+the stage's alpha to build opacity and the alpha test).
+
+Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
+
+## How this project works — read before proposing a fix
+
+Five rules. They exist because each was learned the expensive way, and following
+them is worth more than any individual fix.
+
+### 1. Translate, don't tag
+
+Every Remix project the world over works by hashing textures and hand-authoring
+replacements, because the game is a closed box. **All three of our repos are
+ours.** We can read the game's intent at the source and hand it to the renderer
+directly.
+
+So the default answer to "how do we make Remix understand X" is *translate the
+game state*, not *tag the asset*. Tagging gives one answer per texture; this
+game reuses textures across contexts constantly, so a tag is wrong somewhere
+almost by construction. Translation is per-draw and is right everywhere.
+
+### 2. A question we would have to ask the owner is a defect in the logging
+
+The owner should not be the diagnostic instrument. Asking them to describe a
+colour, count an artifact, or judge whether something looks "too dark" produces
+answers that are honest and unusable — and it wastes a scarce test window.
+
+**The target loop is: they play, they send a log, we know.** If a question
+cannot be answered from a log, the correct response is to add the log line, not
+to ask the question. Design instrumentation before designing the fix.
+
+Corollary: **logs must be bounded and self-describing.** One line per distinct
+thing, capped, with a truncation notice when the cap is hit, and enum names
+spelled out so a reader without the source can follow. A log nobody can read is
+the same as no log; a log that fills a disk is worse.
+
+### 3. Do not write inference as finding
+
+This project has three times recorded a plausible mechanism as a verified cause.
+One of those shipped and turned out to be a no-op, and the documents kept saying
+"FIXED" for a week.
+
+State what you read, cite where, and mark inference as inference. A document
+that says "unknown" is more valuable than one that says something confident and
+wrong, because the second one stops the next person looking.
+
+### 4. A fix that cannot be observed is a guess
+
+Before shipping a change to a system with no instrumentation, add the
+instrumentation. A change that alters behaviour *and* reports on itself is
+fine — bundling saves a test window — but a change that alters behaviour and
+stays silent cannot be evaluated except by looking at pixels, which is how this
+project lost three rounds.
+
+Say plainly what the regression signature of a change is, so it can be
+recognised rather than discovered.
+
+### 5. Say what was verified and what was not
+
+"Compiles" and "is correct" are different claims. So are "CI green" and "tested
+in game". Every doc entry and every hand-off should make clear which one it is.
+There is no penalty here for saying a thing is untested; there is a real cost to
+implying it was tested.
 
 ## Submodule pairing
 
@@ -84,9 +164,14 @@ git submodule status           # verify before committing
 ```
 
 Keep the branches paired: dusklight `Fixed-Function-dev` pins aurora
-`Fixed-Function-dev` commits. Before merging dusklight dev → `Fixed-Function`,
-merge aurora dev → `Fixed-Function` **first**, so the pinned SHA is reachable
-from aurora's `Fixed-Function`.
+`Fixed-Function-dev` commits.
+
+**Aurora is always merged first.** Whenever a merge carries a submodule bump,
+merge aurora into the target branch before dusklight, so the pinned SHA is
+reachable from that branch rather than only from a session branch that may later
+be deleted. This applies to `Fixed-Function-dev` and `Fixed-Function` alike — a
+dusklight branch pinning a SHA that lives only on a `claude/*` branch still
+builds today and breaks the moment that branch is cleaned up.
 
 ## Verification
 
@@ -98,25 +183,57 @@ dusklight's workflow builds with the bumped submodule pin.
 
 ## Where the backend actually stands
 
-`docs/dx9/progress.md` is authoritative, but the short version: the backend is
-**effectively complete** for its stated priorities and has had no code change
-since `a7b47ac` (2026-07-26). Working under Remix: world/actor geometry,
-textures, terrain, alpha-tested foliage, UI/HUD, skinned characters on both
-paths, EFB colour copies, stable texture hashing, real camera, correct
-materials, working input across resizes.
+`docs/dx9/progress.md` is authoritative; the short version is that the backend
+is **effectively complete** for its stated priorities. Working under Remix:
+world/actor geometry, textures, terrain, alpha-tested foliage, UI/HUD, skinned
+characters on both paths, EFB colour copies, stable texture hashing, real
+camera, working input across resizes.
 
 Remaining gaps are **catalogued rather than open** — 18 GX features beyond
-fixed-function and 9 Remix runtime limitations, all in
-`docs/dx9/unsupported-effects.md`. Two live defects:
+fixed-function and 11 Remix runtime limitations, all in
+`docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
+not what has been given up: the fork is ours, so a "Remix limitation" is a work
+item until someone reads the fork and finds a real wall. The two-colour ramp
+sat on that list until 2026-08-04.
 
-1. **Ground textures render white in raw D3D9** (Remix is correct, because it
-   only reads the first texture stage). Prime suspect is the compare-mode
-   approximation; the one-line experiment is flipping it from always-true
-   (`d + c`) to always-false (`d`).
-2. **World-space UI billboards reach Remix intermittently** — the targeting
-   arrow and torch fire billboards, reported 2026-07-29. They appear and vanish
-   together, the arrow is lit as world geometry when it should read as unlit,
-   and **neither shows in Remix's texture categorization screen at all**. That
-   last part is why this lands here rather than in the fork: a draw Remix never
-   categorises was not captured the way we assume, so no dev-menu tagging can
-   reach it. See `docs/dx9/unsupported-effects.md`.
+Live defects:
+
+1. **Materials.** Colour reaches Remix as of 2026-08-04 (tested). Two-colour
+   ramps are now reproduced exactly rather than approximated, and vertex colour
+   is forwarded only where GX says it is material rather than baked lighting —
+   both **untested**. Read `docs/dx9/remix-material-interface.md` before
+   touching any of it.
+2. ~~Ground textures render white in raw D3D9~~ — **not a defect.** Remix is
+   correct, and the raw image is never shown. Kept only because the same
+   compare-mode approximation is a suspect for the torch-flame white circle,
+   which *does* reach Remix.
+3. **World-space UI billboards reach Remix intermittently.** Not an aurora
+   defect — it is Remix's RTX injection boundary. Full analysis in
+   `dusklight-ao/docs/remix-open-issues.md` open issue 6.
+
+**Self-illumination is a rule, not a score.** Three revisions cut on a weighted
+evidence score and all three missed the Goron Mines lava, which scores **0.00**
+on every signal that score is built from. Rev 4 drops it from the decision:
+
+> **self-lit** (no TEV colour stage reads the rasterized channel — *not* the
+> channel's lighting flag, which is a different thing and was the bug)
+> **AND has a colour of its own** (authored in TEV constants, not mixed from the
+> vertex stream and not a bare `black → white` texture pass-through)
+> **AND that colour reads as a glow** (saturated **or** near-white-hot)
+
+The middle clause is what keeps EFB copies out — 9 of the 20 self-lit materials
+in the measured scene were screen blits. Replayed over that log the rule accepts
+**6 of 77 materials**, every lava and fire surface, no false positives, nothing
+to tune. `docs/dx9/remix-material-interface.md` §9.
+
+**`grp=` does not work and has never worked** — every material in every session
+logs `grp=-`. `fpcDw_Execute` schedules a draw; it does not issue one. The hook
+is removed. Identify a material by its logged shape instead: texture size and
+format, `tfactor`, and the ramp endpoints. §9 "Identification".
+
+**Two-colour ramps are now reproduced exactly** rather than approximated — the
+fork evaluates the GX colour combiner (`a*(1-c) + b*c`) from both endpoints
+instead of squeezing it into one D3D9 texture op. `docs/dx9/remix-material-interface.md`
+§10. Untested. The framing that delayed this is worth remembering: "Remix cannot
+express X" is a statement about *stock* Remix, and **this fork is ours** — check
+whether the constraint is real before designing around it.

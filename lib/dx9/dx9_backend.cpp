@@ -24,6 +24,12 @@ CameraView g_camera;
 
 static bool s_active = false;
 static absl::flat_hash_set<uint64_t> s_warned;
+// Material translation report. Deliberately a SEPARATE set from s_warned: a key
+// collision between the two would silently suppress one of them, and these keys
+// are content hashes rather than hand-assigned ids. See
+// docs/dx9/material-report.md for the format and why it is always on.
+static absl::flat_hash_set<uint64_t> s_matrep;
+static uint32_t s_matrepSuppressed = 0;
 // Backbuffer color/depth surfaces, cached after device create/reset so
 // offscreen passes can restore them.
 static IDirect3DSurface9* s_backbufferColor = nullptr;
@@ -74,12 +80,31 @@ void warn_once(uint64_t key, const char* what) noexcept {
   }
 }
 
+// One line per distinct material configuration, capped so a play session costs
+// kilobytes. Format and reading guide: docs/dx9/material-report.md.
+bool matrep_should_emit(uint64_t key) noexcept {
+  if (s_matrep.contains(key)) {
+    return false;
+  }
+  if (s_matrep.size() >= kMatrepMaxMaterials) {
+    if (s_matrepSuppressed++ == 0) {
+      Log.info("matrep.trunc side=aurora cap={} - further distinct materials not reported",
+               kMatrepMaxMaterials);
+    }
+    return false;
+  }
+  s_matrep.insert(key);
+  return true;
+}
+
 static void apply_default_state() noexcept {
   g_cache.invalidate();
   auto* dev = g_dx9.dev;
-  // Fixed-function baseline. Lighting is off by design in v1 (docs #8):
-  // Twilight Princess bakes world lighting into vertex colors and RTX Remix
-  // relights everything anyway.
+  // Fixed-function baseline. D3D9 T&L lighting stays off: Remix relights
+  // everything, so reproducing the GC light model buys nothing. GX's
+  // per-channel lighting-enable bit is still *read* - it decides whether
+  // vertex colour is forwarded as material colour and feeds the emissive
+  // score. docs/dx9/gx-to-d3d9-mapping.md #8.
   dev->SetRenderState(D3DRS_LIGHTING, FALSE);
   dev->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
   dev->SetRenderState(D3DRS_NORMALIZENORMALS, TRUE);
@@ -114,7 +139,9 @@ static void fill_present_params(uint32_t width, uint32_t height) noexcept {
   pp = {};
   pp.BackBufferWidth = std::max(width, 1u);
   pp.BackBufferHeight = std::max(height, 1u);
-  // Alpha in the backbuffer so GX destination-alpha blends work (docs #11).
+  // Alpha in the backbuffer so GX destination-alpha blends work, and because
+  // Remix reads the stage's alpha to build opacity and the alpha test
+  // (docs/dx9/gx-to-d3d9-mapping.md #11).
   pp.BackBufferFormat = D3DFMT_A8R8G8B8;
   pp.BackBufferCount = 1;
   pp.MultiSampleType = D3DMULTISAMPLE_NONE; // no MSAA by design (Remix)
@@ -186,13 +213,14 @@ static bool create_device_for(uint32_t width, uint32_t height) noexcept {
   return true;
 }
 
-// Window resizes recreate the device instead of resetting it. RTX Remix does
-// not re-derive its UI overlay from a mid-run Reset: the HUD keeps the scale
-// and placement it had at device-creation size, which is why launching
-// straight into the final resolution looked correct while every resized run
-// did not - raw D3D9 follows the Reset correctly either way. Recreating costs
-// a texture-cache rebuild and a Remix renderer restart, but resizes are rare
-// and user-driven.
+// Window resizes recreate the device instead of resetting it. Remix does not
+// re-derive its UI overlay from a mid-run Reset, and the HUD is one of the two
+// things that must still rasterize correctly (Remix rasterizes UI draws rather
+// than path-tracing them). Signature: launching straight into the final
+// resolution looked correct while every resized run did not - raw D3D9 follows
+// the Reset either way, which is how the fault was localised to Remix.
+// Recreating costs a texture-cache rebuild and a Remix renderer restart, but
+// resizes are rare and user-driven. docs/dx9/unsupported-effects.md R4.
 static bool recreate_device(uint32_t width, uint32_t height) noexcept {
   if (g_dx9.dev != nullptr) {
     if (g_dx9.inOffscreen) {

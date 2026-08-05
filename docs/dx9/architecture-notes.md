@@ -1,6 +1,6 @@
 # Aurora / Dusklight rendering architecture — research notes
 
-Findings from a full read of `aurora-ao` (branch base `claude/gpu-skinning-72pstj`,
+Findings from a full read of `aurora-ao` (the GPU-skinning lineage,
 commit `7b7306e`) and targeted exploration of `dusklight-ao` (base `abf26c38d2`).
 Everything the D3D9 backend relies on is recorded here with file references.
 
@@ -127,13 +127,18 @@ From `lib/gx/gx.hpp` (`GXState`):
   destroyed via `GX_AURORA_DESTROY_TEXOBJ/TLUT` (hook `evict_texture_object`).
 - Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and
   DDS loading exist; v1 of the D3D9 backend skips replacement packs
-  (documented), can be added later via the same DDS decoding.
+  (documented), can be added later via the same DDS decoding. Not a gap under
+  Remix: replacement is Remix's own job there, and since 2026-08-04 that
+  extends to API-submitted assets too (content-derived mesh hashes +
+  `submitExternalDraw` consulting `getReplacementMaterial` in the fork —
+  CI-green, no capture taken in game yet).
+  Aurora-side packs would only matter to the standalone image.
 - EFB copies: `GXCopyTex` → BP 0x52 → `copy_tex(dest, clear)` — the wgpu path
   resolves the current pass into a texture keyed by the destination pointer
   (`copyTextures`). Game uses this for shadow silhouettes (packed RGBA),
   distortion sources, etc. D3D9 v1 policy in mapping doc §10.
 
-## 5. GPU skinning (branch `claude/gpu-skinning-72pstj`)
+## 5. GPU skinning
 
 Two distinct skinning mechanisms exist:
 
