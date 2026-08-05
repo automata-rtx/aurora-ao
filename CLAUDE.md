@@ -211,17 +211,20 @@ Live defects:
    defect — it is Remix's RTX injection boundary. Full analysis in
    `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
-**Self-illumination: first attempt tested 2026-08-04, caught one material, and
-it was not lava** (open issue 9). The rule required GX lighting to be off; the
-Goron Mines lava has it **on**. Together with the earlier "59% of a scene is
-unlit" measurement that settles it: **no single GX fact identifies an emitter.**
-Rev 2 scores three weak signals and the fork cuts at a live overlay threshold.
-`docs/dx9/remix-material-interface.md` §9.
+**Self-illumination: the main Goron Mines lava scores 0.00 on every GX signal
+we have, measured in two independent sessions** (open issue 9). Lighting on,
+channel colour from the vertex stream, no over-range stage. Together with the
+earlier "59% of a scene is unlit" measurement that settles it: **no single GX
+fact identifies an emitter, and on the surface this feature exists for they all
+read zero.** So rev 3 defaults the threshold to **0** and the real rule is three
+colour gates — `requireAuthoredColor`, `minLuma`, `minChroma`. What an accepted
+surface glows is now a choice (`rtx.dusklight.emissive.colorSource`), because GX
+records nothing about it. `docs/dx9/remix-material-interface.md` §9.
 
-**Every material now carries `grp=`** — the name of the game code that drew it,
-from a debug group the game pushes per process draw. Three investigations have
-stalled on "which of these logged materials is the thing on screen"; that
-question is retired. Use it.
+**`grp=` does not work and has never worked** — every material in every session
+logs `grp=-`. `fpcDw_Execute` schedules a draw; it does not issue one. The hook
+is removed. Identify a material by its logged shape instead: texture size and
+format, `tfactor`, and the ramp endpoints. §9 "Identification".
 
 **Two-colour ramps are now reproduced exactly** rather than approximated — the
 fork evaluates the GX colour combiner (`a*(1-c) + b*c`) from both endpoints

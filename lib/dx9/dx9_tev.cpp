@@ -1137,11 +1137,26 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
 // So this sums what GX does say and the fork picks where to cut
 // (rtx.dusklight.emissive.threshold, live in the F1 overlay).
 //
+// Measured 2026-08-05, and the reason `evaluated` exists: the Goron Mines lava
+// pool scores **0.00** - GX lighting on, channel colour from the vertex stream,
+// no over-range stage - in two independent test runs. A score of zero is a real
+// answer here, not an absent one, so the fork must be able to cut at zero and
+// lean on colour instead. `colorAuthored` is what makes that survivable.
+//
 // docs/dx9/remix-material-interface.md §9.
 struct SelfLitEvidence {
   float score = 0.f;          // 0..1, summed evidence
   uint32_t color = 0;         // 0x00RRGGBB, the colour the surface presents
   const char* why = "none";   // the evidence that fired, or why none could
+  // Reported, deliberately not scored. The score's three signals all read as
+  // zero on the Goron Mines lava, so the fork has to be able to cut at 0 - and
+  // at 0 it needs something other than the score to keep the world from
+  // glowing. This is that something: the presented colour came entirely from
+  // TEV constants, with no vertex-stream contribution at all.
+  bool colorAuthored = false;
+  // Always true at the one call site; the fork reads it to tell "aurora
+  // evaluated this material and scored 0" apart from "no aurora present".
+  bool evaluated = false;
 };
 
 // Weights, measured rather than chosen: each fact alone is far too broad
@@ -1164,6 +1179,11 @@ SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
     e.why = "noColor";
     return e;
   }
+  // Past both early returns there is a colour to emit, so the fork may consider
+  // this draw at all. Orthographic (HUD) and unevaluable draws never become
+  // candidates however low the fork's threshold goes.
+  e.evaluated = true;
+  e.colorAuthored = !albedo.usesVertexColor;
 
   const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
   const bool unlit = !chan.lightingEnabled;
@@ -1617,7 +1637,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                                    static_cast<float>(rampOther & 0xFFu) / 255.f,
                                    rampValid ? 1.f : 0.f},
                      rampTFactorIsHigh ? 1.f : 0.f,
-                     albedo.vertexColorIsMaterial ? 1.f : 0.f);
+                     albedo.vertexColorIsMaterial ? 1.f : 0.f,
+                     selfLit.evaluated ? 1.f : 0.f,
+                     selfLit.colorAuthored ? 1.f : 0.f);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1645,7 +1667,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "albedoTex={}x{} fmt={} colorFmt={} shape={} out0={:06X} out1={:06X} "
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
-             "selfLit={} emisScore={:.2f} emisCol={:06X} ramp={} rampOther={:06X} vtxUse={} grp={}",
+             "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
+             "ramp={} rampOther={:06X} vtxUse={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1655,7 +1678,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              hintTint, consts.tfactorUsed ? consts.tfactor : 0u, consts.tfactorUsed ? 1 : 0,
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
-             selfLit.why, selfLit.score, selfLit.color, rampWhy, rampOther,
+             selfLit.why, selfLit.score, selfLit.color, selfLit.evaluated ? 1 : 0,
+             selfLit.colorAuthored ? 1 : 0, rampWhy, rampOther,
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");

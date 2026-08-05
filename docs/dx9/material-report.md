@@ -79,7 +79,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white selfLit=unlit+reg emisScore=0.75
-           emisCol=B80000 ramp=tfLow rampOther=F84040 grp=d_a_obj_lv3Water
+           emisCol=B80000 emisEval=1 emisAuthored=1
+           ramp=tfLow rampOther=F84040 grp=-
 ```
 
 | Field | Means |
@@ -102,8 +103,10 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
 | **`grp`** | which piece of game code drew this, from a `GXPushDebugGroup` the game has open. **Currently always `-`** — see below |
 | **`selfLit`** | which self-illumination evidence fired: `unlit`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring |
-| `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold` |
-| `emisCol` | the colour handed to the fork as the glow |
+| `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold`. **Zero is a real answer** — the Goron Mines lava scores it |
+| `emisCol` | the colour aurora says the surface presents |
+| `emisEval` | 1 when aurora evaluated a presentable colour here at all. 0 for HUD/orthographic and unevaluable draws, which the fork never considers however low its threshold goes. This is what lets a score of zero still be a candidate |
+| `emisAuthored` | 1 when that colour came entirely from TEV constants, with no vertex-stream contribution. The fork's `requireAuthoredColor` gate |
 | **`ramp`** | whether the two-colour ramp is reproduced exactly (§10): `tfLow` / `tfHigh` yes, `tfTaken` / `usesVtx` / `flat` / `unevaluable` no. Anything but `tfLow`/`tfHigh` means the material fell back to the single-op approximation |
 | `rampOther` | the endpoint TFACTOR does not carry |
 
@@ -171,12 +174,17 @@ matrep.rmx ... albedo="TEX + tFactor(b80000)"
 matrep.rmx id=… first=0 tex0ptr=… tex0hash=…
            cop=Modulate a1=TEX a2=VertexColor0
            tFactor=FFFFFFFF tfBlend=0 stageTf=1 multiTf=1
-           vcBaked=1 albedo="TEX * VertexColor0"
+           vcBaked=1 ramp=1 rampTfHigh=0 rampOther=fffe63
+           albedo="TEX * VertexColor0"
 ```
 
 `albedo="…"` is a literal rendering of the expression the shader will evaluate —
-**unless `ramp=1` on the same line**, in which case the shader takes the
-two-colour path instead and this string is the fallback it replaced.
+**unless `ramp=1` on the same line**, in which case the shader evaluates
+`mix(lo, hi, TEX)` between `tFactor` and `rampOther` — `rampTfHigh` says which
+is which — and this string is only the fallback it replaced. `rampOther` is
+printed because "the ramp reached this surface" and "the ramp reached it with
+the right second endpoint" are different claims, and only the second one is
+worth anything.
 Otherwise it is the end of the argument. `TEX * 1.0` means a colour term was dropped;
 `TEX * VertexColor0` with `vtxColor=default-white` upstream means the hint
 bleached it; `TEX * tFactor(…)` means the tint survived.
@@ -202,7 +210,7 @@ Two caveats worth knowing:
   authored material colour — a single global answer was necessarily wrong for
   one of the two cases. It is not the grayscale cause either way.
 
-### `grp=` does not work yet — verified 2026-08-04
+### `grp=` does not work — verified 2026-08-04, unchanged 2026-08-05
 
 It was added to end the recurring "which of these logged materials is the thing
 on screen?" question, and it does not. Every material in a Goron Mines session
@@ -230,7 +238,8 @@ threshold to move and that is invisible if only acceptances are printed.
 
 ```
 dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
-               threshold=0.7 minLuma=0.25 minChroma=0.2
+               authored=1 ramp=1 rampOther=fffe63 tFactor=ffff0000
+               threshold=0 minLuma=0.25 minChroma=0.2 src=texture
                verdict=emissive applied=1
 ```
 
@@ -241,18 +250,31 @@ dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
 | `color` | what aurora said the surface presents, linear 0..1 |
 | `score` | aurora's summed GX evidence, the same number as `emisScore` upstream |
 | `luma` / `chroma` | brightness and saturation of that colour |
-| `threshold` / `minLuma` / `minChroma` | the live cuts, printed so an old log can be read without knowing what they were set to |
+| `authored` | aurora's `emisAuthored` as the fork read it — 0 here with `requireAuthoredColor` on is the whole reason for a rejection |
+| `ramp` / `rampOther` / `tFactor` | the §10 ramp as it reached the fork. Under `src=albedo` these decide what the surface glows, so they are printed here rather than left to be joined by hand from two logs |
+| `threshold` / `minLuma` / `minChroma` / `src` | the live cuts and the colour source, printed so an old log can be read without knowing what they were set to |
 | `verdict` | `emissive` or `rejected` |
-| `applied` | 0 when the verdict was `emissive` but the glow was declined or `rtx.dusklight.emissive.enable` is off |
+| `applied` | 0 when the verdict was `emissive` but `rtx.dusklight.emissive.enable` is off |
 
 **Aurora's half of the same decision is `selfLit=` / `emisScore=` on
-`matrep.sum`.** A surface with no `dusklight.emis` line at all scored zero on the
-game side; `selfLit=` there says why. A `verdict=rejected` line was cut by a
-threshold, and the numbers on the line say which one and by how much.
+`matrep.sum`.** A surface with no `dusklight.emis` line at all was never
+evaluated by aurora (`emisEval=0` — HUD, or nothing to take a colour from);
+`selfLit=` there says why. A `verdict=rejected` line was cut by one of the four
+gates, and the numbers on the line say which one and by how much.
 
-Bounded at 96 distinct candidates, with a `dusklight.emis.trunc` line if that is
-reached. The cap is deliberately small: a scene with hundreds of candidates
-means the rule is wrong, not that the cap is too low.
+**Two bounding rules, both of which cost a session's evidence before they
+existed:**
+
+- Candidates rejected on colour alone are **counted, not enumerated** — a
+  `dusklight.emis.grey distinct=N` line, re-emitted on each doubling. On
+  2026-08-04 ninety chroma-zero lines spent the entire 96 cap before the player
+  reached the lava, so the one question the log existed to answer went
+  unanswered.
+- Moving any emissive control **clears the memory and reports everything
+  again**. Before that, once-per-material meant dialling a threshold mid-session
+  produced no new lines, and what the setting actually did was unrecoverable.
+
+The informative cap is 96, with a `dusklight.emis.trunc` line if it is reached.
 
 The whole design, and what the rule caught when replayed against the 2026-08-04
 Goron Mines session, is in

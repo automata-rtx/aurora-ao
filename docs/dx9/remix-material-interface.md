@@ -95,7 +95,9 @@ each is §0 applied — extend the fork rather than contort the stream.
 | Field | Carries | Read in the fork | Detail |
 | :-- | :-- | :-- | :-- |
 | `Specular.r` | per-draw verdict "the vertex stream is authored material colour" | `d3d9_rtx_utils.cpp` → `isVertexColorBakedLighting` | §7c |
-| `Emissive.rgb` | the colour the surface presents — used for the brightness/saturation cut only, not as the glow | `rtx_instance_manager.cpp` | §9 |
+| `Specular.g` | "aurora evaluated a presentable colour for this draw" — 0 for HUD/orthographic and unevaluable draws | `dusklightEmissive::isCandidate` | §9 |
+| `Specular.b` | "the presented colour came entirely from TEV constants, no vertex-stream contribution" | `rtx.dusklight.emissive.requireAuthoredColor` | §9 |
+| `Emissive.rgb` | the colour the surface presents — the brightness/saturation cut, and the glow itself under `colorSource=2` | `rtx_instance_manager.cpp` | §9 |
 | `Emissive.a` | the self-illumination evidence score, 0..1 | cut at `rtx.dusklight.emissive.threshold` | §9 |
 | `Diffuse.rgb` | the ramp endpoint TFACTOR does not hold → `RtSurface::rampOtherColor` | `rtx_instance_manager.cpp` | §10 |
 | `Diffuse.a` | "this material is a ramp" → `textureFlags` bit 15 | same | §10 |
@@ -350,26 +352,27 @@ For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
    two-colour ramp was written down as inexpressible and then reproduced
    exactly, a week later than it needed to be (§10).
 
-## 9. Self-illumination — rev 2, 2026-08-04, CI-green and untested in game
+## 9. Self-illumination — rev 3, 2026-08-05, CI-green and untested in game
 
-GX has **no emissive term**, and the 2026-08-04 Goron Mines session established
-something stronger: **no single GX fact identifies an emitter.**
+GX has **no emissive term**, and two test sessions established something
+stronger: **no single GX fact identifies an emitter, and on the one surface this
+feature exists for every GX fact reads zero.**
 
-### The two measurements that bracket the problem
+### The three measurements that bracket the problem
 
 | Session | Finding |
 | :-- | :-- |
 | 2026-08-03, mixed areas | 69 of 117 materials had GX lighting **disabled** — 59% of the scene. "Unlit" is far too broad to act on. |
-| 2026-08-04, Goron Mines only | Every candidate lava material has `lit=1` — GX lighting **enabled**. "Unlit" also misses the one surface this feature exists for. |
+| 2026-08-04, Goron Mines | Every candidate lava material has `lit=1` — GX lighting **enabled**. "Unlit" also misses the surface the feature exists for. |
+| 2026-08-04 + 2026-08-05, same scene twice | The main lava ramp (`mk=D572C706…`, `mk=1C95BA4B…`, 32×32 `GX_TF_IA8`, `tfactor=FFFF0000`, ramp `FF0000 → FFFE63`) scores **0.00** — lighting on, channel colour from the vertex stream, no over-range stage. Identical in both runs. |
 
-So the first revision's rule (`unlit AND register-sourced`) was wrong from both
-ends. In the Goron Mines it fired on exactly one material — a brown `965744`
-that had already been flagged as the likeliest false positive — and on nothing
-else in the room.
+That third row is the one that matters. A score of zero here is a **real
+answer**, not a missing one, so the cut has to be able to reach zero — and at
+zero the score contributes nothing and something else has to carry the rule.
 
-### What replaced it: a score, not a predicate
+### The score, and what actually decides
 
-Aurora sums the evidence GX does carry and the fork picks where to cut.
+Aurora sums the evidence GX does carry; the fork picks where to cut.
 
 | Evidence | Weight | Why it is evidence |
 | :-- | --: | :-- |
@@ -377,64 +380,97 @@ Aurora sums the evidence GX does carry and the fork picks where to cut.
 | colour authored in a register, not per-vertex | 0.25 | not §7c's baked lighting |
 | a TEV stage scaled past what the console could display (`GX_CS_SCALE_2/4`) | 0.25 | **the only thing in GX that states "brighter than the display"** |
 
-`rtx.dusklight.emissive.threshold` defaults to 0.70, which preserves the old
-behaviour (unlit plus one other fact). Dropping it to 0.20 admits the
-over-range materials on their own. It is a live overlay control precisely
-because nobody can derive the right cut from first principles.
+`rtx.dusklight.emissive.threshold` **defaults to 0.0** as of rev 3, because at
+0.70 — and at any value above zero — the main lava is not a candidate at all.
+Three gates do the work instead, all live in the F1 overlay:
 
-Replayed against the Goron Mines log after the luma/chroma filter: the old rule
-gave 2 materials, over-range alone gave 3 (two of them warm 128×128 masks),
-and the union gave 5. **Which of those is the lava is still not established** —
-see the identification section below, which exists to end that question.
+| Gate | Default | What it excludes |
+| :-- | :-- | :-- |
+| `requireAuthoredColor` | on | any surface whose colour is mixed from the vertex stream, which in this game is baked room lighting (§7c). This is what makes a threshold of 0 survivable. |
+| `minLuma` | 0.25 | dark interior geometry |
+| `minChroma` | 0.20 | white and grey candidates — UI, screen copies, plain geometry |
 
-### The transport, and the trap in it
+Raise the threshold toward 0.50 if too much of the world glows; the log prints
+every candidate's score, so it can be aimed rather than guessed.
+
+**This is a judgement, not a translation, and it is stated as one.** GX cannot
+distinguish lava from a red banner. The rule is "saturated, bright, authored
+entirely in TEV constants" and it will be wrong somewhere.
+
+### The transport
 
 `D3DMATERIAL9::Emissive` — RGB the presented colour, **A the evidence score**.
-Free end to end: this backend keeps `D3DRS_LIGHTING` off so nothing reads a
-D3D9 material, and the fork was already copying the whole struct unread.
+`Specular.g` marks that aurora evaluated the draw at all, `Specular.b` that the
+colour is authored. Free end to end: this backend keeps `D3DRS_LIGHTING` off so
+nothing reads a D3D9 material, and the fork was already copying the whole struct
+unread.
 
-**What the glow colour is.** Not a constant — the **reconstructed albedo**.
-A self-lit surface glows the colour it appears, and after §10 that colour is
-already computed one block earlier in the shader, so the emissive path just
-takes it (`surface.emissiveFollowsAlbedo`, `textureFlags` bit 19).
+`Specular.g` exists because `Emissive.a` alone could not tell **"aurora scored
+this zero"** apart from **"no aurora wrote this material"**, and that ambiguity
+is what silently put the main lava out of reach. The fork keeps a `score > 0`
+fallback so an older aurora against this fork still behaves as it did.
 
-That was learned the expensive way on 2026-08-04. The first version set
-`emissiveColorConstant` to the presented colour, which meant inverting it
-through the albedo's texture op first, because the shader re-applies that op to
-whatever is set there. It worked and still looked wrong: **a flat colour at
-intensity 2 swamps the albedo**, so the Goron Mines lava read as one uniform hot
-wash with no crust, described in testing as "an almost solid red". Taking the
-albedo removed the constant, the inversion, the `invertible=` log field and the
-`useTextureColor` option in one go.
+### What the glow colour is — a choice, `rtx.dusklight.emissive.colorSource`
 
-### Identification: `grp=`
+GX records nothing about what a self-lit surface should emit, so every answer
+here is a *reading*. Rev 2 hard-coded one and it was the wrong one; rev 3 makes
+it a control.
 
-The recurring blocker has not been the rule, it is that **nobody can tell which
-logged material is the lava.** That is now a log field.
+| Mode | The shader emits | Measured |
+| :-- | :-- | :-- |
+| 0 Reconstructed Albedo | the albedo it has just built, §10 ramp included | rev 2's only behaviour. Untested on its own — it shipped in the same build as the ramp, on a surface that was not emissive, so nothing in the 2026-08-05 log speaks to it |
+| **1 Albedo Texture** (default) | the albedo texture through the material's own texture op | this is what the "Emit The Texture" toggle did on 2026-08-04, and what the owner reported as the right look for the lava **and** the heart pickup |
+| 2 Presented Colour | `Emissive.rgb` verbatim | reported 2026-08-04 as "an almost solid red" — one flat hot colour, no crust |
 
-The game pushes one `GXPushDebugGroup` per process draw, labelled with the
-process name, at the single funnel every draw passes through
-(`fpcDw_Execute`, `dusklight-ao/src/f_pc/f_pc_draw.cpp`). Aurora mirrors the
-innermost label into `GXState::currentDebugGroup()` and `matrep.sum` prints it
-as `grp=`. So every material now carries the name of the game code that drew
-it, permanently, for every future material question — not just this one.
+Mode 2 no longer needs the pre-image inversion rev 2 deleted: `emissiveSource`
+(`textureFlags` bits 19–20, `kEmissiveSource*` in `surface_shared.h`) tells the
+shader to leave the constant alone, rather than the constant having to survive a
+texture op it cannot control.
 
-Cost: one short string per drawn process per frame. If frame time regresses
-noticeably, this is the first thing to suspect.
+### What rev 2 got wrong, and how it presented
 
-### Which endpoint becomes the glow
+Rev 2 removed the `useTextureColor` toggle on the reasoning that a flat constant
+swamps the albedo, so taking the reconstructed albedo must be strictly better.
+Two errors in that:
 
-The more chromatic endpoint of the ramp, ties going to the brighter one — the
-same rule §7b uses for the albedo tint.
+1. **It removed a control the owner was using.** "Strictly better" was a
+   prediction about untested code, and the only tested configuration was the one
+   deleted.
+2. **It did not apply to the surface in question.** The main lava scores 0.00,
+   so at the shipped default of 0.70 no emissive path ran on it at all —
+   `emissiveSource` was never set, `intensity` had nothing to scale, and the
+   surface rendered as pure albedo.
 
-The glow is not a separate colour at all — see "What the glow colour is" above.
+The 2026-08-05 report — "stuck at an almost solid red without proper texture
+definition, no option to change it, intensity does nothing regardless of value"
+— is all three of those at once, and it is what a **non-emissive** §10 ramp
+looks like in a dark cave: `mix(FF0000, FFFE63, texture)` as a *diffuse
+reflectance*, where the red channel is pinned at 1.0 across the whole surface
+because both endpoints have `R = 255`.
+
+### Identification: `grp=` does not work
+
+`matrep.sum` carries a `grp=` field intended to name the game code that issued a
+draw. **It has printed `-` for every material in every session so far.**
+
+Cause, verified by reading the game: `fpcDw_Execute` is where a draw is
+*scheduled*, not issued. TP actor draw methods call `mDoExt_modelEntryDL`, which
+enters models into a J3D draw buffer walked later by `dDlst_list_c` — long after
+the debug group has been popped. The hook was removed rather than left as a dead
+instrument; `dusklight-ao/src/f_pc/f_pc_draw.cpp` carries a note recording why.
+
+A correct implementation labels at draw-buffer *execution*, carrying the label
+from registration. Nobody has built it. Until then, **the way to identify a
+material is its logged shape** — texture size and format, `tfactor`, and the
+ramp endpoints, all of which are in `matrep.sum` and now in `dusklight.emis`
+too.
 
 ### What is still not built
 
 The endpoint remains a small versioned export from the fork's `d3d9.dll`,
 called per draw, carrying resolved albedo and emissive directly. Emissive has a
-channel now, but it is a repurposed D3D9 field carrying one float of score.
-That is a fallback working hard, not a stated intent.
+channel now, but it is a repurposed D3D9 field carrying one float of score and
+two flags. That is a fallback working hard, not a stated intent.
 
 **The nearer prize was §7's two-colour ramp, and it has been taken** — §10 shows
 what a purpose-built channel plus a shader change buys, and it is the pattern

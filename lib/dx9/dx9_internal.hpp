@@ -199,13 +199,19 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //   Ambient.r     1 when TFACTOR carries the texture-white endpoint
 //   Specular.r    1 when the vertex colour stream is authored material
 //                 colour rather than baked lighting                §7c
+//   Specular.g    1 when aurora evaluated a presentable colour here. Separate
+//                 from the score so the fork can tell "scored 0" apart from
+//                 "no aurora wrote this material" and cut at 0.       §9
+//   Specular.b    1 when that colour came entirely from TEV constants, with
+//                 no vertex-stream contribution                       §9
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
-                               float tFactorIsHigh, float vertexColorIsMaterial) noexcept {
+                               float tFactorIsHigh, float vertexColorIsMaterial,
+                               float evaluated, float colorAuthored) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
   mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
-  mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, 0.f, 0.f, 0.f};
+  mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, 0.f};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
     return;
