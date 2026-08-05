@@ -162,16 +162,19 @@ decisions it records as load-bearing:
   the fork evaluates the GX combiner directly from two endpoints carried in
   spare surface bits. Aurora declines when TFACTOR was claimed by a real stage,
   and the material falls back to the single-op approximation. *(3.24)*
-- **Self-illumination is split: aurora scores evidence, the fork judges.** No
+- **Self-illumination is split: aurora reports evidence, the fork judges.** No
   single GX fact identifies an emitter — "takes no light" is true of 59% of one
-  scene *and* false for the Goron Mines lava. Aurora sums three weak signals and
-  sends the score over `D3DMATERIAL9::Emissive` — free, because `D3DRS_LIGHTING`
-  is off here so no D3D9 material is ever read; the cut lives in the fork's
-  options so it moves without a rebuild. *(3.22, corrected 3.23)*
-- **Every material is labelled with the game code that drew it** (`grp=`), from
-  a debug group the game pushes per process draw. Added because three separate
-  investigations stalled on "which of these logged materials is the thing the
-  owner is looking at". *(3.23)*
+  scene *and* false for the Goron Mines lava — and the lava pool scores **zero**
+  on all three signals, so the score is not the rule either. Aurora sends the
+  score plus two flags over `D3DMATERIAL9::Emissive`/`Specular` — free, because
+  `D3DRS_LIGHTING` is off here so no D3D9 material is ever read; the cut and the
+  three colour gates live in the fork's options so they move without a rebuild.
+  *(3.22, corrected 3.23 and 3.27)*
+- **`grp=` does not work.** It was meant to label every material with the game
+  code that drew it, and it prints `-` for all of them: the hook was at a draw
+  *scheduling* point, not an issuing one. Removed. Identifying a material still
+  means reading its texture size, format and ramp endpoints. *(3.23, corrected
+  3.27)*
 - The hint advertises the material's **colour** texture where there is one, and
   a stage that *reads* its texture in preference to one that merely binds it —
   character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
@@ -247,7 +250,50 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
-### 3.26 — the glow is the albedo (2026-08-04)
+### 3.27 — the lava scores zero, and the glow is a choice again (2026-08-05)
+
+**Tested, and it disproved 3.26 rather than tuning it.**
+
+The main Goron Mines lava pool (`mk=D572C706…`, `mk=1C95BA4B…`, 32×32
+`GX_TF_IA8`, `tfactor=FFFF0000`, ramp `FF0000 → FFFE63`) scores **0.00** on all
+three evidence signals — GX lighting on, channel colour from the vertex stream,
+no over-range stage — identically in the 2026-08-04 and 2026-08-05 logs. The
+fork's `isCandidate` tested `score > 0`, a hidden second threshold no overlay
+setting could move, so that surface was never an emitter at any setting.
+
+Which is the whole of the 2026-08-05 report: "stuck at an almost solid red
+without proper texture definition, no option to change it, emissive intensity
+does nothing regardless of value" is what a **non-emissive** 3.24 ramp looks
+like — `mix(FF0000, FFFE63, texture)` as a diffuse reflectance in a dark cave,
+red pinned at 1.0 across the surface because both endpoints have `R = 255`.
+
+Aurora's half: two facts now ride `D3DMATERIAL9::Specular`, both free.
+`Specular.g` says aurora evaluated a presentable colour here at all — which lets
+a score of zero be admissible while HUD and unevaluable draws still are not —
+and `Specular.b` says the colour came entirely from TEV constants, which is what
+makes the fork's threshold of 0 survivable. The score itself is unchanged;
+existing weights still mean what they meant. `matrep.sum` gains `emisEval=` and
+`emisAuthored=`.
+
+The fork's half: threshold defaults to 0, `requireAuthoredColor` joins
+`minLuma`/`minChroma` as the actual rule, and **`colorSource` restores as a
+control what 3.26 removed** — reconstructed albedo / albedo texture through its
+own op (default) / flat presented colour.
+
+**3.26 was wrong in two ways worth remembering.** It removed the only tested
+configuration on the strength of a prediction about untested code; and its
+closing claim that "the lava scores 0.25 on the over-range signal alone" was
+true of *a* lava material, not the pool — the same log has five lava-family
+materials scoring 0.00, 0.50, 0.50, 0.75 and 0.75, and nothing identifies which
+is on screen, because `grp=` does not work.
+
+**Syntax-checked**, both configs. Untested in game. Regression signature: too
+much of the world glowing means threshold 0 is too wide — raise it. Nothing
+glowing at all means `Specular.g` is not arriving, which an aurora older than
+this commit against a newer fork would cause (the fork keeps a `score > 0`
+fallback for exactly that).
+
+### 3.26 — the glow is the albedo (2026-08-04) — SUPERSEDED BY 3.27
 
 **Tested.** The lava needed the "Emit The Texture" toggle to look right and was
 otherwise "an almost solid red"; the heart needed it too. The cause was the
@@ -264,9 +310,9 @@ Net removal: the pre-image inversion, the `invertible=` log field and the
 `useTextureColor` option all existed to get a constant through the albedo's
 texture op intact, and none survives.
 
-Also settled by the same session: **the lava scores 0.25, on the over-range
-signal alone** (`selfLit=over`) — the TEV-scale evidence, which is the one that
-actually finds it. `unlit` cannot, because the lava has GX lighting on.
+Also claimed by this entry, and **wrong**: "the lava scores 0.25 on the
+over-range signal alone". That was true of one lava-family material, not of the
+pool, which scores 0.00. See 3.27.
 
 **Syntax-checked**, both configs. Untested in game.
 
@@ -352,11 +398,11 @@ Three changes:
    than the display". The fork cuts at `rtx.dusklight.emissive.threshold`, live
    in the overlay, so widening no longer costs a rebuild.
 2. **`grp=` on every `matrep.sum` line.** The game pushes a debug group per
-   process draw at `fpcDw_Execute` — the one funnel every draw passes through —
-   and aurora mirrors the innermost label into `GXState::currentDebugGroup()`.
-   Every material is now labelled with the game code that drew it. This is the
-   change that matters most: it retires "which logged material is the lava?"
-   permanently, not just for this defect.
+   process draw at `fpcDw_Execute` — and aurora mirrors the innermost label into
+   `GXState::currentDebugGroup()`. **This did not work and has been removed.**
+   `fpcDw_Execute` is where a draw is *scheduled*, not issued; every material in
+   every session since has logged `grp=-`. "Which logged material is the lava?"
+   is still open. See `remix-material-interface.md` §9 "Identification".
 3. **A real bug in 3.22's glow colour**, found by reading the shader rather than
    by testing: `emissiveColorConstant` is re-run through the *albedo's* texture
    op, so the glow arrived as `colour + tFactor`. The fork now sets the
@@ -365,7 +411,8 @@ Three changes:
 
 **Syntax-checked** in both configs. Untested in game. Regression signature: the
 `grp=` push costs one short string per drawn process per frame — if frame time
-regresses noticeably, suspect it first.
+regresses noticeably, suspect it first. *(Moot: the push was removed once it
+proved to label nothing. See 3.27.)*
 
 Not fixed here, and now documented rather than guessed at: **no stock Remix op
 expresses a lerp between two constants**, so the lava's `lerp(red, yellow, t)`
