@@ -196,6 +196,15 @@ synchronously, so the caller's wide string need not outlive the call; that
 `makePreloadSource` drops every texture path unless a material EXT is chained;
 that `ManagedTexture::requestMips` is atomic and `MAX_MIPS` is 32.
 
+Also verified: `LegacyMaterialData::computeIdentityHash()`
+(`rtx_materials.cpp:40-120`) hashes `Ambient.r` but **not** `.g` or `.b`. That
+is why the preserve path needs an explicit guard — a stable instance would
+otherwise latch its pre-residency material forever. Leaving the index out of
+that hash is nonetheless safe: `colorTextureHash0` is in it, and the index is a
+function of the same texture content, so it carries no information the hash does
+not already have. Nothing else in the fork reads `Ambient.g` or `Ambient.b`;
+both were unwritten before this change.
+
 **Inferred, not measured:** that the lowest bound D3D9 stage is always the one
 the fork assigns `colorTextures[0]`; that `tryRequestMips` is sufficient to hold
 a raster-substituted texture at full resolution against the streamer's own
