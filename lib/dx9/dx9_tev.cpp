@@ -74,6 +74,48 @@ const char* d3dta_name(DWORD ta) noexcept {
   }
 }
 
+// The framebuffer blend, named for the material report.
+//
+// This is the one GX fact that unambiguously means "emits light": ONE/ONE adds
+// the draw to what is already there, which is what a torch flame, a light shaft
+// or a glow halo is. Remix reads the translated D3D9 blend and treats it as
+// emissive on its own, before any of our scoring runs - so a surface that
+// scores zero on every TEV signal may still be glowing correctly by this route,
+// and until this field existed neither log could say which.
+// docs/dx9/remix-material-interface.md §9.
+const char* blend_name() noexcept {
+  switch (g_gxState.blendMode) {
+  case GX_BM_NONE:
+    return "off";
+  case GX_BM_SUBTRACT:
+    return "subtract";
+  case GX_BM_LOGIC:
+    return "logic";
+  case GX_BM_BLEND:
+    break;
+  default:
+    return "?";
+  }
+  const GXBlendFactor s = g_gxState.blendFacSrc;
+  const GXBlendFactor d = g_gxState.blendFacDst;
+  if (s == GX_BL_ONE && d == GX_BL_ONE) {
+    return "additive";       // Remix: BlendType::kEmissive
+  }
+  if (s == GX_BL_SRCALPHA && d == GX_BL_ONE) {
+    return "additiveAlpha";  // Remix: BlendType::kAlphaEmissive
+  }
+  if (s == GX_BL_SRCALPHA && d == GX_BL_INVSRCALPHA) {
+    return "alpha";
+  }
+  if (s == GX_BL_ZERO && d == GX_BL_SRCCLR) {
+    return "multiply";
+  }
+  if (s == GX_BL_ONE && d == GX_BL_ZERO) {
+    return "opaque";
+  }
+  return "other";
+}
+
 // Resolves a konst color selector to ARGB.
 uint32_t resolve_kcsel(GXTevKColorSel sel) noexcept {
   switch (sel) {
@@ -1668,7 +1710,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
              "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
-             "ramp={} rampOther={:06X} vtxUse={} grp={}",
+             "blend={} ramp={} rampOther={:06X} vtxUse={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1679,7 +1721,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              draw.hasVertexColor ? "stream"
                                  : (draw.defaultDiffuse == 0xFFFFFFFFu ? "default-white" : "matColor"),
              selfLit.why, selfLit.score, selfLit.color, selfLit.evaluated ? 1 : 0,
-             selfLit.colorAuthored ? 1 : 0, rampWhy, rampOther,
+             selfLit.colorAuthored ? 1 : 0, blend_name(), rampWhy, rampOther,
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");

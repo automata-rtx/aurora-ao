@@ -448,6 +448,56 @@ looks like in a dark cave: `mix(FF0000, FFFE63, texture)` as a *diffuse
 reflectance*, where the red channel is pinned at 1.0 across the whole surface
 because both endpoints have `R = 255`.
 
+### The signals we have not been using — and one that was already live
+
+"GX has no emissive term" is true of the *material* format and was allowed to
+stand in for a much broader claim, which is wrong: this game visibly has glowing
+things, so something in its data produces them. There are at least three
+mechanisms, and the TEV-state score is the weakest of them.
+
+**1. Additive blending — the one unambiguous signal, and Remix already acts on
+it.** `GX_BM_BLEND` with `GX_BL_ONE`/`GX_BL_ONE` means *add this draw to what is
+already in the framebuffer*. That is emission, stated by the hardware, with no
+inference. It is how a console-era renderer does a torch flame, a light shaft, a
+glow halo or a magic effect.
+
+Verified 2026-08-05 by reading both sides:
+
+- aurora translates it faithfully — `apply_blend_state` in `dx9_draw.cpp` maps
+  `GX_BM_BLEND` to `D3DRS_BLENDOP`/`SRCBLEND`/`DESTBLEND` with no special-casing.
+- the fork already converts `ONE`/`ONE` to `BlendType::kEmissive`
+  (`calculateAlphaState`), and `enableEmissiveBlendEmissiveOverride` replaces the
+  material with an emissive one **in the else-if branch immediately above the
+  Dusklight rule** — so an additive draw never reaches the score at all.
+
+So that path has been live the whole time. **What is not known is whether any
+draw in this game takes it**, because until 2026-08-05 neither log printed the
+blend state. `blend=` on `matrep.sum` and `matrep.rmx` closes that; a Goron
+Mines log now answers it directly. If flames and glow halos are arriving as
+`blend=additive`, then the score only ever needed to cover *opaque* emitters
+like the lava surface, and its poor showing is much less surprising.
+
+**2. The game's own light lists.** `g_env_light` carries `pointlight[100]`
+(torches, braziers, candles, campfires), `efplight[5]` (effects) and
+`dungeonlight[8]` (per-room authored lights, positions and palette colours). The
+first two are already forwarded to Remix as sphere lights
+(`dusklight-ao/src/dusk/remix_bridge.cpp`). **`dungeonlight` is not**, and it is
+exactly the Goron Mines case: authored light sources placed in a dungeon room.
+
+This is §1 "translate, don't tag" applied where it actually belongs — the game
+holds a *list of light sources*, and the emissive work has been trying to infer
+them from TEV state instead. It is complementary rather than an alternative: a
+light makes the room correct, surface emission makes the lava *look* hot, and
+running both without care double-counts.
+
+**3. Actor identity.** All three repos are ours. A draw issued by
+`d_a_obj_lv3Water` or a fire actor could be marked at the source, per draw,
+which is translation rather than tagging. Nothing here needs GX to have recorded
+anything.
+
+None of 1–3 is built beyond what is noted above; 1 is instrumented and 2 is
+a decision about double-counting, not a research question.
+
 ### Identification: `grp=` does not work
 
 `matrep.sum` carries a `grp=` field intended to name the game code that issued a

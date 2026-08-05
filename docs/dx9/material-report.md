@@ -79,7 +79,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            hint=emitted form=add:tint hintTex=000001AF128B83A0 hintLoose=0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white selfLit=unlit+reg emisScore=0.75
-           emisCol=B80000 emisEval=1 emisAuthored=1
+           emisCol=B80000 emisEval=1 emisAuthored=1 blend=opaque
            ramp=tfLow rampOther=F84040 grp=-
 ```
 
@@ -107,6 +107,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `emisCol` | the colour aurora says the surface presents |
 | `emisEval` | 1 when aurora evaluated a presentable colour here at all. 0 for HUD/orthographic and unevaluable draws, which the fork never considers however low its threshold goes. This is what lets a score of zero still be a candidate |
 | `emisAuthored` | 1 when that colour came entirely from TEV constants, with no vertex-stream contribution. The fork's `requireAuthoredColor` gate |
+| **`blend`** | the framebuffer blend: `off`, `opaque`, `alpha`, **`additive`**, **`additiveAlpha`**, `multiply`, `subtract`, `logic`, `other`. The two bold ones are the only unambiguous "this emits light" statement in GX, and Remix acts on them *before* the emissive score is consulted — see `remix-material-interface.md` §9 |
 | **`ramp`** | whether the two-colour ramp is reproduced exactly (§10): `tfLow` / `tfHigh` yes, `tfTaken` / `usesVtx` / `flat` / `unevaluable` no. Anything but `tfLow`/`tfHigh` means the material fell back to the single-op approximation |
 | `rampOther` | the endpoint TFACTOR does not carry |
 
@@ -174,7 +175,7 @@ matrep.rmx ... albedo="TEX + tFactor(b80000)"
 matrep.rmx id=… first=0 tex0ptr=… tex0hash=…
            cop=Modulate a1=TEX a2=VertexColor0
            tFactor=FFFFFFFF tfBlend=0 stageTf=1 multiTf=1
-           vcBaked=1 ramp=1 rampTfHigh=0 rampOther=fffe63
+           vcBaked=1 blend=opaque ramp=1 rampTfHigh=0 rampOther=fffe63
            albedo="TEX * VertexColor0"
 ```
 
@@ -189,9 +190,16 @@ Otherwise it is the end of the argument. `TEX * 1.0` means a colour term was dro
 `TEX * VertexColor0` with `vtxColor=default-white` upstream means the hint
 bleached it; `TEX * tFactor(…)` means the tint survived.
 
-`id` is keyed on the reconstruction *shape* — the texture, the ops and the
-argument sources — so one texture used in several contexts produces one line
-**per context**, which is exactly the case texture-hash tagging cannot address.
+`blend=additive` or `additiveAlpha` on a line means **Remix's own emissive-blend
+override claims that draw**, one branch before the Dusklight rule runs. Such a
+material is already emissive and its `dusklight.emis` score is irrelevant to it.
+
+`id` is keyed on the reconstruction *shape* — the texture, the ops, the argument
+sources and the blend class — so one texture used in several contexts produces
+one line **per context**, which is exactly the case texture-hash tagging cannot
+address. Blend is in the key because the same texture drawn opaque and drawn
+additively are different materials to Remix, and collapsing them would hide the
+draw the field was added to find.
 
 It deliberately **excludes** `tFactor`'s value. Including it (as the first
 version did) meant the same few materials were reported hundreds of times,
