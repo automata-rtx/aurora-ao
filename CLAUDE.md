@@ -211,15 +211,20 @@ Live defects:
    defect — it is Remix's RTX injection boundary. Full analysis in
    `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
-**Self-illumination: the main Goron Mines lava scores 0.00 on every GX signal
-we have, measured in two independent sessions** (open issue 9). Lighting on,
-channel colour from the vertex stream, no over-range stage. Together with the
-earlier "59% of a scene is unlit" measurement that settles it: **no single GX
-fact identifies an emitter, and on the surface this feature exists for they all
-read zero.** So rev 3 defaults the threshold to **0** and the real rule is three
-colour gates — `requireAuthoredColor`, `minLuma`, `minChroma`. What an accepted
-surface glows is now a choice (`rtx.dusklight.emissive.colorSource`), because GX
-records nothing about it. `docs/dx9/remix-material-interface.md` §9.
+**Self-illumination is a rule, not a score.** Three revisions cut on a weighted
+evidence score and all three missed the Goron Mines lava, which scores **0.00**
+on every signal that score is built from. Rev 4 drops it from the decision:
+
+> **self-lit** (no TEV colour stage reads the rasterized channel — *not* the
+> channel's lighting flag, which is a different thing and was the bug)
+> **AND has a colour of its own** (authored in TEV constants, not mixed from the
+> vertex stream and not a bare `black → white` texture pass-through)
+> **AND that colour reads as a glow** (saturated **or** near-white-hot)
+
+The middle clause is what keeps EFB copies out — 9 of the 20 self-lit materials
+in the measured scene were screen blits. Replayed over that log the rule accepts
+**6 of 77 materials**, every lava and fire surface, no false positives, nothing
+to tune. `docs/dx9/remix-material-interface.md` §9.
 
 **`grp=` does not work and has never worked** — every material in every session
 logs `grp=-`. `fpcDw_Execute` schedules a draw; it does not issue one. The hook

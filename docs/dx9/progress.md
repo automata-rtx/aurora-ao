@@ -162,14 +162,15 @@ decisions it records as load-bearing:
   the fork evaluates the GX combiner directly from two endpoints carried in
   spare surface bits. Aurora declines when TFACTOR was claimed by a real stage,
   and the material falls back to the single-op approximation. *(3.24)*
-- **Self-illumination is split: aurora reports evidence, the fork judges.** No
-  single GX fact identifies an emitter — "takes no light" is true of 59% of one
-  scene *and* false for the Goron Mines lava — and the lava pool scores **zero**
-  on all three signals, so the score is not the rule either. Aurora sends the
-  score plus two flags over `D3DMATERIAL9::Emissive`/`Specular` — free, because
-  `D3DRS_LIGHTING` is off here so no D3D9 material is ever read; the cut and the
-  three colour gates live in the fork's options so they move without a rebuild.
-  *(3.22, corrected 3.23 and 3.27)*
+- **Self-illumination is a rule, not a score.** No single GX fact identifies an
+  emitter, and the lava scores **zero** on all three weighted signals, so the
+  score is not the rule either. What is: **self-lit** (no TEV colour stage reads
+  the rasterized channel) AND **a colour of its own** (authored in TEV
+  constants, not the vertex stream and not a bare texture pass-through) AND that
+  colour **reading as a glow**. Aurora sends all three over
+  `D3DMATERIAL9::Specular` — free, because `D3DRS_LIGHTING` is off here so no
+  D3D9 material is ever read. 6 of 77 materials in the measured scene, no false
+  positives, nothing to tune. *(3.22, corrected 3.23, 3.27, 3.28)*
 - **`grp=` does not work.** It was meant to label every material with the game
   code that drew it, and it prints `-` for all of them: the hook was at a draw
   *scheduling* point, not an issuing one. Removed. Identifying a material still
@@ -250,7 +251,49 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
-### 3.27 — the lava scores zero, and the glow is a choice again (2026-08-05)
+### 3.28 — self-lit is the rule; the score is retired (2026-08-05)
+
+**The score never should have been the cut.** Three revisions used one and all
+three missed the lava. 3.27 corrected *which* fact the 0.50 signal measured;
+this removes the weighting entirely.
+
+A GameCube surface is **self-lit** when no TEV colour stage reads the rasterized
+channel — its colour is then fixed whatever the lights do, which is what the
+console draws full-bright. That is the basis. It is not sufficient: of the 20
+evaluated self-lit materials in the 2026-08-05 session, **9 are EFB copies and
+full-screen quads** (304×224, 608×448, 608×100 `RGBA8`), and a white screen blit
+must not light the room.
+
+Every one of those is a bare texture pass-through — `out0=000000`,
+`out1=FFFFFF`, no colour of its own — and every real emitter carries a colour
+authored in TEV constants over an intensity mask. So `colorAuthored`
+(`Specular.b`) now means *"has a colour of its own"* and covers both failure
+modes: mixed from the vertex stream (§7c baked room lighting) or a plain
+pass-through. `Specular.a` carries self-lit.
+
+    emissive = self-lit AND own colour AND (chroma >= 0.50 OR luma >= 0.70)
+
+The **or** in the last clause is what killed the brown false positives this
+feature carried since rev 1: an authored glow is a strong colour or it is
+near-white-hot, and a muted mid-tone is a surface colour.
+
+**Replayed over that log: 6 of 77 materials, no false positives, nothing to
+tune** — `D572C706`, `1C95BA4B`, `9866CEA2` (`FF0000`), `40D45477` (`FF6B00`),
+`7E31CACC` (`FF6432`), `EFF68502` (`FFF0A0`). Rejections: 30 not evaluated, 27
+read the lit channel, 9 no colour of their own, 5 neither saturated nor bright.
+
+Fork side: `threshold`, `requireAuthoredColor`, `minLuma` and `minChroma` are
+gone; `colorSource` defaults to the reconstructed albedo, because with §10's
+ramp exact that is `lerp(FF0000, FFFE63, texture)` — the texture drives the
+colour and neither overpowers the other. The evidence score is still computed
+and logged and decides nothing.
+
+**Syntax-checked**, both configs. Untested in game. Regression signature: too
+much glowing means the glow test is too loose — the `dusklight.emis` line names
+which clause admitted each material. Nothing glowing at all means `Specular.a`
+is not arriving, which an aurora older than this commit would cause.
+
+### 3.27 — the lava scores zero, and the glow is a choice again (2026-08-05) — SUPERSEDED IN PART BY 3.28
 
 **Tested, and it disproved 3.26 rather than tuning it.**
 
@@ -395,7 +438,7 @@ Three changes:
 1. **Evidence is scored, not required.** Lighting disabled 0.50, colour authored
    in a register 0.25, **a TEV stage scaled past what the console could display
    0.25** — the last is new, and is the only thing in GX that states "brighter
-   than the display". The fork cuts at `rtx.dusklight.emissive.threshold`, live
+   than the display". The fork cut at `rtx.dusklight.emissive.threshold`, live
    in the overlay, so widening no longer costs a rebuild.
 2. **`grp=` on every `matrep.sum` line.** The game pushes a debug group per
    process draw at `fpcDw_Execute` — and aurora mirrors the innermost label into

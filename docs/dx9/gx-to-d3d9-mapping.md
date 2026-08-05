@@ -319,9 +319,9 @@ wholesale and the game bakes most world lighting into vertex colors:
   `D3DRS_LIGHTING` per draw. That would only improve the standalone (non-Remix)
   image, which is never shown — so it earns its **[later]** on its own merits,
   not as a deferred obligation.
-- The lighting-enable bit is **read state, not discarded state.** Besides the
-  vertex-colour verdict above it is one of the three weak signals in the
-  self-illumination score (`remix-material-interface.md` §9). Measured
+- The lighting-enable bit is **read state, not discarded state**, but it is
+  *not* the self-illumination signal. What is: whether any TEV colour stage
+  reads `GX_CC_RASC`/`RASA` at all (`remix-material-interface.md` §9). Measured
   2026-08-04: the Goron Mines lava has GX lighting **enabled**, so "lighting
   off" is not a proxy for "emitter" — the first emissive rule required it and
   missed the lava.
@@ -522,11 +522,13 @@ suffice.
   is off (§8), so the struct is inert to rasterization and the fork copies it
   into `LegacyMaterialData` (`set_remix_material`, `dx9_internal.hpp`):
   `Emissive.rgb` the colour the surface presents, `Emissive.a` the
-  self-illumination **evidence score** the fork cuts at
-  `rtx.dusklight.emissive.threshold` (live in the F1 overlay),
+  self-illumination **evidence score** — reported, not acted on —
   `Diffuse.rgb` the ramp endpoint TFACTOR does not carry, `Diffuse.a` "this is
   a ramp", `Ambient.r` "TFACTOR holds the texture-white endpoint",
-  `Specular.r` "the vertex colour stream is authored material colour".
+  `Specular.r` "the vertex colour stream is authored material colour",
+  `Specular.g` "aurora evaluated a colour here", `Specular.b` "this material has
+  a colour of its own", `Specular.a` **"this material is self-lit"** — the three
+  the emissive rule actually reads.
   Field meanings are owned by `remix-material-interface.md` §§7c, 9, 10. This
   is the "prefer stating over encoding" rule in practice: a per-draw fact
   transmitted directly beats one inferred from fixed-function state.

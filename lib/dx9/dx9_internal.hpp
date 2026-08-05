@@ -193,7 +193,7 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 // docs/dx9/remix-material-interface.md §2:
 //
 //   Emissive.rgb  the colour the surface presents      §9
-//   Emissive.a    self-illumination evidence score
+//   Emissive.a    self-illumination evidence score - REPORTED, NOT USED §9
 //   Diffuse.rgb   the ramp endpoint TFACTOR does not carry   §10
 //   Diffuse.a     1 when this material is a two-colour ramp
 //   Ambient.r     1 when TFACTOR carries the texture-white endpoint

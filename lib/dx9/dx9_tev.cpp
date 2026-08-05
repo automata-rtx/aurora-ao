@@ -1176,14 +1176,13 @@ AlbedoIntent evaluate_albedo(const DecodedDraw& draw) noexcept {
 // "unlit" alone was 69 of 117 materials (59%) in one scene - far too broad to
 // act on - and the 2026-08-04 Goron Mines lava, the one surface this feature
 // exists for, is `lit=1`. The old unlit-based rule was wrong from both ends.
-// So this sums what GX does say and the fork picks where to cut
-// (rtx.dusklight.emissive.threshold, live in the F1 overlay).
+// This sums what GX does say, and it is **reported rather than acted on**:
+// three revisions cut on this score and all three missed the lava. What the
+// fork actually decides on is the conjunction of `readsRaster`, `colorAuthored`
+// and the colour itself - see the two flags below.
 //
-// Measured 2026-08-05, and the reason `evaluated` exists: the Goron Mines lava
-// pool scores **0.00** - GX lighting on, channel colour from the vertex stream,
-// no over-range stage - in two independent test runs. A score of zero is a real
-// answer here, not an absent one, so the fork must be able to cut at zero and
-// lean on colour instead. `colorAuthored` is what makes that survivable.
+// Measured 2026-08-05: the Goron Mines lava pool scores **0.00** on all three
+// signals in two independent runs. That is what retired the score as a cut.
 //
 // docs/dx9/remix-material-interface.md §9.
 struct SelfLitEvidence {
