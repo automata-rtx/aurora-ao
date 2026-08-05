@@ -96,9 +96,10 @@ each is §0 applied — extend the fork rather than contort the stream.
 | :-- | :-- | :-- | :-- |
 | `Specular.r` | per-draw verdict "the vertex stream is authored material colour" | `d3d9_rtx_utils.cpp` → `isVertexColorBakedLighting` | §7c |
 | `Specular.g` | "aurora evaluated a presentable colour for this draw" — 0 for HUD/orthographic and unevaluable draws | `dusklightEmissive::isCandidate` | §9 |
-| `Specular.b` | "the presented colour came entirely from TEV constants, no vertex-stream contribution" | `rtx.dusklight.emissive.requireAuthoredColor` | §9 |
-| `Emissive.rgb` | the colour the surface presents — the brightness/saturation cut, and the glow itself under `colorSource=2` | `rtx_instance_manager.cpp` | §9 |
-| `Emissive.a` | the self-illumination evidence score, 0..1 | cut at `rtx.dusklight.emissive.threshold` | §9 |
+| `Specular.b` | "this material has a colour of its own" — authored in TEV constants, not from the vertex stream and not a bare texture pass-through | `dusklightEmissive::authoredColor` | §9 |
+| `Specular.a` | **"this material is self-lit"** — no TEV colour stage reads the rasterized channel | `dusklightEmissive::selfLit` | §9 |
+| `Emissive.rgb` | the colour the surface presents — the glow test, and the glow itself under `colorSource=2` | `rtx_instance_manager.cpp` | §9 |
+| `Emissive.a` | the self-illumination evidence score, 0..1. **Reported, not used** | — | §9 |
 | `Diffuse.rgb` | the ramp endpoint TFACTOR does not hold → `RtSurface::rampOtherColor` | `rtx_instance_manager.cpp` | §10 |
 | `Diffuse.a` | "this material is a ramp" → `textureFlags` bit 15 | same | §10 |
 | `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
@@ -371,73 +372,66 @@ That third row is the one that matters. A score of zero here is a **real
 answer**, not a missing one, so the cut has to be able to reach zero — and at
 zero the score contributes nothing and something else has to carry the rule.
 
-### The signal that was wrong, and how it was wrong in both directions
+### The rule — self-lit, with a colour of its own
 
-Rev 2 scored `colorChannelConfig[GX_COLOR0].lightingEnabled == false`. That is a
-statement about the *channel*, not about whether the TEV program uses it.
+**A surface is self-lit when its TEV colour program never reads the rasterized
+channel** (`GX_CC_RASC` / `GX_CC_RASA`). Its colour is then fixed whatever the
+lights do — which is what the console draws as full-bright, and what a path
+tracer has to *emit* to reproduce. That is the basis.
 
-- **Missed emitters.** A material can enable the channel and never read `RASC`.
-  Its colour is then completely independent of the lights, which is exactly what
-  "self-lit" means. 10 of 77 in one session, including the Goron Mines lava.
-- **Admitted the opposite of an emitter.** Lighting *disabled* with `RASC` read
-  and `matSrc = GX_SRC_VTX` is this game's baked room lighting (§7c) arriving
-  through the raster channel. Rev 3 scored that the full 0.50.
+Rev 2 tested `colorChannelConfig[GX_COLOR0].lightingEnabled` instead, which
+describes the *channel* rather than whether the program consumes it, and was
+wrong in both directions: it missed the lava (lighting on, never reads `RASC`)
+and it scored the full 0.50 for §7c's baked vertex lighting, the opposite of an
+emitter. Measured over 77 materials in the 2026-08-05 session — 45 have the
+channel flag off, 36 never read the raster channel, and **10 have lighting on
+and still never read it**.
 
-Rev 3 scores **"no TEV colour stage reads `GX_CC_RASC` or `GX_CC_RASA`"**. Both
-facts are now reported — `ras=` on `matrep.sum` next to `lit=` on `matrep.k` —
-because they disagree often enough that reading one for the other is how this
-was missed twice.
+**Self-lit is not sufficient**, and the measurement says exactly why. Of the 20
+*evaluated* self-lit materials in that session, **9 were EFB copies and
+full-screen quads** — 304×224, 608×448, 608×100 `RGBA8`. A white screen blit is
+self-lit, and making one emit light would flood the room.
 
-### The score, and what actually decides
+Every one of those is a bare texture pass-through: `out0 = 000000`,
+`out1 = FFFFFF`, no colour of its own. Every real emitter carries a colour
+**authored in TEV constants over an intensity mask**. So the rule is three
+structural facts and one colour test:
 
-Aurora sums the evidence GX does carry; the fork picks where to cut.
+| # | Fact | Where it comes from |
+| --: | :-- | :-- |
+| 1 | aurora evaluated a presentable colour — not HUD/orthographic, not unevaluable | `Specular.g` |
+| 2 | **self-lit** — no TEV colour stage reads `RASC`/`RASA` | `Specular.a` |
+| 3 | **has a colour of its own** — not mixed from the vertex stream (§7c), not a bare `black → white` pass-through | `Specular.b` |
+| 4 | that colour reads as a glow: `chroma ≥ 0.50` **or** `luma ≥ 0.70` | `rtx.dusklight.emissive.glowChroma` / `glowLuma` |
 
-| Evidence | Weight | Why it is evidence |
-| :-- | --: | :-- |
-| **the TEV colour program never reads the rasterized channel** (`GX_CC_RASC`/`RASA`) | 0.50 | the colour is fixed regardless of the lights — the surface takes no light *in fact* |
-| colour authored in a register, not per-vertex | 0.25 | not §7c's baked lighting |
-| a TEV stage scaled past what the console could display (`GX_CS_SCALE_2/4`) | 0.25 | **the only thing in GX that states "brighter than the display"** |
+Clause 4 is an **or** on purpose: an authored glow is either a strong colour or
+it is near-white-hot, and a muted mid-tone is a surface colour. That single
+change is what stopped the brown false positives that had followed this feature
+since rev 1.
 
-`rtx.dusklight.emissive.threshold` **defaults to 0.0**, and three colour gates
-do the work. With the corrected raster signal a threshold of 0.50 is also a
-usable strict setting — see the replay below.
+**There is no score and no threshold.** Two revisions cut on the evidence score
+and both missed the lava, which scores 0.00. Aurora still computes and logs the
+score because it is free and occasionally informative; nothing decides on it.
 
-All three gates are live in the F1 overlay:
+### Replayed over the 2026-08-05 Goron Mines log
 
-| Gate | Default | What it excludes |
-| :-- | :-- | :-- |
-| `requireAuthoredColor` | on | any surface whose colour is mixed from the vertex stream, which in this game is baked room lighting (§7c). This is what makes a threshold of 0 survivable. |
-| `minLuma` | 0.25 | dark interior geometry |
-| `minChroma` | 0.20 | white and grey candidates — UI, screen copies, plain geometry |
+**6 of 77 materials, no tuning, no false positives:**
 
-Raise the threshold toward 0.50 if too much of the world glows; the log prints
-every candidate's score, so it can be aimed rather than guessed.
-
-**Replayed against the 2026-08-05 Goron Mines log**, the shipped defaults accept
-**9 of 77 materials**:
-
-| Material | Colour | Luma | Chroma | Shape | Reads raster? |
+| Material | Colour | Luma | Chroma | Shape | Texture |
 | :-- | :-- | --: | --: | :-- | :-- |
-| `EFF68502` | `FFF0A0` | 0.92 | 0.37 | `tex*c` | no |
-| `7E31CACC` | `FF6432` | 0.55 | 0.80 | `ramp` | no |
-| `40D45477` | `FF6B00` | 0.55 | 1.00 | `ramp` | no |
-| `02C00D51` | `826944` | 0.42 | 0.24 | `ramp` | no |
-| `7F4CD246` | `965744` | 0.41 | 0.32 | `tex*c` | no |
-| `72361C91` | `785A32` | 0.37 | 0.27 | `ramp` | **yes** |
-| `D572C706` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
-| `1C95BA4B` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
-| `9866CEA2` | `FF0000` | 0.30 | 1.00 | `ramp` | no |
+| `D572C706` | `FF0000` | 0.30 | 1.00 | `ramp` | 32×32 `IA8` |
+| `1C95BA4B` | `FF0000` | 0.30 | 1.00 | `ramp` | 32×32 `IA8` |
+| `9866CEA2` | `FF0000` | 0.30 | 1.00 | `ramp` | 64×64 `I8` |
+| `40D45477` | `FF6B00` | 0.55 | 1.00 | `ramp` | 32×64 `I4` |
+| `7E31CACC` | `FF6432` | 0.55 | 0.80 | `ramp` | 32×32 `I8` |
+| `EFF68502` | `FFF0A0` | 0.92 | 0.37 | `tex*c` | 128×128 `I4` |
 
-All four lava and fire materials are in it, and the blast radius is three
-browns rather than half the room. Rejections: 30 never evaluated (HUD or no
-colour), 21 too grey, 15 colour mixed from the vertex stream, 2 too dark.
+Every lava and fire surface in the room, plus one bright warm glow texture.
 
-Note the single `readsRASC` row — the olive `785A32`, and the likeliest false
-positive of the nine. Raising the threshold to 0.50 drops exactly that one.
-
-**This is a judgement, not a translation, and it is stated as one.** GX cannot
-distinguish lava from a red banner. The rule is "saturated, bright, authored
-entirely in TEV constants" and it will be wrong somewhere.
+Rejections, at the first clause that fired: **30** never evaluated (HUD or
+nothing to take a colour from), **27** colour program reads the lit channel,
+**9** no colour of their own — every one an EFB copy or full-screen quad — and
+**5** a colour that is neither saturated nor bright.
 
 ### The transport
 

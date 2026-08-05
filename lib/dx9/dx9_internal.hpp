@@ -199,19 +199,22 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //   Ambient.r     1 when TFACTOR carries the texture-white endpoint
 //   Specular.r    1 when the vertex colour stream is authored material
 //                 colour rather than baked lighting                §7c
-//   Specular.g    1 when aurora evaluated a presentable colour here. Separate
-//                 from the score so the fork can tell "scored 0" apart from
-//                 "no aurora wrote this material" and cut at 0.       §9
-//   Specular.b    1 when that colour came entirely from TEV constants, with
-//                 no vertex-stream contribution                       §9
+//   Specular.g    1 when aurora evaluated a presentable colour here. 0 for the
+//                 HUD and for draws with nothing to take a colour from    §9
+//   Specular.b    1 when the material has a colour of its own - authored in
+//                 TEV constants, not mixed from the vertex stream and not a
+//                 bare texture pass-through                              §9
+//   Specular.a    1 when the material is SELF-LIT: no TEV colour stage reads
+//                 the rasterized channel, so its colour is fixed whatever
+//                 the lights do. This is the basis of the emissive rule  §9
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
-                               float evaluated, float colorAuthored) noexcept {
+                               float evaluated, float colorAuthored, float selfLit) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
   mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
-  mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, 0.f};
+  mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
     return;

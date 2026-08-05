@@ -1229,7 +1229,6 @@ SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
   // this draw at all. Orthographic (HUD) and unevaluable draws never become
   // candidates however low the fork's threshold goes.
   e.evaluated = true;
-  e.colorAuthored = !albedo.usesVertexColor;
 
   const auto& chan = g_gxState.colorChannelConfig[GX_COLOR0];
 
@@ -1285,6 +1284,16 @@ SelfLitEvidence evaluate_self_lit(const AlbedoIntent& albedo) noexcept {
   // uses: prefer the more chromatic end, break ties towards the brighter one.
   const uint32_t rgb0 = albedo.out0 & 0x00FFFFFFu;
   const uint32_t rgb1 = albedo.out1 & 0x00FFFFFFu;
+
+  // "The material has a colour of its own." Two ways it can fail to, and both
+  // matter:
+  //   - the colour is mixed from the vertex stream, which in this game is baked
+  //     room lighting (§7c) rather than an authored colour;
+  //   - the program is a bare texture pass-through, black to white. That is the
+  //     shape of every EFB copy and full-screen quad in the scene - 9 of the 20
+  //     self-lit materials in the 2026-08-05 Goron Mines log - and making a
+  //     screen blit emit light is the failure this rules out.
+  e.colorAuthored = !albedo.usesVertexColor && !(rgb0 == 0x000000u && rgb1 == 0xFFFFFFu);
   const uint32_t c0 = chroma_of(rgb0), c1 = chroma_of(rgb1);
   e.color = (c1 > c0 || (c1 == c0 && luma_of(rgb1) >= luma_of(rgb0))) ? rgb1 : rgb0;
   return e;
@@ -1712,7 +1721,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      rampTFactorIsHigh ? 1.f : 0.f,
                      albedo.vertexColorIsMaterial ? 1.f : 0.f,
                      selfLit.evaluated ? 1.f : 0.f,
-                     selfLit.colorAuthored ? 1.f : 0.f);
+                     selfLit.colorAuthored ? 1.f : 0.f,
+                     selfLit.readsRaster ? 0.f : 1.f);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state

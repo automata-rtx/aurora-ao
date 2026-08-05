@@ -106,7 +106,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `emisScore` | that evidence summed, 0..1. The fork emits above `rtx.dusklight.emissive.threshold`. **Zero is a real answer** — the Goron Mines lava scores it |
 | `emisCol` | the colour aurora says the surface presents |
 | `emisEval` | 1 when aurora evaluated a presentable colour here at all. 0 for HUD/orthographic and unevaluable draws, which the fork never considers however low its threshold goes. This is what lets a score of zero still be a candidate |
-| `emisAuthored` | 1 when that colour came entirely from TEV constants, with no vertex-stream contribution. The fork's `requireAuthoredColor` gate |
+| `emisAuthored` | 1 when the material has a colour of its own — authored in TEV constants, not mixed from the vertex stream and not a bare `black → white` texture pass-through. That last case is every EFB copy and full-screen quad, and excluding it is what keeps a screen blit from lighting the room |
 | **`ras`** | 1 when some TEV colour stage reads `GX_CC_RASC`/`RASA`. Compare against `lit=` on the `matrep.k` line: they disagreed on 10 of 77 materials in one session, and where they disagree **this one is what the surface actually does** |
 | **`blend`** | the framebuffer blend: `off`, `opaque`, `alpha`, **`additive`**, **`additiveAlpha`**, `multiply`, `subtract`, `logic`, `other`. The two bold ones are the only unambiguous "this emits light" statement in GX, and Remix acts on them *before* the emissive score is consulted — see `remix-material-interface.md` §9 |
 | **`ramp`** | whether the two-colour ramp is reproduced exactly (§10): `tfLow` / `tfHigh` yes, `tfTaken` / `usesVtx` / `flat` / `unevaluable` no. Anything but `tfLow`/`tfHigh` means the material fell back to the single-op approximation |
@@ -247,8 +247,8 @@ threshold to move and that is invisible if only acceptances are printed.
 
 ```
 dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
-               authored=1 ramp=1 rampOther=fffe63 tFactor=ffff0000
-               threshold=0 minLuma=0.25 minChroma=0.2 src=texture
+               selfLit=1 authored=1 ramp=1 rampOther=fffe63 tFactor=ffff0000
+               glowChroma=0.5 glowLuma=0.7 src=albedo
                verdict=emissive applied=1
 ```
 
@@ -257,19 +257,20 @@ dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
 | `mat` | the material data hash — the same value Remix keys its material cache on |
 | `tex0hash` | ties the line to something on screen through Remix's texture categorization UI |
 | `color` | what aurora said the surface presents, linear 0..1 |
-| `score` | aurora's summed GX evidence, the same number as `emisScore` upstream |
+| `score` | aurora's summed GX evidence, the same number as `emisScore` upstream. **Reported, not used** — two revisions cut on it and both missed the lava, which scores 0.00 |
+| `selfLit` | 1 when no TEV colour stage reads the rasterized channel. This is the basis of the rule |
 | `luma` / `chroma` | brightness and saturation of that colour |
-| `authored` | aurora's `emisAuthored` as the fork read it — 0 here with `requireAuthoredColor` on is the whole reason for a rejection |
+| `authored` | aurora's `emisAuthored` as the fork read it |
 | `ramp` / `rampOther` / `tFactor` | the §10 ramp as it reached the fork. Under `src=albedo` these decide what the surface glows, so they are printed here rather than left to be joined by hand from two logs |
-| `threshold` / `minLuma` / `minChroma` / `src` | the live cuts and the colour source, printed so an old log can be read without knowing what they were set to |
+| `glowChroma` / `glowLuma` / `src` | the two glow constants and the colour source, printed so an old log can be read without knowing what they were set to. The two are **or**'d: an authored glow is a strong colour or it is near-white-hot |
 | `verdict` | `emissive` or `rejected` |
 | `applied` | 0 when the verdict was `emissive` but `rtx.dusklight.emissive.enable` is off |
 
 **Aurora's half of the same decision is `selfLit=` / `emisScore=` on
 `matrep.sum`.** A surface with no `dusklight.emis` line at all was never
 evaluated by aurora (`emisEval=0` — HUD, or nothing to take a colour from);
-`selfLit=` there says why. A `verdict=rejected` line was cut by one of the four
-gates, and the numbers on the line say which one and by how much.
+`selfLit=` there says why. A `verdict=rejected` line failed one of the
+three facts or the glow test, and the numbers on the line say which.
 
 **Two bounding rules, both of which cost a session's evidence before they
 existed:**
