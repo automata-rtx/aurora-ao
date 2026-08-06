@@ -242,10 +242,36 @@ and `CreateFileMapping`/`MapViewOfFile` for the data on every launch
 process. So nothing in the runtime is warm on launch 2 that was cold on
 launch 1.
 
-**The difference is therefore the OS file cache.** *Inference from the absence
-of any other mechanism, not a measurement.* It fits the shape: `MapViewOfFile`
-faults pages in lazily during upload, so a cold cache spreads its cost over a
-long period rather than into one stall.
+**Corrected 2026-08-06, same day.** An earlier revision of this section
+concluded "the difference is therefore the OS file cache" and named that the
+cause. That was overconfident — it reasoned from the absence of a *texture*
+cache to the absence of *any* durable cache, and there is one:
+
+**DXVK writes a pipeline state cache to disk** — `<exe>.dxvk-cache`
+(`dxvk_state_cache.cpp:1120-1128`), with `dxvk.enableStateCache` defaulting to
+`true` (`dxvk_options.cpp:29`; the only `False` in the tree is an app profile
+for an unrelated game). Remix's own options note the consequence in as many
+words: a significant performance impact "whenever shaders are uncached (e.g. on
+first load)" (`rtx_options.h:397`). **Every** first launch of this runtime is
+slow for that reason, pack or no pack.
+
+So there are two candidate contributors, and they behave differently:
+
+| Contributor | Cached where | Survives a reboot? |
+| :-- | :-- | :-- |
+| Pipeline/shader compilation | `<exe>.dxvk-cache` on disk | **Yes** — genuinely one-time |
+| Our `.dds` reads | nowhere; re-read every launch | **No** — only the OS page cache, which is volatile |
+
+**Which dominates is unmeasured.** Note also that the texture part is partly a
+*symptom*: creation is budgeted per frame, so when frames are slow for any
+reason — including shader compilation — the pack takes proportionally longer in
+wall-clock to finish arriving. "Textures appear late" does not by itself mean
+textures are what is slow.
+
+**The cheap experiment that separates them:** reboot the machine and launch
+again. That clears the OS page cache while leaving `.dxvk-cache` intact. Slow
+again ⇒ texture I/O dominates. Fast ⇒ shader compilation dominated, and the
+texture cost is minor.
 
 **Our own contribution is real and is in our hands.** The game creates
 `kTexRepCreationsPerFrame = 16` materials per frame, and each
@@ -259,8 +285,20 @@ opens per frame stalls that frame, for as many frames as `entries / 16`.
 `texrep: N material(s) created, M skipped` at the end. The wall-clock gap
 between those two lines, cold launch versus warm launch, is exactly this cost.
 
-**If it wants fixing:** make the budget time-based rather than count-based —
-spend a fixed millisecond budget per frame instead of a fixed count — so a cold
-cache stretches the ramp instead of stretching each frame. Deliberately not done
-as part of the 2026-08-06 tested change; doing it later re-opens the "tested"
-claim for this feature and nothing else.
+**If it wants fixing — and only if the reboot test says texture I/O is the
+dominant term:**
+
+1. **A time budget instead of a count.** Today the loop is "create 16, whatever
+   that costs"; a time budget is "create until 2 ms of this frame is gone".
+   That bounds the *stall* rather than the *count*, so a cold cache stretches
+   the ramp instead of stretching each frame, and a warm cache finishes sooner
+   than 16/frame would. It does **not** reduce total work.
+2. **Prefetch on a worker thread.** A background thread that simply reads each
+   `.dds` start to finish populates the OS page cache without touching the CS
+   thread, and sequential reads are far cheaper than the scattered ones
+   `MapViewOfFile` produces during upload. This attacks the actual cost rather
+   than redistributing it, and is the better fix if I/O is genuinely dominant.
+
+Neither was done as part of the 2026-08-06 tested change. Both re-open the
+"tested" claim for this feature; (2) is the larger change and would want its own
+run.

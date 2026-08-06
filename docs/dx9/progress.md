@@ -257,19 +257,28 @@ section above or into the owning document.
 tagging is unaffected, nothing else regressed.
 
 One characteristic came out of the session: **a long first-launch warm-up**,
-after which every later launch has the pack immediately. Not a defect, and the
-cause is now read rather than guessed — Remix keeps **no on-disk cache of loaded
-textures** (`findAsset` reopens the `.dds` every launch; the only dedupe map
-dies with the process), so the only thing warm on launch 2 is the OS file cache.
-*That last step is inference from the absence of any other mechanism, not a
-measurement.* Our own contribution is the 16-materials-per-frame budget, each
-doing a synchronous DDS header read on the CS thread.
+after which every later launch has the pack immediately.
 
-The measurement that would settle it is already in the log: the wall-clock gap
-between `texrep: N replacement(s) selected` and `texrep: N material(s) created`,
-cold launch versus warm. Candidate fix if it matters — a time budget per frame
-instead of a count — deliberately **not** taken, so this feature's "tested"
-claim stays intact. [`texture-replacements.md`](texture-replacements.md) §9.
+**And the first explanation written for it was wrong in the usual way** — it is
+worth reading §9 for the shape of the mistake, not just the answer. Remix keeps
+no on-disk cache of loaded *textures*: verified, `findAsset` reopens the `.dds`
+every launch and the only dedupe map dies with the process. From that the entry
+concluded the OS file cache must be the cause. It does not follow, and the step
+skipped a durable cache that does exist: **DXVK writes a pipeline state cache to
+disk**, on by default, and this runtime's own options document the first-load
+compilation cost that goes with it. Every first launch is slow for that reason,
+pack or no pack.
+
+So there are two candidates, one durable and one volatile, and **which dominates
+is unmeasured**. The texture side is also partly a *symptom*: creation is
+budgeted per frame, so slow frames from any cause stretch how long the pack
+takes to finish arriving. "Textures appear late" is not evidence that textures
+are what is slow.
+
+The experiment that separates them costs one reboot — it clears the OS page
+cache and keeps `.dxvk-cache`. Fixes are named in §9 and deliberately **not**
+taken, so this feature's "tested" claim stays intact.
+[`texture-replacements.md`](texture-replacements.md) §9.
 
 What the session did *not* exercise, and so is still only reasoned-about: BC7/BC5
 packs, a PNG entry being skipped, the device-loss path, multi-texture UI draws,
