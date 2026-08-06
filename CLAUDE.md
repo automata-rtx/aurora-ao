@@ -187,10 +187,13 @@ dusklight's workflow builds with the bumped submodule pin.
 is **effectively complete** for its stated priorities. Working under Remix:
 world/actor geometry, textures, terrain, alpha-tested foliage, UI/HUD, skinned
 characters on both paths, EFB colour copies, stable texture hashing, real
-camera, working input across resizes.
+camera, working input across resizes, and **HD texture replacement packs**
+(2026-08-06 — the pack goes to Remix through the API rather than through D3D9,
+so texture tagging is untouched; `docs/dx9/texture-replacements.md`).
 
-Remaining gaps are **catalogued rather than open** — 18 GX features beyond
-fixed-function and 11 Remix runtime limitations, all in
+Remaining gaps are **catalogued rather than open** — 17 open GX features of 18
+catalogued (#17, texture packs, closed 2026-08-05) and 11 Remix runtime
+limitations, all in
 `docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
 not what has been given up: the fork is ours, so a "Remix limitation" is a work
 item until someone reads the fork and finds a real wall. The two-colour ramp

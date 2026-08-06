@@ -125,21 +125,19 @@ From `lib/gx/gx.hpp` (`GXState`):
   lookup, see mapping doc §7).
 - Cache identity: `texObjId` + `texDataVersion` (and TLUT equivalents) —
   destroyed via `GX_AURORA_DESTROY_TEXOBJ/TLUT` (hook `evict_texture_object`).
-- Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and
-  DDS loading exist; v1 of the D3D9 backend skips replacement packs. The
-  *registry* is populated in D3D9 mode regardless (registration is pure CPU);
-  what is missing is the consumer — `find_replacement()` returns a wgpu
-  `TextureHandle`, and `lib/dx9/dx9_texture.cpp` goes straight from the GX
-  source bytes to `convert_texture()`.
-  **Corrected 2026-08-05:** this used to end "aurora-side packs would only
-  matter to the standalone image". That holds for path-traced surfaces —
-  replacement is Remix's own job there, and since 2026-08-04 that extends to
-  API-submitted assets too (content-derived mesh hashes + `submitExternalDraw`
-  consulting `getReplacementMaterial` in the fork — CI-green, no capture taken
-  in game yet). It does **not** hold for the HUD: Remix rasterizes UI draws and
-  never runs them through `getReplacementMaterial`, so the D3D9 texture is the
-  only thing that decides HUD fidelity. Full investigation, including how to
-  keep the originals out of Remix's categorization list:
+- Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and DDS
+  loading exist, and **work on the D3D9 backend as of 2026-08-05, tested good
+  2026-08-06** — but not by uploading the pack. `lib/dx9/dx9_texture.cpp` still
+  goes straight from the GX source bytes to `convert_texture()`, deliberately:
+  the D3D9 texture is what Remix hashes, so changing it would re-key every tag,
+  `rtx.conf` category and USD binding. Instead `find_replacement_index()`
+  resolves *which* replacement a texture wants without decoding anything,
+  `ContentEntry` memoizes it, and the index rides to the fork in
+  `D3DMATERIAL9::Ambient.g` (its stage in `.b`). The fork loads the file itself
+  through `remixapi_CreateMaterial` and substitutes at two sites, because a UI
+  draw never reaches material resolution.
+  `find_replacement()` — the wgpu-handle consumer — remains wgpu-only and is
+  still unused here. Full design, both sites, and the failure table:
   [`texture-replacements.md`](texture-replacements.md).
 - EFB copies: `GXCopyTex` → BP 0x52 → `copy_tex(dest, clear)` — the wgpu path
   resolves the current pass into a texture keyed by the destination pointer

@@ -84,7 +84,7 @@ vertices plus GPU-side skinning for stable mesh hashing — see
 | [`remix-material-interface.md`](remix-material-interface.md) | **How a GX material becomes a Remix material, what survives and what silently does not.** The most misunderstood system here; read it before touching `dx9_tev.cpp` or diagnosing any colour defect. **§0 is the canonical statement of what the D3D9 renderer is for** — every other doc points here rather than restating it. |
 | [`material-report.md`](material-report.md) | The `matrep.*` log: format, how to read it, how to join aurora's log to Remix's. This is how material questions get answered without asking the owner to describe pixels. |
 | [`unsupported-effects.md`](unsupported-effects.md) | Living list of effects beyond fixed-function/SM1 and how Remix could compensate. |
-| [`texture-replacements.md`](texture-replacements.md) | **HD texture packs.** How a Dolphin-format pack reaches Remix without its bytes entering D3D9, why that is what keeps texture tagging stable, and the two substitution sites the HUD forces. Implemented, untested in game. |
+| [`texture-replacements.md`](texture-replacements.md) | **HD texture packs.** How a Dolphin-format pack reaches Remix without its bytes entering D3D9, why that is what keeps texture tagging stable, and the two substitution sites the HUD forces. **Implemented and tested good 2026-08-06.** |
 | [`progress.md`](progress.md) | Why the backend is shaped the way it is (the decisions that are expensive to rediscover), plus the checkpoint log. **Add an entry whenever `lib/dx9/` changes.** |
 
 If the question is about how the game *looks* under Remix rather than about the

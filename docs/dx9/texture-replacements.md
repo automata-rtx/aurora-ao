@@ -1,7 +1,8 @@
 # HD texture packs on the D3D9 backend
 
-**Implemented 2026-08-05. Syntax-checked on the aurora side; the fork and game
-sides are not buildable here. Nothing has been tested in game.**
+**Implemented 2026-08-05. CI-green on both repos. Tested in game 2026-08-06:
+worked on the first try.** One known characteristic — a long first-launch
+warm-up — is §9.
 
 Dusklight's Dolphin-format replacement packs now reach RTX Remix on the D3D9
 backend. **Their bytes never travel through D3D9.** The game's own textures are
@@ -131,9 +132,11 @@ too. PNG entries are skipped with a bounded log rather than failing quietly.
 | aurora | `lib/dx9/dx9_internal.hpp` | `Ambient.g` = index, `Ambient.b` = stage |
 | dusklight | `src/dusk/remix_bridge.cpp` | `updateTextureReplacements()`, the creation budget, `env.texrep*` readouts |
 | dusklight | `src/dusk/settings.*` | `game.remixTextureReplacements`, launch-only |
-| fork | `rtx_dusklight_texrep.{h,cpp}` | handle decode, residency, both substitutions, counters |
-| fork | `rtx_scene_manager.cpp` | ray-traced site + the preserve-path guard |
-| fork | `d3d9_device.cpp` | rasterized site |
+| fork | `rtx_dusklight_texrep.{h,cpp}` | handle decode, residency, both substitutions, counters. Also listed in `src/dxvk/meson.build` |
+| fork | `rtx_scene_manager.cpp` | ray-traced site, the preserve-path guard, the frame-end counter roll |
+| fork | `d3d9_device.cpp` | rasterized site — the **only** place this fork touches that file |
+| fork | `rtx_dusklight_env.h` | the four `env.texrep*` readouts the game pushes |
+| fork | `dxvk_imgui.cpp` | the HD Texture Pack overlay section, and `kRequiredProtocol` |
 
 **Protocol 7.** The game and the fork are a single versioned protocol; build
 both from the same commit point.
@@ -215,6 +218,49 @@ so should still be modulated by the TEV op, tFactor and the ramp.
 nothing in either repo establishes it, so the game re-creates on device change
 rather than assume; whether ASTC-in-DDS is accepted anywhere in the chain.
 
-**Nothing here has been run.** The aurora half is syntax-checked in both the
-d3d9-on and d3d9-off configs; the fork and game halves are not buildable in this
-container.
+**Tested in game 2026-08-06 and it worked first try.** The aurora half is also
+syntax-checked in both the d3d9-on and d3d9-off configs, and both repos are
+CI-green.
+
+What the test did **not** cover, and so is still only reasoned-about: a pack
+containing BC7/BC5 (the format argument for this design is read from source, not
+demonstrated); a PNG entry actually being skipped and logged; the device-loss
+path (resize → materials re-created); a multi-texture UI draw, where only the
+albedo stage is substituted; and palette-animated art with a `$` TLUT wildcard.
+
+## 9. The first-launch warm-up (expected, not a defect)
+
+**Observed 2026-08-06.** With a pack installed, the first launch spends a long
+period at poor performance before the replacements appear. Every later launch
+has them essentially immediately.
+
+**Remix keeps no on-disk cache of loaded textures** — verified:
+`AssetDataManager::findAsset` opens the `.dds` with `std::fopen` for the header
+and `CreateFileMapping`/`MapViewOfFile` for the data on every launch
+(`rtx_asset_data_manager.cpp:200,294-305`), and the only dedupe,
+`m_assetHashToTextures` (`rtx_texture_manager.cpp:1435-1448`), dies with the
+process. So nothing in the runtime is warm on launch 2 that was cold on
+launch 1.
+
+**The difference is therefore the OS file cache.** *Inference from the absence
+of any other mechanism, not a measurement.* It fits the shape: `MapViewOfFile`
+faults pages in lazily during upload, so a cold cache spreads its cost over a
+long period rather than into one stall.
+
+**Our own contribution is real and is in our hands.** The game creates
+`kTexRepCreationsPerFrame = 16` materials per frame, and each
+`remixapi_CreateMaterial` reads the DDS header **synchronously on Remix's CS
+thread** — both `preloadTextureAsset` branches pass `async=false`, the
+`// async load` comment above the call notwithstanding. Sixteen cold-cache file
+opens per frame stalls that frame, for as many frames as `entries / 16`.
+
+**Measure it rather than argue about it.** The game logs
+`texrep: N replacement(s) selected by the registry` at the start of the pass and
+`texrep: N material(s) created, M skipped` at the end. The wall-clock gap
+between those two lines, cold launch versus warm launch, is exactly this cost.
+
+**If it wants fixing:** make the budget time-based rather than count-based —
+spend a fixed millisecond budget per frame instead of a fixed count — so a cold
+cache stretches the ramp instead of stretching each frame. Deliberately not done
+as part of the 2026-08-06 tested change; doing it later re-opens the "tested"
+claim for this feature and nothing else.

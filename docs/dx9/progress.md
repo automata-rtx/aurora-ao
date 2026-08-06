@@ -251,11 +251,34 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
+### 3.31 — HD texture packs: tested good, and the first-launch cost explained (2026-08-06)
+
+**Tested in game. Worked on the first try** — replacements appear, texture
+tagging is unaffected, nothing else regressed.
+
+One characteristic came out of the session: **a long first-launch warm-up**,
+after which every later launch has the pack immediately. Not a defect, and the
+cause is now read rather than guessed — Remix keeps **no on-disk cache of loaded
+textures** (`findAsset` reopens the `.dds` every launch; the only dedupe map
+dies with the process), so the only thing warm on launch 2 is the OS file cache.
+*That last step is inference from the absence of any other mechanism, not a
+measurement.* Our own contribution is the 16-materials-per-frame budget, each
+doing a synchronous DDS header read on the CS thread.
+
+The measurement that would settle it is already in the log: the wall-clock gap
+between `texrep: N replacement(s) selected` and `texrep: N material(s) created`,
+cold launch versus warm. Candidate fix if it matters — a time budget per frame
+instead of a count — deliberately **not** taken, so this feature's "tested"
+claim stays intact. [`texture-replacements.md`](texture-replacements.md) §9.
+
+What the session did *not* exercise, and so is still only reasoned-about: BC7/BC5
+packs, a PNG entry being skipped, the device-loss path, multi-texture UI draws,
+and `$` TLUT wildcards on animated art.
+
 ### 3.30 — HD texture packs reach Remix without entering D3D9 (2026-08-05)
 
-**Implemented. Protocol 6 → 7.** Aurora syntax-checked in both configs; the fork
-and game halves are not buildable in this container. Untested in game.
-[`texture-replacements.md`](texture-replacements.md) is the design.
+**Implemented. Protocol 6 → 7. CI-green on both repos; tested good 2026-08-06
+(see 3.31).** [`texture-replacements.md`](texture-replacements.md) is the design.
 
 3.29 concluded "substitute the replacement bytes at D3D9 texture creation". That
 works and it is the wrong trade: Remix's material hash *is* the stage-0 D3D9
