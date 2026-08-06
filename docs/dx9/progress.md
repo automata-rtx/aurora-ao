@@ -50,6 +50,7 @@ the stage's alpha to build opacity and the alpha test). Full statement:
 | How should a given GX construct map to D3D9? | `gx-to-d3d9-mapping.md` |
 | Why did this surface come out the wrong colour? | `remix-material-interface.md` |
 | What do the `matrep.*` log lines mean? | `material-report.md` |
+| How do HD texture packs reach Remix, and why not through D3D9? | `texture-replacements.md` |
 | What the feed can't carry today, and where that work would go? | `unsupported-effects.md` |
 | What is broken right now, across all three repos? | `dusklight-ao/docs/remix-open-issues.md` |
 
