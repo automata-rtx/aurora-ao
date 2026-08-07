@@ -365,7 +365,7 @@ For anyone changing `dx9_tev.cpp` or adding a Remix-facing feature:
    two-colour ramp was written down as inexpressible and then reproduced
    exactly, a week later than it needed to be (§10).
 
-## 9. Self-illumination — rev 3, 2026-08-05, CI-green and untested in game
+## 9. Self-illumination — rev 4, tested in game 2026-08-06
 
 GX has **no emissive term**, and two test sessions established something
 stronger: **no single GX fact identifies an emitter, and on the one surface this
@@ -383,6 +383,24 @@ feature exists for every GX fact reads zero.**
 That third row is the one that matters. A score of zero here is a **real
 answer**, not a missing one, so the cut has to be able to reach zero — and at
 zero the score contributes nothing and something else has to carry the rule.
+
+### Status — what is confirmed and what is not
+
+**Tested in game 2026-08-06 and working.** The rule catches the Goron Mines
+lava, the emitted colour carries the texture, and the per-material radiance
+derivation was reported as "noticeably better" than the flat multiplier it
+replaced. `rtx.dusklight.emissive.brightness` was dialled to **10.0**, which is
+now the default — 1.0 put an emitter at roughly the brightness of a fully lit
+white surface, which is not what a self-lit surface in a dark cave looks like.
+
+Calibrated in **one dark interior**. A bright exterior may want less, and no
+exterior emitter has been looked at.
+
+**Not confirmed by that session:** whether the derivation holds for a small
+pickup as well as it does for lava — the report named the lava only — and
+whether any of the six accepted materials is a false positive outside the mines.
+Both are answerable from a `dusklight.emis` log, which prints every emitter's
+`radiance=`.
 
 ### The rule — self-lit, with a colour of its own
 
