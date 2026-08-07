@@ -98,6 +98,8 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | **`form`** | what the hint advertised — see below |
 | `hintLoose` | 1 if suppression was declined *only* because the material is multi-stage |
 | `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
+| **`hintTex`** | the D3D9 texture the hint stage bound, as a bare uppercase 16-hex pointer. **This is the join key** between this line and the fork's `matrep.rmx tex0ptr` — the two sides once formatted it differently and the join silently did not join. `0` means no hint stage was emitted |
+| `tintVal` | the tint colour itself, `AARRGGBB`. Meaningful only when `tint` is not `none`; compare against `tfactor` to see whether the hint carried it or a following stage did |
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |

@@ -173,6 +173,53 @@ be deleted. This applies to `Fixed-Function-dev` and `Fixed-Function` alike — 
 dusklight branch pinning a SHA that lives only on a `claude/*` branch still
 builds today and breaks the moment that branch is cleaned up.
 
+## Merges that succeed and are still wrong
+
+**A clean `git merge` is not a correct merge, and on this project that is not a
+theoretical worry.** Several features are developed on parallel branches that
+edit the same documents, and git only compares *lines*. It cannot see that two
+branches have made the same sentence false.
+
+Two instances, both real:
+
+- **The protocol double-bump.** Two branches independently took protocol 6 → 7.
+  Git *did* conflict, on the same lines — and that made it worse, not better:
+  both sides said `7`, so the obvious resolution is to keep 7 and move on,
+  shipping two features that claim one version. The conflict was flagged; the
+  resolution was the trap.
+- **The side-channel map.** A feature claimed `D3DMATERIAL9::Ambient.g` and
+  `.b` and updated three of the four places that describe the struct. The
+  canonical table in `docs/dx9/remix-material-interface.md` §2 merged cleanly
+  and went on advertising both channels as spare — so the next feature to want
+  one would have taken a channel already in use, surfacing as a material bug
+  nowhere near either change.
+
+**So, after any merge — and before pushing one:**
+
+```
+python3 scripts/check_invariants.py
+```
+
+It checks the facts this repo states in more than one place: the `matrep.sum`
+format string against `material-report.md`, the channels `set_remix_material`
+writes against the §2 field map, and leftover conflict markers. This repo has no
+CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
+pinned submodule** — but it is fast, so run it here too rather than finding out
+after a submodule bump.
+
+**What it cannot check, and therefore what a human still has to:**
+
+- whether a "tested in game" claim is still true after the code under it changed
+- whether a document's *prose* still describes reality, as opposed to its
+  tables agreeing with the code
+- whether two in-flight branches are about to take the same spare side channel —
+  nothing can see a branch that has not merged yet
+
+**When auditing documentation after a merge, re-derive the file list from the
+diff.** Auditing from memory is how the §2 table was missed twice: every gap
+found on the third pass was in a document that had not been edited, which is
+exactly the set memory does not surface.
+
 ## Verification
 
 Verify D3D9 code with the MinGW syntax harness (see `docs/dx9/progress.md`
