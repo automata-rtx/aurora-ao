@@ -80,7 +80,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white selfLit=noRas+reg emisScore=0.75
            emisCol=B80000 emisEval=1 emisAuthored=1 blend=opaque ras=0
-           ramp=tfLow rampOther=F84040 grp=-
+           ramp=tfLow rampOther=F84040 vtxUse=const texrep=0 grp=-
 ```
 
 | Field | Means |
@@ -98,9 +98,12 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | **`form`** | what the hint advertised — see below |
 | `hintLoose` | 1 if suppression was declined *only* because the material is multi-stage |
 | `tint` | `inHint` (the hint carries it), `emitted` (a following stage carries it), `none`, or `skip:budget` |
+| **`hintTex`** | the D3D9 texture the hint stage bound, as a bare uppercase 16-hex pointer. **This is the join key** between this line and the fork's `matrep.rmx tex0ptr` — the two sides once formatted it differently and the join silently did not join. `0` means no hint stage was emitted |
+| `tintVal` | the tint colour itself, `AARRGGBB`. Meaningful only when `tint` is not `none`; compare against `tfactor` to see whether the hint carried it or a following stage did |
 | `tfactor` / `tfUsed` | the per-draw constant Remix will read |
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
+| **`texrep`** | the 1-based HD-replacement index for the texture the fork will treat as this material's albedo, `0` if the pack has none for it. Sent per draw in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`. This is the join key between a log line here and what Remix substituted — a non-zero value with nothing sharper on screen means the fork did not resolve it, which its own `texrep.rmx` counters separate. See `texture-replacements.md` |
 | **`grp`** | which piece of game code drew this, from a `GXPushDebugGroup` the game has open. **Currently always `-`** — see below |
 | **`selfLit`** | which self-illumination evidence fired: `noRas`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring. **`noRas` means the TEV colour program never reads the lit channel** — not that lighting is off, which is a different thing and was scored by mistake until 2026-08-05 |
 | `emisScore` | that evidence summed, 0..1. **Reported, not used** — three revisions cut on it and all three missed the lava, which scores 0.00. What the fork decides on is `emisEval`, `ras`, `emisAuthored` and the colour |

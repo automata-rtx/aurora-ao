@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -55,6 +56,31 @@ struct ReplacementRegistration {
 struct ReplacementGroup {
   std::vector<ReplacementRegistration> registrations;
 };
+
+/// One file-backed replacement, as handed to a renderer that loads the file itself rather
+/// than going through aurora's decoders.
+///
+/// `remixIndex` is a 1-based handle aurora assigns at registration and can resolve back from
+/// a GX texture per draw. It exists so the D3D9 backend and RTX Remix can agree on *which*
+/// replacement a draw wants without either side reproducing the other's hash: the D3D9 stream
+/// carries the index, and whoever loaded the file is keyed by the same number.
+/// See aurora docs/dx9/texture-replacements.md.
+struct ReplacementDescriptor {
+  uint64_t id = 0;         ///< registry entry id
+  uint32_t remixIndex = 0; ///< 1-based; 0 is never a valid index
+  int32_t priority = 0;
+  TextureSourceKey key;
+  std::string path; ///< absolute where the registry had one; empty for non-file entries
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+};
+
+/// Lists the file-backed replacement currently *selected* for each key (priority/sequence
+/// resolved), so a caller can hand the files to another renderer. Does not decode anything and
+/// does not touch the GPU. Entries with no path (raw/virtual registrations) are skipped, and so
+/// are entries that never received an index.
+std::vector<ReplacementDescriptor> enumerate_selected_replacements();
 
 /// Parses a replacement filename of the form "tex1_{w}x{h}[_m]_{texhash}[_{tluthash}]_{fmt}[_arb].dds|.png"
 /// into the source key it addresses. Hash fields may be "$" (see the wildcard constants above).

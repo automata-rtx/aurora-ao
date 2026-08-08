@@ -3,6 +3,7 @@
 #ifdef AURORA_ENABLE_D3D9
 
 #include "../gfx/texture_convert.hpp"
+#include "../gfx/texture_replacement.hpp"
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/hash/hash.h>
@@ -61,6 +62,11 @@ struct ContentKey {
 struct ContentEntry {
   IDirect3DTexture9* tex = nullptr;
   uint32_t lastUsedFrame = 0;
+  // 1-based HD-replacement index for this exact content, resolved once when the entry is
+  // built. Lives here rather than on IdEntry because the id alias is churned per draw and
+  // erased on GXTexObj eviction while this texture survives - and because the replacement is
+  // a pure function of the source bytes, which is exactly what ContentKey identifies.
+  uint32_t remixIndex = 0;
 
   void release() noexcept {
     if (tex != nullptr) {
@@ -472,7 +478,13 @@ OffscreenTarget* texture_get_offscreen(uint32_t width, uint32_t height) noexcept
   return nullptr;
 }
 
-IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
+IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id, uint32_t* outRemixIndex) noexcept {
+  const auto report = [&](uint32_t index) noexcept {
+    if (outRemixIndex != nullptr) {
+      *outRemixIndex = index;
+    }
+  };
+  report(0);
   if (id >= gx::MaxTextures) {
     return nullptr;
   }
@@ -481,6 +493,7 @@ IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
   // EFB-copy source? Real color copies first; depth/unsupported copies get
   // the neutral placeholder. Palette-format copies (e.g. shadow silhouettes)
   // are sampled as plain color for now — approximate but visible.
+  // Render targets have no source bytes to key a replacement on, so they keep index 0.
   if (IDirect3DBaseTexture9* copy = texture_find_copy(obj.data)) {
     return copy;
   }
@@ -514,6 +527,7 @@ IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
         if (const auto cit = s_byContent.find(entry.key); cit != s_byContent.end()) {
           entry.lastUsedFrame = s_frameIndex;
           cit->second.lastUsedFrame = s_frameIndex;
+          report(cit->second.remixIndex);
           return cit->second.tex;
         }
       }
@@ -531,10 +545,16 @@ IDirect3DBaseTexture9* resolve_texmap(GXTexMapID id) noexcept {
     if (tex == nullptr) {
       return nullptr;
     }
-    cit = s_byContent.emplace(key, ContentEntry{tex, s_frameIndex}).first;
+    // Resolved once per distinct content, not per draw: the registry lookup hashes the source
+    // bytes again, which is the same cost make_content_key just paid, and doing it per draw
+    // would double it for every textured draw in the frame.
+    const uint32_t remixIndex = isPalette ? gfx::texture_replacement::find_replacement_index(obj, *tlut)
+                                          : gfx::texture_replacement::find_replacement_index(obj);
+    cit = s_byContent.emplace(key, ContentEntry{tex, s_frameIndex, remixIndex}).first;
   } else {
     cit->second.lastUsedFrame = s_frameIndex;
   }
+  report(cit->second.remixIndex);
 
   if (obj.texObjId != 0 && !obj.no_cache() && (!isPalette || !tlut->no_cache())) {
     s_byObjId.insert_or_assign(obj.texObjId, IdEntry{
