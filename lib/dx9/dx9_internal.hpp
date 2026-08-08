@@ -381,6 +381,34 @@ inline constexpr size_t kMatrepMaxMaterials = 512;
 // lib/gx/gx_fmt.hpp rather than through a second set of name tables.
 bool matrep_should_emit(uint64_t key) noexcept;
 
+// Per-frame D3D9 draw-call count, reported periodically.
+//
+// A draw costs far more under Remix than it does in raster. A draw too small
+// for its own BLAS is merged into a shared one, but it still contributes its
+// own VkAccelerationStructureGeometryKHR and its own surface, and that BLAS is
+// rebuilt whenever the geometry moves — read in the fork at
+// rtx_accel_manager.cpp, `buildInfo.geometryCount = bucket->geometries.size()`
+// and the bucket's `originalInstances`. So a thousand single-quad draws is
+// expensive in a way a thousand quads in one draw is not. That makes "how many
+// draws did this frame cost" the number that decides whether a dense particle
+// effect is affordable, and the project's rule is that such a number is logged
+// rather than guessed at.
+//
+// Bounded: one line every kDrawStatsPeriod frames, carrying the period's mean
+// and its worst single frame (the mean alone hides a spike that only happens
+// while it is raining).
+inline constexpr uint32_t kDrawStatsPeriod = 600;
+struct DrawStats {
+  uint32_t frameDraws = 0;   // draws issued so far this frame
+  uint32_t periodFrames = 0; // frames counted since the last report
+  uint64_t periodDraws = 0;  // draws summed over those frames
+  uint32_t periodPeak = 0;   // worst single frame in the period
+};
+extern DrawStats g_drawStats;
+// Rolls this frame's count into the period totals and logs when the period
+// closes. Called once per frame from end_frame().
+void draw_stats_end_frame() noexcept;
+
 } // namespace aurora::dx9
 
 #endif // AURORA_ENABLE_D3D9

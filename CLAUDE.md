@@ -202,7 +202,9 @@ python3 scripts/check_invariants.py
 
 It checks the facts this repo states in more than one place: the `matrep.sum`
 format string against `material-report.md`, the channels `set_remix_material`
-writes against the §2 field map, and leftover conflict markers. This repo has no
+writes against the §2 field map, the `dx9.draws` reporting period against the
+four documents that quote it (two inside worked example lines a reader will take
+as literal output), and leftover conflict markers. This repo has no
 CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
 pinned submodule** — but it is fast, so run it here too rather than finding out
 after a submodule bump.
@@ -237,6 +239,15 @@ characters on both paths, EFB colour copies, stable texture hashing, real
 camera, working input across resizes, and **HD texture replacement packs**
 (2026-08-06 — the pack goes to Remix through the API rather than through D3D9,
 so texture tagging is untouched; `docs/dx9/texture-replacements.md`).
+
+**One `GXBegin` block is one D3D9 draw call**, and Remix charges per draw rather
+than per pixel — a draw too small for its own BLAS still contributes its own
+geometry entry and surface to a bucket that rebuilds every frame. A game-side
+loop that wraps each quad in its own `GXBegin`/`GXEnd` is therefore affordable
+in raster and ruinous here; the kankyo weather effects spent ~1000 draws a frame
+that way until 2026-08-08. `dx9.draws` in the log reports draws per frame (mean
+and peak over 600 frames) so this is measurable rather than guessed at.
+`docs/dx9/progress.md` §3.32.
 
 Remaining gaps are **catalogued rather than open** — 17 open GX features of 18
 catalogued (#17, texture packs, closed 2026-08-05) and 11 Remix runtime

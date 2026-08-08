@@ -414,6 +414,7 @@ void end_frame() noexcept {
     g_dx9.dev->EndScene();
     g_dx9.inScene = false;
   }
+  draw_stats_end_frame();
   const HRESULT hr = g_dx9.dev->Present(nullptr, nullptr, nullptr, nullptr);
   if (hr == D3DERR_DEVICELOST) {
     g_dx9.deviceLost = true;
