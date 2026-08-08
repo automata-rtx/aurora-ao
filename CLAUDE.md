@@ -202,7 +202,9 @@ python3 scripts/check_invariants.py
 
 It checks the facts this repo states in more than one place: the `matrep.sum`
 format string against `material-report.md`, the channels `set_remix_material`
-writes against the §2 field map, and leftover conflict markers. This repo has no
+writes against the §2 field map, the `dx9.draws` reporting period against the
+four documents that quote it (two inside worked example lines a reader will take
+as literal output), and leftover conflict markers. This repo has no
 CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
 pinned submodule** — but it is fast, so run it here too rather than finding out
 after a submodule bump.

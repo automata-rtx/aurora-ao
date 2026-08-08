@@ -156,10 +156,55 @@ def check_side_channel_map() -> None:
         )
 
 
+def check_draw_stats_period() -> None:
+    """The dx9.draws reporting period is stated in the code and in four documents.
+
+    kDrawStatsPeriod is the only place it is true; material-report.md,
+    architecture-notes.md, CLAUDE.md and dusklight's playbook all quote it,
+    two of them inside a worked example line (`frames=600`) that a reader will
+    take as literal output. Changing the constant without those is the ordinary
+    way a log example stops matching the log.
+    """
+    global checks_run
+    checks_run += 1
+
+    hdr = read("lib/dx9/dx9_internal.hpp")
+    if hdr is None:
+        fail("draw-stats", "lib/dx9/dx9_internal.hpp is missing")
+        return
+
+    m = re.search(r"kDrawStatsPeriod\s*=\s*(\d+)", hdr)
+    if not m:
+        fail("draw-stats", "could not find kDrawStatsPeriod in dx9_internal.hpp")
+        return
+    period = m.group(1)
+
+    for rel in ["docs/dx9/material-report.md", "docs/dx9/architecture-notes.md", "CLAUDE.md"]:
+        doc = read(rel)
+        if doc is None:
+            continue
+        for n, line in enumerate(doc.splitlines(), 1):
+            for stated in re.findall(r"every (\d+) frames", line):
+                if stated != period:
+                    fail(
+                        "draw-stats",
+                        f"{rel}:{n} says the dx9.draws period is {stated} frames but "
+                        f"kDrawStatsPeriod is {period}",
+                    )
+            for stated in re.findall(r"dx9\.draws frames=(\d+)", line):
+                if stated != period:
+                    fail(
+                        "draw-stats",
+                        f"{rel}:{n} shows a dx9.draws example with frames={stated} but "
+                        f"kDrawStatsPeriod is {period} - the example cannot occur",
+                    )
+
+
 def main() -> int:
     check_conflict_markers()
     check_matrep_fields_documented()
     check_side_channel_map()
+    check_draw_stats_period()
 
     if failures:
         print(f"{len(failures)} inconsistency/ies across {checks_run} checks:\n")
