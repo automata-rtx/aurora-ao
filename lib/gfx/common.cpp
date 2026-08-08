@@ -37,6 +37,9 @@
 namespace aurora::gfx {
 static Module Log("aurora::gfx");
 
+// Forwards to the D3D9 backend, which compiles to nothing when D3D9 is disabled.
+void set_dusklight_water(bool isWater) noexcept { dx9::set_dusklight_water(isWater); }
+
 using webgpu::g_device;
 using webgpu::g_instance;
 using webgpu::g_queue;

@@ -145,4 +145,11 @@ bool is_offscreen() noexcept;
 /// code that registered draw types. Callable from the game thread only.
 void synchronize();
 
+// Dusklight: marks the draws that follow as water, until cleared.
+//
+// The game knows its water by J3D material name; GX carries no such fact, so it is told
+// rather than inferred. Only the D3D9 backend acts on it - it becomes a translucent
+// material in Remix - and it is a no-op on every other backend.
+void set_dusklight_water(bool isWater) noexcept;
+
 } // namespace aurora::gfx

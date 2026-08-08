@@ -99,6 +99,18 @@ void end_offscreen() noexcept;
 bool in_offscreen() noexcept;
 
 // Cache eviction mirrors (GX_AURORA_DESTROY_*).
+// Dusklight: marks the draws that follow as water, until cleared.
+//
+// The game identifies its own water by J3D material name (dKy_bg_MAxx_proc), which is a
+// fact GX never carries - so it is set here rather than inferred from TEV state. Remix
+// turns it into a translucent material; without it every water layer falls through to an
+// opaque one and reads as a white sheet.
+//
+// Set immediately before the material's GX state is programmed and cleared after, so it
+// brackets exactly that material's draws. Carried to Remix in D3DMATERIAL9::Ambient.g,
+// beside the self-illumination and ramp channels - see set_remix_material.
+void set_dusklight_water(bool isWater) noexcept;
+
 void on_evict_texture(uint32_t texObjId) noexcept;
 void on_evict_tlut(uint32_t tlutObjId) noexcept;
 void on_evict_copy_texture(const void* dest) noexcept;
@@ -117,6 +129,7 @@ inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uin
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
+inline void set_dusklight_water(bool) noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}

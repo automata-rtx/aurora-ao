@@ -545,6 +545,8 @@ static void scale_copy_dst(uint32_t& width, uint32_t& height) noexcept {
   height = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(height) * scaleY)), 1);
 }
 
+void set_dusklight_water(bool isWater) noexcept { g_dusklightWater = isWater; }
+
 void copy_tex(const void* dest, bool clear) noexcept {
   if (g_dx9.dev == nullptr) {
     return;

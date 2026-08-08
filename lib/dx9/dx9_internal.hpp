@@ -58,6 +58,11 @@ struct Device {
 };
 extern Device g_dx9;
 
+// Dusklight water, set by the game around the material whose draws are water. Not part of
+// StateCache: that caches D3D9 state to avoid redundant Set* calls, and this is an input to
+// what gets built rather than a record of what was sent. See dx9.hpp set_dusklight_water.
+inline bool g_dusklightWater = false;
+
 // Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
 // D3D's camera-space texgen inputs back to GX's model-space inputs
 // (docs #7). Invalid for per-vertex matrix-palette / skinned draws, where a
@@ -209,11 +214,13 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //                 the lights do. This is the basis of the emissive rule  §9
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
-                               float evaluated, float colorAuthored, float selfLit) noexcept {
+                               float evaluated, float colorAuthored, float selfLit,
+                               float isWater) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
-  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, 0.f, 0.f, 0.f};
+  // Ambient.g is the Dusklight water flag; .b and .a remain free.
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWater, 0.f, 0.f};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

@@ -1721,7 +1721,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      albedo.vertexColorIsMaterial ? 1.f : 0.f,
                      selfLit.evaluated ? 1.f : 0.f,
                      selfLit.colorAuthored ? 1.f : 0.f,
-                     selfLit.readsRaster ? 0.f : 1.f);
+                     selfLit.readsRaster ? 0.f : 1.f,
+                     g_dusklightWater ? 1.f : 0.f);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
