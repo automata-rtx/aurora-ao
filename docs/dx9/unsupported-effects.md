@@ -59,7 +59,7 @@ until 2026-08-04, when it stopped being one.
 | R4 | **UI overlay is not re-derived from a mid-run device `Reset`** | HUD keeps the scale/placement it had at device-creation size after any resize; raw D3D9 follows the Reset correctly | Resizes **recreate** the device instead (`recreate_device`), debounced one frame. Costs a black screen for the rebuild |
 | R5 | **`MaxVertexBlendMatrixIndex` is not enforced** — Remix reads the transform state directly and skins on the GPU | Masked a real raw-D3D9 bug for weeks: GX's 10-deep matrix palette overran the device's 9-index cap and scattered vertices, while Remix looked perfect | Palette is compacted per draw, and overflow draws are split into per-palette groups |
 | R6 | **Texture transform element counts > 2 are clamped; projected texture transforms unsupported** (`Use of projected texture transform detected…`) | Projected camera-space texgen (`GX_TG_MTX3x4`) cannot survive into Remix — projected shadows / env maps are wrong there | **Open, not attempted.** Raw D3D9 being correct here buys nothing, since that image is never shown (§0). Two routes: teach the fork the projected transform, or evaluate the texgen per vertex in aurora so what crosses is already projected |
-| R7 | **Billboard detection expects fan-order quad indices** (`unsupported quad index layout for billboard creation`) | Particle quads miss Remix's billboard path | Quads emit `(0,1,2)(0,2,3)` |
+| R7 | **Billboard detection expects fan-order quad indices** (`unsupported quad index layout for billboard creation`) | Particle quads miss Remix's billboard path | Quads emit `(0,1,2)(0,2,3)`, which is the `A,B,C,A,C,D` layout `createBillboards` checks for. **Two further gates, read in the fork 2026-08-07 and untested:** generation runs only for instances already in the *unordered* TLAS — i.e. only for textures categorised as Particle (`refreshBillboardsForCurrentFrame` guards on `m_isUnordered`) — and `rtx.useIntersectionBillboardsOnPrimaryRays` is **false** by default, so billboards act as intersection primitives on indirect rays only. Batching the weather emitters (2026-08-08) is what makes this reachable at all: the path walks the quads of one instance, so it had nothing to work with while each quad was its own draw |
 | R8 | **New GUI input method registers raw keyboard with `RIDEV_NOLEGACY`**, killing `WM_KEY*` process-wide | Game input dead under Remix while Remix hotkeys work | `rtx.useNewGuiInputMethod = False` in `rtx.conf` (documented game-side) |
 | R9 | Remix **auto-detects orthographic draws as UI** and rasterizes them as a screen overlay | Handing that path a 3D view matrix (the camera split) mis-shapes the HUD | The camera split is skipped for `GX_ORTHOGRAPHIC` draws |
 | R10 | **Emissive colour is a constant *or* a texture, never both**, and whichever it is then gets run through the **albedo's** texture op with the emissive substituted for the texture sample | A glow set to a colour arrives as `op(colour, tFactor)`. Separately, a *constant* glow at any useful intensity swamps the albedo: the Goron Mines lava read as one flat hot colour with no crust (tested 2026-08-04) | **Fixed in the fork, and the choice exposed.** `RtSurface::emissiveSource` selects out of the texture op entirely — the constant path is now verbatim, so no pre-image inversion is needed — and `rtx.dusklight.emissive.colorSource` lets the owner pick the reconstructed albedo, the albedo texture through its op, or the flat colour. GX records no emissive term, so there is no correct answer to hard-code; 2026-08-05 established that hard-coding one anyway removes a control that was in use. See [`remix-material-interface.md`](remix-material-interface.md) §9 |
@@ -264,6 +264,17 @@ Remix's `rtx.geometryAssetHashRuleString` defaults to
 identity. The batching optimisation — good for raster draw-call count — is
 precisely what destroys that identity, and the Remix-friendly path already
 exists in the same function.
+
+**Do not generalise this into "batching is bad under Remix".** It is bad *here*
+because grass has a stable alternative — a per-blade display list whose
+positions do not move — so batching trades a real identity away for draw calls.
+Geometry that has no stable identity to lose is the opposite case: the kankyo
+weather particles move every vertex every frame regardless, so their hash
+churned before batching and churns after, and collapsing ~1000 draws a frame
+into one cost nothing that was not already gone (2026-08-08, tested). Texture
+*tagging* survives either way, because tags key on the texture hash rather than
+the geometry hash. The question to ask is not "does this batch?" but "is there a
+stable identity here to destroy?"
 
 *Fix direction, not implemented:* a game-side switch that forces the per-blade
 display-list path while under Remix. It costs exactly what the batching saves,

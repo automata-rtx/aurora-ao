@@ -252,6 +252,74 @@ Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
 
+### 3.32 — dense particles were a draw-call problem, and the backend can now count draws (2026-08-08)
+
+**Tested in game 2026-08-08: the owner reports particle performance is "far
+better than previously."** Read that precisely — the *outcome* is tested. The
+`dx9.draws` figures were not reported back, so the predicted collapse from
+~1000 draws a frame to one is confirmed **by its effect, not by the counter**.
+Anyone with a log from a rainy Hyrule Field session can close that gap in a
+minute, and should.
+
+**The defect was in the game, not here**, but it is recorded in this repo
+because the cost it exposed is a property of how this backend submits draws.
+Rain in Hyrule Field and snow in the Snowpeak exteriors ran at unusable frame
+rates under Remix. The kankyo weather effects are immediate-mode GX and were
+emitting **one `GXBegin`/`GXEnd` per quad** — `dKyr_drawRain` up to 250 drops ×
+4 offset layers, so up to a thousand draws a frame. This backend submits each
+`GXBegin` block as its own `*UP` call (`command_processor.cpp` decodes and
+submits immediately; there is no batching layer), so every quad became a
+separate draw in Remix. Fixed game-side in `d_kankyo_rain.cpp` by hoisting
+`GXBegin`/`GXEnd` out of the per-quad loops.
+
+**Why this is worth knowing here: Remix charges per draw, not per pixel.** A
+draw too small for its own BLAS is merged into a shared bucket, but it still
+contributes its own `VkAccelerationStructureGeometryKHR` and its own surface,
+and that bucket rebuilds whenever the geometry moves — every frame, for
+weather. Read in the fork at `rtx_accel_manager.cpp`
+(`buildInfo.geometryCount = bucket->geometries.size()`, and the bucket's
+`originalInstances`).
+
+**Two owner observations did the diagnostic work, and both are reusable:**
+
+- **Marking the textures as particles in Remix's categorization UI changed
+  nothing.** That category only picks which TLAS a draw lands in and how the
+  resolve loop treats it. It is not a performance control, and if a particle
+  problem does not respond to it the cost is per draw, not per pixel.
+- **Tagging the same texture as UI made it smooth.** UI draws never enter the
+  raytraced scene, so that swap removes per-draw cost and nothing else. As a
+  *diagnostic* it is sharp: if UI-tagging fixes the frame rate, the answer is
+  draw count. (As a fix it is not free — it also removes the effect from the
+  path tracer, and for snow it double-composites the game's own planar
+  reflection copies.)
+
+**This does not contradict the grass entry in
+[`unsupported-effects.md`](unsupported-effects.md), and the difference is the
+point.** There, batching is called out as *destroying* asset-hash identity,
+because `rtx.geometryAssetHashRuleString` is `positions,indices,…` and grass has
+a stable per-blade display-list path available. Particles have no such path:
+every drop moves every frame, so the hash churned before batching and churns
+after. Batching costs nothing that was not already lost, and texture *tagging*
+is unaffected either way because tags key on the texture hash, not the geometry
+hash. **Batching is wrong for geometry that could have a stable identity and
+right for geometry that cannot.**
+
+**New in this repo: `dx9.draws`.** `lib/dx9/dx9_draw.cpp` counts every
+`DrawPrimitiveUP` / `DrawIndexedPrimitiveUP` the backend issues, including each
+draw of a palette-split skinned mesh, and logs one line every 600 frames:
+
+```
+dx9.draws frames=600 mean=412 peak=1387 - D3D9 draw calls per frame
+```
+
+`peak` is carried separately from `mean` because the spike only exists while
+the weather is running, and a mean over 600 frames hides it. This existed
+nowhere before, which is why a thousand-draw frame went unnoticed for months.
+
+**Syntax-checked** in both the d3d9-on and d3d9-off configs. The counter is
+plain arithmetic on a frame boundary; it has no failure mode that a build would
+not catch.
+
 ### 3.31 — HD texture packs: tested good, and the first-launch cost explained (2026-08-06)
 
 **Tested in game. Worked on the first try** — replacements appear, texture

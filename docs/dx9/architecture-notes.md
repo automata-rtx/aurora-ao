@@ -197,7 +197,17 @@ Two distinct skinning mechanisms exist:
   D3D9 alpha test `GREATEREQUAL 0x80`. Billboarding itself is just a
   view-aligned pos matrix computed by J3D on the CPU — nothing to do.
 - **Particles:** immediate-mode quads, alpha `GEQUAL n OR GEQUAL n`,
-  additive/standard blends.
+  additive/standard blends. **One `GXBegin` block is one `*UP` draw call here** —
+  the FIFO decodes and submits immediately and there is no batching layer — so a
+  loop that wraps each quad in its own `GXBegin`/`GXEnd` costs one draw per
+  quad. That is affordable in raster and is not under Remix, where each draw
+  contributes its own geometry entry and surface to a BLAS that rebuilds every
+  frame; the kankyo weather effects were spending ~1000 draws a frame that way
+  until 2026-08-08. Emitters that batch use `GXBegin(..., GX_AUTO)` around the
+  whole loop and carry per-particle colour in vertex `CLR0` rather than in
+  `GX_TEVREG0`, because a GX state change cannot cross a `GXBegin` block.
+  `dx9.draws` in the log is how this is measured. See
+  [`progress.md`](progress.md) §3.32.
 - Immediate-mode surface (most-called): `GXBegin/End`, `GXPosition3f32/2f32/3s16`,
   `GXColor1u32/4u8`, `GXTexCoord2s16/2f32/2u16/2s8`, `GXNormal3f32`,
   `GXSetVtxAttrFmt/Desc`, `GXLoadPosMtxImm`, `GXSetCurrentMtx`, full TEV set,

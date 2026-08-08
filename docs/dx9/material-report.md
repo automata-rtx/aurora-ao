@@ -314,6 +314,27 @@ vertex-colour verdict, the emissive score and the ramp endpoints ride
 `D3DMATERIAL9` fields the fork reads directly (`remix-material-interface.md` §2),
 and those appear on `matrep.sum` rather than here.
 
+`dx9.draws` is not part of the material report and answers a different question —
+**how many D3D9 draw calls did a frame cost**:
+
+```
+dx9.draws frames=600 mean=412 peak=1387 - D3D9 draw calls per frame
+```
+
+One line every 600 frames, counting every `DrawPrimitiveUP` /
+`DrawIndexedPrimitiveUP` the backend issues, including each draw of a
+palette-split skinned mesh. `peak` is reported separately because the spike that
+matters only exists while something dense is on screen — weather, a crowd of
+effects — and a mean over 600 frames hides it entirely.
+
+Read it when performance is the question rather than colour. Remix charges per
+draw, not per pixel: a draw too small for its own BLAS still contributes its own
+geometry entry and surface to a bucket that rebuilds every frame. A game-side
+loop that wraps each quad in its own `GXBegin`/`GXEnd` therefore costs one draw
+per quad, which is how the kankyo weather effects came to spend ~1000 draws a
+frame ([`progress.md`](progress.md) §3.32). If a dense effect is slow, this line
+is the first thing to look at, and a `peak` in the thousands is the signature.
+
 ## Extending it
 
 Add fields rather than lines, and keep every line one line. The format is
