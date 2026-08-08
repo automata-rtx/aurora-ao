@@ -250,7 +250,7 @@ and peak over 600 frames) so this is measurable rather than guessed at.
 `docs/dx9/progress.md` §3.32.
 
 Remaining gaps are **catalogued rather than open** — 17 open GX features of 18
-catalogued (#17, texture packs, closed 2026-08-05) and 11 Remix runtime
+catalogued (#17, texture packs, closed 2026-08-05) and 12 Remix runtime
 limitations, all in
 `docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
 not what has been given up: the fork is ours, so a "Remix limitation" is a work
