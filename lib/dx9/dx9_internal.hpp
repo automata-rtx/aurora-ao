@@ -349,6 +349,31 @@ struct SkinState {
 };
 extern SkinState g_skin;
 
+// Which character the current draws belong to, and which joint the game loaded into each GX
+// position-matrix slot. Published by the game through GXSetModelIdentity; consumed only to hand
+// RTX Remix a blend-index -> global-joint table (publish_draw_skeleton). Nothing here affects
+// rendering, and a build with no Remix present simply finds no export to call.
+struct ModelIdentityState {
+  uint64_t modelKey = 0;
+  uint64_t instanceKey = 0;
+  uint32_t jointCount = 0;
+  uint32_t slotCount = 0;
+  std::array<uint16_t, gx::MaxPnMtx> slotToJoint{};
+
+  bool valid() const noexcept { return modelKey != 0 && instanceKey != 0 && jointCount != 0; }
+};
+extern ModelIdentityState g_modelIdentity;
+
+// Composes g_modelIdentity's slot->joint table with this draw's palette compaction and hands the
+// result to the Remix fork. `slots` maps D3D9 blend index -> GX slot and has `slotCount` entries;
+// pass slotsAreJoints when the blend indices are already global joint indices, which is the case
+// on the GXSetSkinning path where the whole palette is loaded in joint order.
+//
+// Always call it, once per emitted D3D9 draw, even when there is no identity: it clears the
+// fork's latch in that case, and a stale latch would attribute the next unrelated draw to this
+// character.
+void publish_draw_skeleton(const uint8_t* slots, uint32_t slotCount, bool slotsAreJoints) noexcept;
+
 // ---------------------------------------------------------------------------
 // Big-endian-aware stream readers for vertex decoding.
 // ---------------------------------------------------------------------------

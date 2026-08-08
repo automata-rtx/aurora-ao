@@ -665,6 +665,84 @@ void set_skinning(const void* palette, uint32_t jointCount, const void* influenc
 
 void clear_skinning() noexcept { g_skin = {}; }
 
+ModelIdentityState g_modelIdentity;
+
+void set_model_identity(uint64_t modelKey, uint64_t instanceKey, uint32_t jointCount, uint32_t slotCount,
+                        const uint16_t* slotToJoint) noexcept {
+  g_modelIdentity = {};
+  g_modelIdentity.modelKey = modelKey;
+  g_modelIdentity.instanceKey = instanceKey;
+  g_modelIdentity.jointCount = jointCount;
+  g_modelIdentity.slotToJoint.fill(0xFFFF);
+  if (slotToJoint != nullptr) {
+    const uint32_t count = std::min<uint32_t>(slotCount, gx::MaxPnMtx);
+    for (uint32_t i = 0; i < count; ++i) {
+      g_modelIdentity.slotToJoint[i] = slotToJoint[i];
+    }
+    g_modelIdentity.slotCount = count;
+  }
+}
+
+void clear_model_identity() noexcept { g_modelIdentity = {}; }
+
+// The Remix fork exports this; stock Microsoft d3d9.dll and stock Remix do not, so a missing
+// symbol is the normal state rather than an error. Resolved once and cached, including the
+// not-present answer, so a non-Remix run costs one GetProcAddress for the whole session.
+using PFN_dusklight_SetDrawSkeleton = void(*)(uint64_t, uint64_t, uint32_t, uint32_t, const uint16_t*);
+
+static PFN_dusklight_SetDrawSkeleton resolve_set_draw_skeleton() noexcept {
+  static bool resolved = false;
+  static PFN_dusklight_SetDrawSkeleton fn = nullptr;
+  if (!resolved) {
+    resolved = true;
+    // aurora imports d3d9.dll statically, so if we are running under Remix its DLL is already in
+    // the process and this cannot load anything that was not going to be loaded anyway.
+    if (HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll")) {
+      fn = reinterpret_cast<PFN_dusklight_SetDrawSkeleton>(
+          reinterpret_cast<void*>(GetProcAddress(d3d9, "dusklight_SetDrawSkeleton")));
+    }
+    Log.info("dx9.skeleton model identity export {}", fn != nullptr ? "found" : "not present");
+  }
+  return fn;
+}
+
+void publish_draw_skeleton(const uint8_t* slots, uint32_t slotCount, bool slotsAreJoints) noexcept {
+  const PFN_dusklight_SetDrawSkeleton fn = resolve_set_draw_skeleton();
+  if (fn == nullptr) {
+    return;
+  }
+  if (!g_modelIdentity.valid()) {
+    // Clears the fork's latch. Skipping this is the one mistake that would be actively harmful:
+    // the next unrelated draw would inherit this character's identity and be merged into it.
+    fn(0, 0, 0, 0, nullptr);
+    return;
+  }
+
+  std::array<uint16_t, gx::MaxPnMtx> blendIndexToJoint{};
+  blendIndexToJoint.fill(0xFFFF);
+  uint32_t count = 0;
+  if (slotsAreJoints) {
+    // GXSetSkinning path: the game built the palette in joint order and the blend indices written
+    // into the vertices are already global joint indices, so there is nothing to compose. The
+    // table is still sent explicitly rather than implied, because "identity" is a claim the fork
+    // should not have to infer from the absence of one.
+    count = std::min<uint32_t>(g_modelIdentity.jointCount, gx::MaxPnMtx);
+    for (uint32_t i = 0; i < count; ++i) {
+      blendIndexToJoint[i] = static_cast<uint16_t>(i);
+    }
+  } else if (slots != nullptr) {
+    count = std::min<uint32_t>(slotCount, gx::MaxPnMtx);
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint8_t slot = slots[i];
+      blendIndexToJoint[i] =
+          slot < g_modelIdentity.slotCount ? g_modelIdentity.slotToJoint[slot] : 0xFFFF;
+    }
+  }
+
+  fn(g_modelIdentity.modelKey, g_modelIdentity.instanceKey, g_modelIdentity.jointCount, count,
+     blendIndexToJoint.data());
+}
+
 void set_camera_view(const float* mtx3x4) noexcept {
   const D3DMATRIX view = to_d3d_3x4(mtx3x4);
   D3DMATRIX inv;

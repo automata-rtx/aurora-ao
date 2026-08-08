@@ -119,6 +119,20 @@ extern "C" {
  */
 #define GX_AURORA_SET_VIEW_MTX 0x0052
 
+/**
+ * Publishes the model identity and GX-slot-to-joint mapping for the draws that follow. Must be
+ * followed by a u64 model key, a u64 model-instance key, a u32 joint count, a u32 slot count and
+ * that many u16 joint indices (0xFFFF for a slot that maps to no single joint). Purely
+ * informational: only the D3D9 backend uses it, and only to tell RTX Remix which character a draw
+ * belongs to and what its blend indices mean. Rendering is identical on every backend.
+ */
+#define GX_AURORA_SET_MODEL_IDENTITY 0x0053
+
+/**
+ * Clears the model identity set above. Followed by nothing.
+ */
+#define GX_AURORA_CLEAR_MODEL_IDENTITY 0x0054
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -212,7 +226,38 @@ void GXSetViewMtx(const void* mtx);
  */
 void GXSetSkinningDebugView(bool enable);
 
+/**
+ * Tell the backend which model instance the following draws belong to, and which joint the game
+ * has loaded into each GX position-matrix slot.
+ *
+ * This exists for RTX Remix and changes nothing about rendering. Remix gives every draw call its
+ * own geometry hash and its own skeleton, so a J3D character - one draw per matrix group - arrives
+ * in a capture as dozens of unrelated pieces with invented stick figures for bones. Merging them
+ * needs a global joint index space, and neither half of the project has one alone: the game knows
+ * which joint went into which GX slot, and only this backend knows which slot each D3D9 blend
+ * index ended up meaning after the palette compaction that D3DCAPS9::MaxVertexBlendMatrixIndex
+ * forces on it. So the game publishes its half here and the backend composes the two.
+ *
+ * modelKey must be stable across runs (a content hash, not a pointer); instanceKey only has to be
+ * stable for the life of the instance. slotToJoint has slotCount entries, one per GX position
+ * matrix, holding a joint index or 0xFFFF for a slot that is not a single joint - a weighted
+ * envelope, for instance, which is a blend rather than a bone.
+ *
+ * Call it after loading a matrix group and before its draw; call GXClearModelIdentity when the
+ * model is done, or the next unrelated draw is attributed to this character.
+ */
+void GXSetModelIdentity(u64 modelKey, u64 instanceKey, u32 jointCount, u32 slotCount,
+                        const u16* slotToJoint);
+
+/**
+ * Clears the model identity set above.
+ */
+void GXClearModelIdentity(void);
+
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
+
+/** GX has ten position matrices, so a slot-to-joint table never needs more entries than this. */
+#define GX_AURORA_MAX_PN_MTX 10
 
 /**
  * Create an offscreen framebuffer and switch rendering to it.

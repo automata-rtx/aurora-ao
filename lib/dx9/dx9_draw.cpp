@@ -339,6 +339,8 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     static constexpr DWORD kBlendMode[] = {D3DVBF_0WEIGHTS, D3DVBF_1WEIGHTS, D3DVBF_2WEIGHTS, D3DVBF_3WEIGHTS};
     set_rs(D3DRS_VERTEXBLEND, kBlendMode[draw.weightCount]);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
+    // The palette was loaded in joint order, so the blend indices already are joint indices.
+    publish_draw_skeleton(nullptr, 0, true);
   } else if (draw.hasPnMtxIdx) {
     // Matrix-palette draws (J3D characters): the 10 GX position matrices
     // become the world matrix palette, selected per vertex. The vertices store
@@ -360,12 +362,22 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
+    // Matrix-palette draw: blend index i selects GX slot pnMtxSlots[i], and only the game knows
+    // which joint it put there. This composition is the whole reason the identity is published.
+    publish_draw_skeleton(draw.pnMtxSlots.data(), draw.pnMtxCount, false);
   } else {
     const D3DMATRIX modelView = to_d3d(g_gxState.pnMtx[g_gxState.currentPnMtx].pos);
     set_world_matrix(0, haveCam ? mtx_multiply(modelView, g_camera.viewInv) : modelView);
     set_view_matrix(view);
     set_rs(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
+    // Rigid draw: no blend stream at all, so the "palette" is the one GX slot it uses. The fork
+    // gives such a draw a single influence at weight 1 on that joint, which is what keeps a rigid
+    // piece of a character attached to the bone that moves it.
+    {
+      const uint8_t rigidSlot = static_cast<uint8_t>(g_gxState.currentPnMtx);
+      publish_draw_skeleton(&rigidSlot, 1, false);
+    }
     // Camera-space texgen compensation (docs/dx9/gx-to-d3d9-mapping.md #7):
     // D3D feeds view-space inputs where GX texgen reads model-space;
     // premultiplying the texture matrix with the model-view inverse restores
@@ -513,6 +525,9 @@ void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32
       const D3DMATRIX m = to_d3d(g_gxState.pnMtx[groupSlots[i]].pos);
       set_world_matrix(i, g_camera.valid ? mtx_multiply(m, g_camera.viewInv) : m);
     }
+    // Each group of this split is its own D3D9 draw with its own subset of the palette, so the
+    // table published by apply_transforms describes the wrong slots here.
+    publish_draw_skeleton(groupSlots.data(), used, false);
     ++g_drawStats.frameDraws;
     g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(s_verts.size() / draw.stride),
                                       static_cast<UINT>(s_indices.size() / 3), s_indices.data(), D3DFMT_INDEX16,

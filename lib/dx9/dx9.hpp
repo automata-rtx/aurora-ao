@@ -80,6 +80,16 @@ void clear_skinning() noexcept;
 // run in. See docs/dx9/gx-to-d3d9-mapping.md #3/#13.
 void set_camera_view(const float* mtx3x4) noexcept;
 
+// Model identity (GX_AURORA_SET_MODEL_IDENTITY): which character the following draws belong to,
+// and which joint the game loaded into each GX position-matrix slot. Composed at draw time with
+// this backend's own palette compaction to give RTX Remix a blend-index -> global-joint table it
+// could not otherwise have, because a GX slot is reused between packets and only the game knows
+// what went into it. Rendering is unaffected; see docs/dx9/remix-material-interface.md and
+// dusklight-ao/docs/remix-open-issues.md issue 15.
+void set_model_identity(uint64_t modelKey, uint64_t instanceKey, uint32_t jointCount, uint32_t slotCount,
+                        const uint16_t* slotToJoint) noexcept;
+void clear_model_identity() noexcept;
+
 // State relays ----------------------------------------------------------------
 
 // Reads g_gxState.renderViewport / renderScissor and applies immediately.
@@ -117,6 +127,8 @@ inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uin
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
+inline void set_model_identity(uint64_t, uint64_t, uint32_t, uint32_t, const uint16_t*) noexcept {}
+inline void clear_model_identity() noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}

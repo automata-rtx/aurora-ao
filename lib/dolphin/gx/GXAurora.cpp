@@ -103,6 +103,26 @@ void GXSetViewMtx(const void* mtx) {
 
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
+void GXSetModelIdentity(u64 modelKey, u64 instanceKey, u32 jointCount, u32 slotCount,
+                        const u16* slotToJoint) {
+  if (slotToJoint == nullptr) {
+    slotCount = 0;
+  }
+  if (slotCount > GX_AURORA_MAX_PN_MTX) {
+    slotCount = GX_AURORA_MAX_PN_MTX;
+  }
+  GX_WRITE_AURORA(GX_AURORA_SET_MODEL_IDENTITY);
+  GX_WRITE_U64(modelKey);
+  GX_WRITE_U64(instanceKey);
+  GX_WRITE_U32(jointCount);
+  GX_WRITE_U32(slotCount);
+  for (u32 i = 0; i < slotCount; ++i) {
+    GX_WRITE_U16(slotToJoint[i]);
+  }
+}
+
+void GXClearModelIdentity(void) { GX_WRITE_AURORA(GX_AURORA_CLEAR_MODEL_IDENTITY); }
+
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {
   GX_WRITE_AURORA(GX2_SET_POLYGON_OFFSET);
   GX_WRITE_F32(mFrontOffset);

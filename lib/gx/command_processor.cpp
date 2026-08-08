@@ -2037,6 +2037,35 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     }
     g_gxState.skinInfluences = static_cast<u8>(influenceCount);
     g_gxState.skinningActive = true;
+  } else if (subCmd == GX_AURORA_SET_MODEL_IDENTITY) {
+    CHECK(pos + 24 <= size, "GX_AURORA_SET_MODEL_IDENTITY read overrun");
+    const u64 modelKey = read_u64(data + pos, bigEndian);
+    pos += 8;
+    const u64 instanceKey = read_u64(data + pos, bigEndian);
+    pos += 8;
+    const u32 jointCount = read_u32(data + pos, bigEndian);
+    pos += 4;
+    u32 slotCount = read_u32(data + pos, bigEndian);
+    pos += 4;
+    if (slotCount > GX_AURORA_MAX_PN_MTX) {
+      slotCount = GX_AURORA_MAX_PN_MTX;
+    }
+    CHECK(pos + slotCount * 2 <= size, "GX_AURORA_SET_MODEL_IDENTITY slot table read overrun");
+    std::array<u16, GX_AURORA_MAX_PN_MTX> slotToJoint{};
+    slotToJoint.fill(0xFFFF);
+    for (u32 i = 0; i < slotCount; ++i) {
+      slotToJoint[i] = read_u16(data + pos, bigEndian);
+      pos += 2;
+    }
+    // Only D3D9 has anything to do with this - it is what lets RTX Remix merge a character's
+    // draws. Every other backend renders identically without it.
+    if (dx9::active()) {
+      dx9::set_model_identity(modelKey, instanceKey, jointCount, slotCount, slotToJoint.data());
+    }
+  } else if (subCmd == GX_AURORA_CLEAR_MODEL_IDENTITY) {
+    if (dx9::active()) {
+      dx9::clear_model_identity();
+    }
   } else if (subCmd == GX_AURORA_CLEAR_SKINNING) {
     if (dx9::active()) {
       dx9::clear_skinning();
