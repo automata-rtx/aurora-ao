@@ -795,14 +795,51 @@ The `proj=1` group being MA02/MA10 is confirmed twice over — by the name role
 read from `dKy_bg_MAxx_proc`, and independently by the D3D9 state shape. Those
 are now hidden.
 
+### Surface detail — the game's texture in the normal slot
+
+Water with no textures at all is featureless glass. Correct, and far too calm:
+the first session with the projected layer removed reported the water as
+consistent and **bland**.
+
+So the draw's own texture is bound as the translucent material's
+**normal map** (`rtx.dusklight.water.surfaceDetailFromGameTexture`, default on).
+Three things follow from that slot in particular:
+
+- The ripples **scroll at the game's rate**, because the scroll is a texture
+  transform on the draw and the normal sample uses the same
+  `surfaceInteraction.textureCoordinates` as everything else. No animation rate
+  is invented here.
+- It is **the slot a replacement normal map lands in**. Authoring a normal map
+  against the ripple texture's hash upgrades this from a placeholder to the real
+  thing, with no further code.
+- Nothing about the albedo is touched, so the white cannot come back through it.
+
+**Say plainly what this is until a normal map is authored:** the game supplies a
+*colour* texture, and the shader decodes `.xy` as an unsigned octahedral tangent
+normal (`unsignedOctahedralToHemisphereDirection`, `packing.slangh:357`). The
+result is an animated perturbation correlated with the ripple pattern, not
+physically meaningful ripples. `rtx.translucentMaterial.normalIntensity` scales
+it, and it is in the Dusklight Water panel next to the switch.
+
+Remix's own dual-layer animated water (`rtx.translucentMaterial.animatedWaterEnable`)
+takes a *second* normal sample at a different scroll velocity and blends the two
+— the classic two-layer water look. It is **not** turned on from here: it needs
+the draw in the `AnimatedWater` category (a texture hash list), and its motion
+is Remix's clock rather than the game's. It composes with this rather than
+replacing it.
+
 ### What is not done
 
 - **The surface still arrives as more than one draw** — a base pass and usually
-  a scrolling one — and only one of them should be the refracting interface.
-  Whether the two can be separated by name, or need the blend state (an
-  *additive* pass is light over a surface, not a second surface), is
-  **unanswered**. `dusklight.water` now reports `blend=`, `blendSrcDst=` and
-  `alphaTest=` so the next session decides it. Nothing is built on it yet.
+  a scrolling one — and only one of them is really the refracting interface.
+  **The blend state does not separate them**, which is a measured negative
+  result rather than an untried idea: over the 2026-08-09 10:30 log the seven
+  surfaces split `SRC_COLOR,ZERO` ×2, `SRC_ALPHA,ONE_MINUS_SRC_ALPHA` ×1 and
+  `SRC_ALPHA,ONE` ×4, and that last group contains both a still pass
+  (`texXform=0`) and scrolling ones. Alpha test does not separate them either.
+  So the "additive means light over a surface" idea is **dead** for this game;
+  anything further needs geometry coincidence, not material state. Left alone
+  because the session that measured it also reported water as consistent.
 - `transmittanceMeasurementDistance` defaults to 200 and is **an uncalibrated
   guess** — it wants one look in game against a body of water of known depth.
 - Indirect texturing is still dropped (`unsupported-effects.md`), which is the
