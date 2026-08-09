@@ -663,7 +663,8 @@ approximation, which is what shipped before this.
 
 ## 11. Water — marked by the game, translucent in Remix
 
-**Status: CI-untested at time of writing, never yet observed working in game.**
+**Status: the mark works — measured in game 2026-08-08 23:47, 11 water materials
+reached Remix. The layer split that followed is CI-pending and untested.**
 Two earlier revisions of this shipped and neither one marked the right draws;
 what follows says exactly what each did, because the mechanism they both missed
 is a general fact about this backend rather than anything to do with water.
@@ -672,16 +673,28 @@ is a general fact about this backend rather than anything to do with water.
 
 Twilight Princess has no water material. It has a naming convention:
 environment-driven materials are named `***MAxx*`, and `dKy_bg_MAxx_proc`
-(`d_kankyo.cpp`) dispatches on those four characters every frame to drive fog,
-shine and the projected reflection layer. `MA02 MA03 MA06 MA09 MA10 MA17 MA19`
-are water surfaces; `MA00 MA01 MA04 MA16` are the water-*in* fog overlay, and
-are deliberately excluded — they are what the camera looks through while
-submerged, so refracting them would put a second water surface in front of the
-eye.
+(`d_kankyo.cpp:11418`) dispatches on those four characters every frame to drive
+fog, shine and the projected reflection layer.
 
 Nothing in the GX state says "water". A texture hash would be wrong by
 construction, since this game reuses water textures on non-water draws. So the
-game says so directly, per draw: `GXSetDusklightWater(bool)`.
+game says so directly, per draw: `GXSetDusklightWater(role)`.
+
+### Water is not one thing, and that is the whole difficulty
+
+A body of water arrives as **two or three coincident draws**, and only one of
+them is the surface. Reading that same dispatch function:
+
+| Tags | What the game does with them | Role |
+| :-- | :-- | :-- |
+| `MA03 MA09 MA17 MA19` | fog type, and for MA09 the shine rate `mWaterSurfaceShineRate` | **surface** |
+| `MA06` | `dKy_murky_set` — the murky body | **surface** |
+| `MA02 MA10` | `dComIfGd_setListInvisisble()`, then a `C_MTXLightPerspective` built from the live camera's fovy and aspect installed as the material's texture matrix | **projected** |
+| `MA00 MA01 MA04 MA16` | the water-*in* fog overlay | excluded entirely |
+
+`MA02`/`MA10` are a **painted reflection projected from the camera**, not the
+water. The submerged fog is excluded because it is what the camera looks
+*through*; refracting it would put a second water surface in front of the eye.
 
 `MA03` is the one tag that is not water on its own — `cc_MA03_Sunbeam_v` is a
 light shaft. It is admitted only when the name also contains `Water` or
@@ -691,14 +704,18 @@ way shows up in the log as a name to add rather than as absent water.
 ### The transport
 
 `GXSetDusklightWater` writes `GX_AURORA_SET_DUSKLIGHT_WATER` (0x0053) into the
-FIFO, followed by a u32. `command_processor.cpp` decodes it and calls
-`dx9::set_dusklight_water`, which sets the flag `apply_tev` reads at the tail of
-each draw's translation. From there it rides the existing `D3DMATERIAL9` side
-channel:
+FIFO, followed by a u32 role — `_NONE`, `_SURFACE`, `_PROJECTED`.
+`command_processor.cpp` decodes it and calls `dx9::set_dusklight_water`, which
+sets the state `apply_tev` reads at the tail of each draw's translation. From
+there it rides the existing `D3DMATERIAL9` side channel:
 
 | Fact | Path | Was |
 | :-- | :-- | :-- |
-| "this draw is water" | `D3DMATERIAL9::Ambient.g` → `LegacyMaterialData::d3dMaterial` → `SceneManager::determineMaterialData` | `Ambient.g` was unused; `.b` and `.a` still are |
+| "this draw is a water surface" | `D3DMATERIAL9::Ambient.g` → `LegacyMaterialData::d3dMaterial` → `SceneManager::determineMaterialData` | `Ambient.g` was unused |
+| "this draw is the projected overlay" | `D3DMATERIAL9::Ambient.b` → same → `RtInstance::m_isHidden` in `rtx_instance_manager.cpp` | `Ambient.b` was unused; `.a` still is |
+
+Two bits rather than one encoded enum, because a float channel compared against
+a threshold is what every other read site here already does.
 
 Remix's fork then builds a `TranslucentMaterialData` — index of refraction,
 transmittance colour and measurement distance from `rtx.dusklight.water.*` —
@@ -744,23 +761,52 @@ where a mark died rather than only that it did:
 
 | Line | Log | Means |
 | :-- | :-- | :-- |
-| `dusk.matname name=… water=1` | game | the game recognised the material and emitted the command |
-| `dx9.water: first water mark decoded from the FIFO` | game | it survived the FIFO and reached the backend |
-| `dx9.water: first water-marked draw translated` | game | a draw was translated while marked, so a `D3DMATERIAL9` carrying `Ambient.g = 1` reached the device |
-| `dusklight.water tex0hash=… ior=…` | Remix | Remix received it and built a translucent material |
+| `dusk.matname name=… role=surface` | game | the game recognised the material and emitted the command |
+| `dx9.water: first SURFACE mark decoded from the FIFO` | game | it survived the FIFO and reached the backend |
+| `dx9.water: first SURFACE draw translated` | game | a draw was translated while marked, so a `D3DMATERIAL9` carrying `Ambient.g = 1` reached the device |
+| `dusklight.water tex0hash=… ior=… texXform=… proj=… blend=…` | Remix | Remix received it and built a translucent material |
+
+`PROJECTED` has the same three game-side lines and ends at
+`dusklight.water.projected … hidden=1` instead. A fifth line,
+`dusklight.water.replaced`, means the mark arrived and a hand-authored
+replacement claimed the draw first — intended, since that is how a normal map
+gets onto the surface, but counted separately so it is never mistaken for the
+mark failing.
 
 `dusk.matname` reports every distinct material name with its verdict, capped at
 512 with a notice at the cap. The cap was 192 and it bit: a Hyrule Field session
 exhausted it before reaching Lake Hylia, so the one area the report was wanted
-was past the end of the list.
+was past the end of the list. **512 was also reached**, later, in the
+2026-08-08 23:47 session.
+
+### Measured 2026-08-08 23:47 — the first session where water arrived
+
+11 distinct water materials reached Remix, every hop reported. The water was
+translucent and still did not read as one continuous surface. The shape of what
+arrived is the finding:
+
+| Shape | Count | What it is |
+| :-- | :-- | :-- |
+| `texXform=3 proj=1` | 4 | the camera-projected overlay — `C_MTXLightPerspective` is exactly a projective texgen with a camera-built matrix |
+| `texXform=2 proj=0` | 5 | a scrolling surface pass |
+| `texXform=0 proj=0` | 2 | a still surface pass |
+
+The `proj=1` group being MA02/MA10 is confirmed twice over — by the name role
+read from `dKy_bg_MAxx_proc`, and independently by the D3D9 state shape. Those
+are now hidden.
 
 ### What is not done
 
+- **The surface still arrives as more than one draw** — a base pass and usually
+  a scrolling one — and only one of them should be the refracting interface.
+  Whether the two can be separated by name, or need the blend state (an
+  *additive* pass is light over a surface, not a second surface), is
+  **unanswered**. `dusklight.water` now reports `blend=`, `blendSrcDst=` and
+  `alphaTest=` so the next session decides it. Nothing is built on it yet.
 - `transmittanceMeasurementDistance` defaults to 200 and is **an uncalibrated
   guess** — it wants one look in game against a body of water of known depth.
-- `MA02`/`MA10` are the projected reflection layer, not the surface itself. They
-  are marked with everything else for now; if they render as a second refracting
-  sheet over the water they should be split out.
 - Indirect texturing is still dropped (`unsupported-effects.md`), which is the
-  ripple *warp*, and the two-constants-per-stage TEV ceiling still bites. Water
-  can be translucent and still not animate correctly; these are separate.
+  ripple *warp* — one of the marked materials is literally named
+  `cc_MA02_IndirectWater_v` — and the two-constants-per-stage TEV ceiling still
+  bites. Water can be translucent and still not animate correctly; these are
+  separate.
