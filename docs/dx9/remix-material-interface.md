@@ -828,6 +828,46 @@ the draw in the `AnimatedWater` category (a texture hash list), and its motion
 is Remix's clock rather than the game's. It composes with this rather than
 replacing it.
 
+### Replacements on water: a capture cannot express water
+
+**`GameCapturer::captureMaterial` (`rtx_game_capturer.cpp:505`) writes an
+`lss::Material` carrying an albedo texture path and nothing else.** There is no
+translucent path in the capturer at all. Read from source 2026-08-09.
+
+Everything follows from that. A water draw captures as an **opaque** material,
+so a replacement authored from that capture in the Remix Toolkit is opaque
+unless its type was changed by hand — and `determineMaterialData` returns a
+replacement wholesale. A replaced water draw was therefore an *opaque surface
+sitting beside translucent ones on the same lake*: not a shading difference
+between chunks, a different kind of surface. That is what "large chunks that
+don't show the normal map, with strange cutoffs" looked like in the 2026-08-09
+15:56 session.
+
+So water stays water under a replacement
+(`rtx.dusklight.water.applyToReplacements`, default on):
+
+| Replacement type | What happens |
+| :-- | :-- |
+| Opaque | its **authored normal map is kept**, everything else is dropped, and the water treatment is applied around it. Albedo is what made water white and roughness means nothing on a refracting surface, so the normal map is the only part worth carrying. |
+| Translucent | **left completely alone.** That author meant it. |
+| RayPortal | left alone. |
+
+`dusklight.water.replaced` reports `type=` and `coerced=` so which of these
+happened is in the log rather than inferred.
+
+**Marked as inference, not finding:** the capturer's behaviour is read from
+source, but that any *particular* authored material is opaque is not. The
+`type=` field is what settles it per material.
+
+### One more thing the same session showed
+
+A body of water is drawn from **more than one texture**. Lake Hylia's log has one
+replaced hash and three unreplaced ones still on the water path with
+`normalTex=1` — the raw colour texture in the normal slot, which is the noisy
+look. Authoring a replacement for one hash therefore fixes one part of a lake.
+The `dusklight.water` lines name every hash that reached Remix, which is the
+list to work from.
+
 ### What is not done
 
 - **The surface still arrives as more than one draw** — a base pass and usually
