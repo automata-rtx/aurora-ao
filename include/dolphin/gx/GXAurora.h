@@ -119,6 +119,18 @@ extern "C" {
  */
 #define GX_AURORA_SET_VIEW_MTX 0x0052
 
+/**
+ * Marks the draws that follow as Dusklight water, until cleared. Must be followed by a
+ * u32, non-zero to mark and zero to clear.
+ *
+ * It is a FIFO command rather than a plain backend call because the FIFO is drained in
+ * end_frame, not as the game issues draws: a global set from the game thread is read long
+ * after the material that set it has finished, so it can only ever describe whichever
+ * material happened to be last. Written into the stream it arrives in order, between the
+ * draws it brackets, like every other piece of GX state.
+ */
+#define GX_AURORA_SET_DUSKLIGHT_WATER 0x0053
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -211,6 +223,19 @@ void GXSetViewMtx(const void* mtx);
  * shading - a way to confirm those draws are skinned per-vertex on the GPU.
  */
 void GXSetSkinningDebugView(bool enable);
+
+/**
+ * Mark the draws that follow as water, until cleared with false. Rendering output is
+ * unchanged on every backend; the D3D9 backend forwards it to RTX Remix, which turns the
+ * marked draws into a translucent, refracting material instead of an opaque one.
+ *
+ * Water is a fact about the game's own materials - Twilight Princess names them by
+ * convention (dKy_bg_MAxx_proc) - and GX carries nothing that could be read as "this is
+ * water", so the game says so directly. Call it around exactly the draws that are water:
+ * it is state in the command stream, and like every other GX state it stays set until
+ * changed.
+ */
+void GXSetDusklightWater(bool isWater);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 

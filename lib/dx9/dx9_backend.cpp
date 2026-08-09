@@ -331,11 +331,11 @@ static bool reset_device(uint32_t width, uint32_t height) noexcept {
 }
 
 bool begin_frame() noexcept {
-  // Water is a property of the draws a material brackets, never of a frame. The game clears
-  // it at the end of each material packet; clearing here as well means a frame that ends
-  // mid-bracket - an early return, an exception, a path that never reaches the close - opens
-  // the next one with water off rather than marking everything drawn until the next J3D
-  // material happens to load.
+  // Water is a property of the draws a material brackets, never of a frame. The game closes
+  // each bracket in the command stream; clearing here as well means a frame whose stream
+  // ends mid-bracket - an early return, an exception, a path that never reaches the close -
+  // starts the next drain with water off rather than marking everything until the next
+  // water material appears.
   g_dusklightWater = false;
 
   uint32_t width = 0;
@@ -552,7 +552,18 @@ static void scale_copy_dst(uint32_t& width, uint32_t& height) noexcept {
   height = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(height) * scaleY)), 1);
 }
 
-void set_dusklight_water(bool isWater) noexcept { g_dusklightWater = isWater; }
+void set_dusklight_water(bool isWater) noexcept {
+  // Hop 2 of 3, reported once ever. The three hops a water mark has to survive are
+  // game -> FIFO (dusk.matname, game log), FIFO -> backend (here), and backend -> Remix
+  // (dusklight.water, Remix log). Two rounds were spent unable to tell which of the three
+  // was dropping it, because only the ends were visible; this is the middle.
+  static bool s_reported = false;
+  if (isWater && !s_reported) {
+    s_reported = true;
+    Log.info("dx9.water: first water mark decoded from the FIFO");
+  }
+  g_dusklightWater = isWater;
+}
 
 void copy_tex(const void* dest, bool clear) noexcept {
   if (g_dx9.dev == nullptr) {

@@ -113,6 +113,18 @@ From `lib/gx/gx.hpp` (`GXState`):
   `D3DCREATE_MULTITHREADED` only as a safety net (imgui/debug); draws are
   single-threaded.
 
+**The consequence, spelled out, because knowing the above did not prevent it:**
+the game thread finishes emitting every draw in the frame *before* the backend
+translates any of them. So a backend global set from game code — "the next draws
+are X" — is not read next to those draws. It is read once the frame is over, and
+describes whichever value was written last, for every draw in the frame.
+
+Per-draw facts must travel **in the FIFO**, as an `GX_AURORA_*` subcommand, so
+they arrive in order with the state they describe. `GX_AURORA_SET_VIEW_MTX` and
+`GX_AURORA_SET_DUSKLIGHT_WATER` both exist for this reason; the latter cost two
+test sessions, once as a flag that marked nothing and once as a flag that marked
+everything. `remix-material-interface.md` §11 has the full account.
+
 ## 4. Textures
 
 - CPU decoders in `lib/gfx/texture_convert.cpp` (`convert_texture`): every GX

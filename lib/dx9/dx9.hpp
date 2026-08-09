@@ -102,13 +102,19 @@ bool in_offscreen() noexcept;
 // Dusklight: marks the draws that follow as water, until cleared.
 //
 // The game identifies its own water by J3D material name (dKy_bg_MAxx_proc), which is a
-// fact GX never carries - so it is set here rather than inferred from TEV state. Remix
-// turns it into a translucent material; without it every water layer falls through to an
-// opaque one and reads as a white sheet.
+// fact GX never carries - so it is told rather than inferred from TEV state. Remix turns
+// it into a translucent material; without it every water layer falls through to an opaque
+// one and reads as a white sheet. Carried to Remix in D3DMATERIAL9::Ambient.g, beside the
+// self-illumination and ramp channels - see set_remix_material.
 //
-// Set immediately before the material's GX state is programmed and cleared after, so it
-// brackets exactly that material's draws. Carried to Remix in D3DMATERIAL9::Ambient.g,
-// beside the self-illumination and ramp channels - see set_remix_material.
+// CALLED BY THE COMMAND PROCESSOR, from GX_AURORA_SET_DUSKLIGHT_WATER, and by nothing
+// else. The game must not call it: the FIFO is drained in end_frame, so a value written
+// here from the game thread is read after every draw the game has issued, and describes
+// whichever material was last rather than the one that set it. That is not a subtle
+// timing window - it is every draw in the frame, and it cost two test sessions. Both
+// failure modes came out of it: left latched, the last water material marked everything
+// drained afterwards, and every material in the game turned translucent; cleared after
+// each material, the flag was always false by drain time and no water arrived at all.
 void set_dusklight_water(bool isWater) noexcept;
 
 void on_evict_texture(uint32_t texObjId) noexcept;

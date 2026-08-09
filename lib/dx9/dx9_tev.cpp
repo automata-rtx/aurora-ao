@@ -1724,6 +1724,18 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.readsRaster ? 0.f : 1.f,
                      g_dusklightWater ? 1.f : 0.f);
 
+  // Hop 3 of 3, reported once ever: a draw was translated while the water mark was set, so
+  // a D3DMATERIAL9 carrying Ambient.g = 1 reached the device. If this line is present and
+  // Remix still logs no dusklight.water, the loss is on Remix's side of SetMaterial, not
+  // here. See set_dusklight_water in dx9.hpp for the other two hops.
+  if (g_dusklightWater) {
+    static bool s_reported = false;
+    if (!s_reported) {
+      s_reported = true;
+      Log.info("dx9.water: first water-marked draw translated (matKey {:#x})", matKey);
+    }
+  }
+
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
   // all exist at once. Reading guide: docs/dx9/material-report.md.

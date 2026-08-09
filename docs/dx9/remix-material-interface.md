@@ -660,3 +660,107 @@ approximation, which is what shipped before this.
   multiply already has, not a new one.
 - `rtx.dusklight.rampMaterials` turns it off live, which is also how to A/B it
   against the approximation.
+
+## 11. Water — marked by the game, translucent in Remix
+
+**Status: CI-untested at time of writing, never yet observed working in game.**
+Two earlier revisions of this shipped and neither one marked the right draws;
+what follows says exactly what each did, because the mechanism they both missed
+is a general fact about this backend rather than anything to do with water.
+
+### Why water is told rather than inferred
+
+Twilight Princess has no water material. It has a naming convention:
+environment-driven materials are named `***MAxx*`, and `dKy_bg_MAxx_proc`
+(`d_kankyo.cpp`) dispatches on those four characters every frame to drive fog,
+shine and the projected reflection layer. `MA02 MA03 MA06 MA09 MA10 MA17 MA19`
+are water surfaces; `MA00 MA01 MA04 MA16` are the water-*in* fog overlay, and
+are deliberately excluded — they are what the camera looks through while
+submerged, so refracting them would put a second water surface in front of the
+eye.
+
+Nothing in the GX state says "water". A texture hash would be wrong by
+construction, since this game reuses water textures on non-water draws. So the
+game says so directly, per draw: `GXSetDusklightWater(bool)`.
+
+`MA03` is the one tag that is not water on its own — `cc_MA03_Sunbeam_v` is a
+light shaft. It is admitted only when the name also contains `Water` or
+`Funsui`. Everything rejected still reports, so a water surface named some third
+way shows up in the log as a name to add rather than as absent water.
+
+### The transport
+
+`GXSetDusklightWater` writes `GX_AURORA_SET_DUSKLIGHT_WATER` (0x0053) into the
+FIFO, followed by a u32. `command_processor.cpp` decodes it and calls
+`dx9::set_dusklight_water`, which sets the flag `apply_tev` reads at the tail of
+each draw's translation. From there it rides the existing `D3DMATERIAL9` side
+channel:
+
+| Fact | Path | Was |
+| :-- | :-- | :-- |
+| "this draw is water" | `D3DMATERIAL9::Ambient.g` → `LegacyMaterialData::d3dMaterial` → `SceneManager::determineMaterialData` | `Ambient.g` was unused; `.b` and `.a` still are |
+
+Remix's fork then builds a `TranslucentMaterialData` — index of refraction,
+transmittance colour and measurement distance from `rtx.dusklight.water.*` —
+instead of falling through to `as<OpaqueMaterialData>()`, which is the line that
+made every water layer an opaque, roughness-0.7 white sheet.
+
+The check sits **after** the replacement-material lookup, so a hand-authored
+material for a water texture still wins. That is how a normal map gets onto the
+surface: the scrolling UV ripple layers keep arriving as their own draws, and
+replacing those textures is the intended way to author real water normals.
+
+### The rule this cost two test sessions to learn
+
+**A backend global set from the game thread does not describe the draws around
+it. The FIFO is drained in `end_frame`.**
+
+`GXCallDisplayList` (`lib/dolphin/gx/GXDispList.cpp`) writes the display list
+into the FIFO buffer; `gx::fifo::drain()` runs from `gfx::end_frame`
+(`lib/gfx/common.cpp`) and from `lib/aurora.cpp`. Everything in
+`command_processor.cpp` — including `apply_tev`, and therefore every material
+decision this document describes — happens **there**, after the game thread has
+issued every draw in the frame.
+
+So a side-band global reads as whatever the game thread last wrote before the
+drain, which is the *last* material of the frame, for *every* draw in it. Both
+failed revisions are that one fact seen from two sides:
+
+| Revision | Game thread did | Command processor saw | In game |
+| :-- | :-- | :-- | :-- |
+| set only, never cleared | left the flag latched after the last water material | `true` for the whole drain | every material in the game turned translucent |
+| set, then cleared per material packet | set and cleared, both before any drain | `false` for the whole drain | no water at all; zero `dusklight.water` lines against 7 materials marked |
+
+Anything that must describe *particular draws* has to travel in the command
+stream. The precedent was already here: `GX_AURORA_SET_VIEW_MTX` is a FIFO
+command for exactly this reason. It is also the same lesson that deleted the
+material report's `grp=` field — `fpcDw_Execute` schedules a draw, it does not
+issue one — one layer further down the same pipe.
+
+### Reading the log
+
+Three hops, one line each, each reported once ever, so a single session says
+where a mark died rather than only that it did:
+
+| Line | Log | Means |
+| :-- | :-- | :-- |
+| `dusk.matname name=… water=1` | game | the game recognised the material and emitted the command |
+| `dx9.water: first water mark decoded from the FIFO` | game | it survived the FIFO and reached the backend |
+| `dx9.water: first water-marked draw translated` | game | a draw was translated while marked, so a `D3DMATERIAL9` carrying `Ambient.g = 1` reached the device |
+| `dusklight.water tex0hash=… ior=…` | Remix | Remix received it and built a translucent material |
+
+`dusk.matname` reports every distinct material name with its verdict, capped at
+512 with a notice at the cap. The cap was 192 and it bit: a Hyrule Field session
+exhausted it before reaching Lake Hylia, so the one area the report was wanted
+was past the end of the list.
+
+### What is not done
+
+- `transmittanceMeasurementDistance` defaults to 200 and is **an uncalibrated
+  guess** — it wants one look in game against a body of water of known depth.
+- `MA02`/`MA10` are the projected reflection layer, not the surface itself. They
+  are marked with everything else for now; if they render as a second refracting
+  sheet over the water they should be split out.
+- Indirect texturing is still dropped (`unsupported-effects.md`), which is the
+  ripple *warp*, and the two-constants-per-stage TEV ceiling still bites. Water
+  can be translucent and still not animate correctly; these are separate.
