@@ -120,8 +120,8 @@ extern "C" {
 #define GX_AURORA_SET_VIEW_MTX 0x0052
 
 /**
- * Marks the draws that follow as Dusklight water, until cleared. Must be followed by a
- * u32, non-zero to mark and zero to clear.
+ * Marks the draws that follow as Dusklight water, until cleared. Must be followed by a u32
+ * GX_AURORA_DUSKLIGHT_WATER_* role.
  *
  * It is a FIFO command rather than a plain backend call because the FIFO is drained in
  * end_frame, not as the game issues draws: a global set from the game thread is read long
@@ -130,6 +130,25 @@ extern "C" {
  * draws it brackets, like every other piece of GX state.
  */
 #define GX_AURORA_SET_DUSKLIGHT_WATER 0x0053
+
+/** Not water. Clears the mark. */
+#define GX_AURORA_DUSKLIGHT_WATER_NONE 0
+/** A water surface: the thing a refracting, translucent material belongs on. */
+#define GX_AURORA_DUSKLIGHT_WATER_SURFACE 1
+/**
+ * A camera-projected overlay drawn *over* a water surface, not the surface itself.
+ *
+ * Twilight Princess draws its water in layers, and one of them (MA02/MA10) has a
+ * perspective projection built from the live camera installed as its texture matrix -
+ * d_kankyo.cpp dKy_bg_MAxx_proc, C_MTXLightPerspective from the camera fovy and aspect.
+ * It is a rasteriser-era fake reflection, and it is screen-projected, so it slides across
+ * the surface whenever the camera moves.
+ *
+ * A path tracer traces that reflection for real off the water surface, so this layer is
+ * both redundant and, made refractive, actively wrong: a second interface a few units
+ * above the first, carrying a screen-space image through it.
+ */
+#define GX_AURORA_DUSKLIGHT_WATER_PROJECTED 2
 
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
@@ -225,17 +244,23 @@ void GXSetViewMtx(const void* mtx);
 void GXSetSkinningDebugView(bool enable);
 
 /**
- * Mark the draws that follow as water, until cleared with false. Rendering output is
- * unchanged on every backend; the D3D9 backend forwards it to RTX Remix, which turns the
- * marked draws into a translucent, refracting material instead of an opaque one.
+ * Mark the draws that follow with a GX_AURORA_DUSKLIGHT_WATER_* role, until cleared with
+ * GX_AURORA_DUSKLIGHT_WATER_NONE. Rendering output is unchanged on every backend; the D3D9
+ * backend forwards the role to RTX Remix, which makes a SURFACE draw a translucent,
+ * refracting material instead of an opaque one, and drops a PROJECTED one.
  *
  * Water is a fact about the game's own materials - Twilight Princess names them by
  * convention (dKy_bg_MAxx_proc) - and GX carries nothing that could be read as "this is
  * water", so the game says so directly. Call it around exactly the draws that are water:
  * it is state in the command stream, and like every other GX state it stays set until
  * changed.
+ *
+ * The role exists because water is not one draw. A body of water arrives as a base
+ * surface, usually a scrolling ripple pass over it, and a camera-projected reflection
+ * layer - and treating all three as refracting interfaces stacks two or three sheets of
+ * glass where there should be one surface.
  */
-void GXSetDusklightWater(bool isWater);
+void GXSetDusklightWater(u32 role);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 

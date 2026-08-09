@@ -98,14 +98,17 @@ void begin_offscreen(uint32_t width, uint32_t height) noexcept;
 void end_offscreen() noexcept;
 bool in_offscreen() noexcept;
 
-// Cache eviction mirrors (GX_AURORA_DESTROY_*).
-// Dusklight: marks the draws that follow as water, until cleared.
+// Dusklight: gives the draws that follow a GX_AURORA_DUSKLIGHT_WATER_* role, until
+// cleared with _NONE.
 //
 // The game identifies its own water by J3D material name (dKy_bg_MAxx_proc), which is a
 // fact GX never carries - so it is told rather than inferred from TEV state. Remix turns
-// it into a translucent material; without it every water layer falls through to an opaque
-// one and reads as a white sheet. Carried to Remix in D3DMATERIAL9::Ambient.g, beside the
-// self-illumination and ramp channels - see set_remix_material.
+// a SURFACE draw into a translucent material; without it every water layer falls through
+// to an opaque one and reads as a white sheet. It drops a PROJECTED one, which is a
+// camera-projected fake reflection over the surface rather than the surface itself, and
+// which as a second refracting interface is what stops water reading as one sheet.
+// Carried to Remix in D3DMATERIAL9::Ambient.g and .b, beside the self-illumination and
+// ramp channels - see set_remix_material.
 //
 // CALLED BY THE COMMAND PROCESSOR, from GX_AURORA_SET_DUSKLIGHT_WATER, and by nothing
 // else. The game must not call it: the FIFO is drained in end_frame, so a value written
@@ -115,7 +118,7 @@ bool in_offscreen() noexcept;
 // failure modes came out of it: left latched, the last water material marked everything
 // drained afterwards, and every material in the game turned translucent; cleared after
 // each material, the flag was always false by drain time and no water arrived at all.
-void set_dusklight_water(bool isWater) noexcept;
+void set_dusklight_water(uint32_t role) noexcept;
 
 void on_evict_texture(uint32_t texObjId) noexcept;
 void on_evict_tlut(uint32_t tlutObjId) noexcept;
@@ -135,7 +138,7 @@ inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uin
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
-inline void set_dusklight_water(bool) noexcept {}
+inline void set_dusklight_water(uint32_t) noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}

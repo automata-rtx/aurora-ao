@@ -61,7 +61,7 @@ extern Device g_dx9;
 // Dusklight water, set by the game around the material whose draws are water. Not part of
 // StateCache: that caches D3D9 state to avoid redundant Set* calls, and this is an input to
 // what gets built rather than a record of what was sent. See dx9.hpp set_dusklight_water.
-inline bool g_dusklightWater = false;
+inline uint32_t g_dusklightWaterRole = GX_AURORA_DUSKLIGHT_WATER_NONE;
 
 // Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
 // D3D's camera-space texgen inputs back to GX's model-space inputs
@@ -215,12 +215,14 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
-                               float isWater) noexcept {
+                               float isWaterSurface, float isWaterProjected) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
-  // Ambient.g is the Dusklight water flag; .b and .a remain free.
-  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWater, 0.f, 0.f};
+  // Ambient.g is the water-surface flag and .b the projected-water-overlay flag; .a is
+  // still free. Two independent bits rather than one enum, because a float channel
+  // compared against a threshold is what the read side already does everywhere else.
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWaterSurface, isWaterProjected, 0.f};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

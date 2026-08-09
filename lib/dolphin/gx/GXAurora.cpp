@@ -103,9 +103,9 @@ void GXSetViewMtx(const void* mtx) {
 
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
-void GXSetDusklightWater(bool isWater) {
+void GXSetDusklightWater(u32 role) {
   GX_WRITE_AURORA(GX_AURORA_SET_DUSKLIGHT_WATER);
-  GX_WRITE_U32(isWater ? 1u : 0u);
+  GX_WRITE_U32(role);
 }
 
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {

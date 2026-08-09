@@ -1722,17 +1722,22 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.evaluated ? 1.f : 0.f,
                      selfLit.colorAuthored ? 1.f : 0.f,
                      selfLit.readsRaster ? 0.f : 1.f,
-                     g_dusklightWater ? 1.f : 0.f);
+                     g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_SURFACE ? 1.f : 0.f,
+                     g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_PROJECTED ? 1.f : 0.f);
 
   // Hop 3 of 3, reported once ever: a draw was translated while the water mark was set, so
   // a D3DMATERIAL9 carrying Ambient.g = 1 reached the device. If this line is present and
   // Remix still logs no dusklight.water, the loss is on Remix's side of SetMaterial, not
   // here. See set_dusklight_water in dx9.hpp for the other two hops.
-  if (g_dusklightWater) {
-    static bool s_reported = false;
-    if (!s_reported) {
-      s_reported = true;
-      Log.info("dx9.water: first water-marked draw translated (matKey {:#x})", matKey);
+  if (g_dusklightWaterRole != GX_AURORA_DUSKLIGHT_WATER_NONE) {
+    static bool s_reportedSurface = false;
+    static bool s_reportedProjected = false;
+    const bool projected = g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_PROJECTED;
+    bool& reported = projected ? s_reportedProjected : s_reportedSurface;
+    if (!reported) {
+      reported = true;
+      Log.info("dx9.water: first {} draw translated (matKey {:#x})",
+               projected ? "PROJECTED" : "SURFACE", matKey);
     }
   }
 
