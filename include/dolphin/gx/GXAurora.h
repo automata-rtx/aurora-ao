@@ -121,7 +121,9 @@ extern "C" {
 
 /**
  * Marks the draws that follow as Dusklight water, until cleared. Must be followed by a u32
- * GX_AURORA_DUSKLIGHT_WATER_* role.
+ * GX_AURORA_DUSKLIGHT_WATER_* role and a second u32 carrying the material's MAxx tag as a
+ * number (9 for MA09, 0 for none). The tag rides along because a body of water is drawn as
+ * several surfaces and the renderer needs to tell them apart to keep one.
  *
  * It is a FIFO command rather than a plain backend call because the FIFO is drained in
  * end_frame, not as the game issues draws: a global set from the game thread is read long
@@ -260,7 +262,7 @@ void GXSetSkinningDebugView(bool enable);
  * layer - and treating all three as refracting interfaces stacks two or three sheets of
  * glass where there should be one surface.
  */
-void GXSetDusklightWater(u32 role);
+void GXSetDusklightWater(u32 role, u32 tag);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 

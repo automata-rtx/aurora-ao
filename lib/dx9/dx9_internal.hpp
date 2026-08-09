@@ -62,6 +62,10 @@ extern Device g_dx9;
 // StateCache: that caches D3D9 state to avoid redundant Set* calls, and this is an input to
 // what gets built rather than a record of what was sent. See dx9.hpp set_dusklight_water.
 inline uint32_t g_dusklightWaterRole = GX_AURORA_DUSKLIGHT_WATER_NONE;
+// The MAxx tag the marked material carried, as a number: 9 for MA09, 0 for none. Carried
+// because a body of water is several surfaces and only one of them should be the refracting
+// interface; the renderer decides which, and cannot without knowing them apart.
+inline uint32_t g_dusklightWaterTag = 0;
 
 // Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
 // D3D's camera-space texgen inputs back to GX's model-space inputs
@@ -215,14 +219,16 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
-                               float isWaterSurface, float isWaterProjected) noexcept {
+                               float isWaterSurface, float isWaterProjected,
+                               float waterTag) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
-  // Ambient.g is the water-surface flag and .b the projected-water-overlay flag; .a is
-  // still free. Two independent bits rather than one enum, because a float channel
-  // compared against a threshold is what the read side already does everywhere else.
-  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWaterSurface, isWaterProjected, 0.f};
+  // Ambient.g is the water-surface flag, .b the projected-water-overlay flag, and .a the
+  // MAxx tag as a number (9.0 for MA09). Two independent bits rather than one enum for the
+  // roles, because a float channel compared against a threshold is what the read side
+  // already does everywhere else; the tag is small enough that a float carries it exactly.
+  mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWaterSurface, isWaterProjected, waterTag};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

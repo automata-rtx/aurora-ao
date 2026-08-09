@@ -1723,7 +1723,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.colorAuthored ? 1.f : 0.f,
                      selfLit.readsRaster ? 0.f : 1.f,
                      g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_SURFACE ? 1.f : 0.f,
-                     g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_PROJECTED ? 1.f : 0.f);
+                     g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_PROJECTED ? 1.f : 0.f,
+                     static_cast<float>(g_dusklightWaterTag));
 
   // Hop 3 of 3, reported once ever: a draw was translated while the water mark was set, so
   // a D3DMATERIAL9 carrying Ambient.g = 1 reached the device. If this line is present and
