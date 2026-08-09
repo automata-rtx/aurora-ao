@@ -828,20 +828,39 @@ the draw in the `AnimatedWater` category (a texture hash list), and its motion
 is Remix's clock rather than the game's. It composes with this rather than
 replacing it.
 
-### Replacements on water: a capture cannot express water
+### Why a lake shows chunks with and without an authored normal map
+
+**Measured 2026-08-09 15:56, and the cause is simply that a body of water is
+drawn from more than one texture.** That session's log has one replaced hash
+(`e7ae56e2c3fddcfc`) and three unreplaced ones still on the water path with
+`normalTex=1` — the raw colour texture in the normal slot, which is the noisy
+look. Replacing one hash fixes the draws that use it and nothing else, so a lake
+comes out in patches with hard edges between them. The `dusklight.water` lines
+name every hash that reached Remix; that is the list to author against.
+
+**A note on how this was first diagnosed, because it is the failure this
+document's rules exist to prevent.** A second mechanism was proposed and shipped
+on top of the above: that the replacement itself was opaque. It was not — the
+Remix Toolkit lets a material's type be overridden to translucent, which is what
+had been done, and an opaque water ripple would have been obvious on sight. The
+inference required the person testing not to notice something plainly visible,
+which is never a sound reading. The capturer fact below is real and worth
+keeping; it was not the cause here.
+
+### The capturer cannot express water — true, but not the cause above
 
 **`GameCapturer::captureMaterial` (`rtx_game_capturer.cpp:505`) writes an
 `lss::Material` carrying an albedo texture path and nothing else.** There is no
 translucent path in the capturer at all. Read from source 2026-08-09.
 
-Everything follows from that. A water draw captures as an **opaque** material,
-so a replacement authored from that capture in the Remix Toolkit is opaque
-unless its type was changed by hand — and `determineMaterialData` returns a
-replacement wholesale. A replaced water draw was therefore an *opaque surface
-sitting beside translucent ones on the same lake*: not a shading difference
-between chunks, a different kind of surface. That is what "large chunks that
-don't show the normal map, with strange cutoffs" looked like in the 2026-08-09
-15:56 session.
+So a water draw captures as an **opaque** material and starts life that way in
+the toolkit. That is a real limitation worth knowing when authoring — the type
+has to be set to translucent by hand — but it is an authoring step, not a
+defect, and **no observed artifact has been traced to it.**
+
+The guard below exists for the case where an opaque material does reach a water
+draw. It has never been seen to fire. `coerced=` in the log is what would say
+it had.
 
 So water stays water under a replacement
 (`rtx.dusklight.water.applyToReplacements`, default on):
@@ -852,21 +871,16 @@ So water stays water under a replacement
 | Translucent | **left completely alone.** That author meant it. |
 | RayPortal | left alone. |
 
-`dusklight.water.replaced` reports `type=` and `coerced=` so which of these
-happened is in the log rather than inferred.
+`dusklight.water.replaced` reports `type=` and `coerced=` so what a replacement
+actually is stays a matter of record rather than assumption.
 
-**Marked as inference, not finding:** the capturer's behaviour is read from
-source, but that any *particular* authored material is opaque is not. The
-`type=` field is what settles it per material.
-
-### One more thing the same session showed
-
-A body of water is drawn from **more than one texture**. Lake Hylia's log has one
-replaced hash and three unreplaced ones still on the water path with
-`normalTex=1` — the raw colour texture in the normal slot, which is the noisy
-look. Authoring a replacement for one hash therefore fixes one part of a lake.
-The `dusklight.water` lines name every hash that reached Remix, which is the
-list to work from.
+**Per-hash replacement is tagging, and it has the usual cost.** One authored
+normal map has to be re-keyed to every water texture in the game, and water in an
+area nobody has visited yet shows the raw-colour noise until someone finds it and
+adds another. A single authored normal map applied to every water surface,
+independent of which game texture a draw carries, would be the translation-shaped
+answer. Not built: it means loading a texture outside the replacement system, and
+nobody has asked for it.
 
 ### What is not done
 
