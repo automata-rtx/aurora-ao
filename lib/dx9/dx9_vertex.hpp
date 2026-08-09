@@ -34,6 +34,12 @@ struct DecodedDraw {
   // so the split can regroup; valid only while the decode scratch lives, i.e.
   // until the next decode_draw call.
   bool pnMtxOverflow = false;
+  // Set when the blend indices written into the vertices are the model's GLOBAL joint indices
+  // rather than this draw's compacted palette slots. Only happens for draws carrying a model
+  // identity whose joint count fits a byte - see decode_draw. When it is set, apply_transforms
+  // loads the whole joint palette instead of the compacted one, and the overflow split is skipped
+  // because there is no cap left to overflow.
+  bool pnMtxGlobalJoints = false;
   const uint8_t* pnMtxPerVertex = nullptr;
   uint32_t blendIndexOffset = 0; // byte offset of BLENDINDICES within a vertex
   // GX texcoord attr (VA_TEXn) -> uv slot in the decoded vertex, -1 if absent.

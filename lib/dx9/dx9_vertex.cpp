@@ -168,6 +168,12 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
     out.weightCount = std::clamp(g_skin.influenceCount, 2u, 4u) - 1;
   } else if (out.hasPnMtxIdx) {
     out.weightCount = 1;
+    // Use the model's own joint numbering when the game has published one and the palette it is
+    // handing over covers every joint. Both conditions matter: without the palette there would be
+    // no matrix to put at a global index, and a joint count past 255 would not survive the
+    // UBYTE4 blend-index lane, so those models keep the compacted form and simply do not merge.
+    out.pnMtxGlobalJoints = g_modelIdentity.valid() && g_modelIdentity.jointPalette != nullptr &&
+                            g_modelIdentity.jointCount <= 255;
   }
   const bool hasBlendIndices = out.skinned || out.hasPnMtxIdx;
 
@@ -385,6 +391,34 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
         std::memcpy(dst + weightsOffset, weights, out.weightCount * 4);
       }
       std::memcpy(dst + indicesOffset, &indices, 4);
+    } else if (out.hasPnMtxIdx && out.pnMtxGlobalJoints) {
+      // Global-joint form. The blend index written here is the model's joint index, the same
+      // number the game's own joint tree uses, so every draw of a character agrees on what bone 7
+      // means and a replacement authored against the model's skeleton indexes the same array.
+      //
+      // This deliberately abandons the compaction below, and with it raw D3D9 correctness for
+      // these draws: an index past D3DCAPS9::MaxVertexBlendMatrixIndex reads an undefined matrix
+      // on real fixed-function hardware. That is a considered trade, not an oversight - the raw
+      // image is a feed into Remix and is never shown, Remix reads the transform state and skins
+      // on the GPU without enforcing the cap (unsupported-effects.md R5), and a character whose
+      // bones mean the same thing in every draw is the entire point of the exercise.
+      const float one = 1.0f;
+      std::memcpy(dst + weightsOffset, &one, 4);
+      const uint32_t slot = pnmtxidx < gx::MaxPnMtx ? pnmtxidx : 0;
+      t_vtxSlots[v] = static_cast<uint8_t>(slot);
+      const uint16_t joint = g_modelIdentity.slotToJoint[slot];
+      // A slot the game could not name a single joint for - a weighted envelope - falls back to
+      // joint 0 rather than writing 0xFFFF into a byte lane. Those draws are refused a merge and a
+      // replacement anyway; this only keeps the raster stream from indexing nonsense.
+      const uint32_t indices = joint == 0xFFFF ? 0u : static_cast<uint32_t>(joint);
+      std::memcpy(dst + indicesOffset, &indices, 4);
+      if (pnMtxRemap[slot] < 0) {
+        pnMtxRemap[slot] = 0;
+        out.pnMtxSlots[out.pnMtxCount] = static_cast<uint8_t>(slot);
+        if (out.pnMtxCount + 1 < out.pnMtxSlots.size()) {
+          ++out.pnMtxCount;
+        }
+      }
     } else if (out.hasPnMtxIdx) {
       const float one = 1.0f;
       std::memcpy(dst + weightsOffset, &one, 4);

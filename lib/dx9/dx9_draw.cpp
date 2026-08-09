@@ -341,6 +341,25 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
     set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
     // The palette was loaded in joint order, so the blend indices already are joint indices.
     publish_draw_skeleton(nullptr, 0, true);
+  } else if (draw.hasPnMtxIdx && draw.pnMtxGlobalJoints) {
+    // Global-joint form: load the model's whole palette, addressed by joint. Each entry is the
+    // same matrix the game would have loaded into a GX slot (the game builds this array straight
+    // out of J3DMtxBuffer's draw matrices), so WORLDMATRIX(joint) holds exactly what
+    // WORLDMATRIX(compactedSlot) held before - identical rendering, one numbering.
+    //
+    // Loading all of them rather than only the ones this packet touches is the point: a
+    // replacement body is weighted against the whole skeleton, and the joints this particular
+    // packet happens to use are not the joints the new mesh will reference.
+    const uint32_t jointCount = std::min<uint32_t>(g_modelIdentity.jointCount, MaxWorldPalette);
+    for (uint32_t j = 0; j < jointCount; ++j) {
+      const D3DMATRIX m = to_d3d_3x4(g_modelIdentity.jointPalette + static_cast<size_t>(j) * 12);
+      set_world_matrix(j, haveCam ? mtx_multiply(m, g_camera.viewInv) : m);
+    }
+    set_view_matrix(view);
+    set_rs(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
+    set_rs(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
+    // Blend index already IS the joint index, so the fork needs no mapping.
+    publish_draw_skeleton(nullptr, 0, true);
   } else if (draw.hasPnMtxIdx) {
     // Matrix-palette draws (J3D characters): the 10 GX position matrices
     // become the world matrix palette, selected per vertex. The vertices store
@@ -618,7 +637,7 @@ void draw_prim(GXPrimitive prim, GXVtxFmt fmt, uint16_t vtxCount, const uint8_t*
   }
   apply_transforms(draw);
   apply_tev(draw);
-  if (draw.pnMtxOverflow) {
+  if (draw.pnMtxOverflow && !draw.pnMtxGlobalJoints) {
     // Needs per-group palettes; build a triangle list for the topology first.
     if (prim == GX_TRIANGLES) {
       t_indexScratch.clear();
@@ -651,7 +670,7 @@ void draw_indexed(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* vtxData, uint3
   }
   apply_transforms(draw);
   apply_tev(draw);
-  if (draw.pnMtxOverflow) {
+  if (draw.pnMtxOverflow && !draw.pnMtxGlobalJoints) {
     draw_palette_split(draw, indices, indexCount);
     return;
   }

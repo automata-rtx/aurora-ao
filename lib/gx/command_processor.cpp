@@ -2057,10 +2057,14 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       slotToJoint[i] = read_u16(data + pos, bigEndian);
       pos += 2;
     }
+    CHECK(pos + 8 <= size, "GX_AURORA_SET_MODEL_IDENTITY palette address read overrun");
+    const u64 paletteAddr = read_u64(data + pos, bigEndian);
+    pos += 8;
     // Only D3D9 has anything to do with this - it is what lets RTX Remix merge a character's
     // draws. Every other backend renders identically without it.
     if (dx9::active()) {
-      dx9::set_model_identity(modelKey, instanceKey, jointCount, slotCount, slotToJoint.data());
+      dx9::set_model_identity(modelKey, instanceKey, jointCount, slotCount, slotToJoint.data(),
+                              reinterpret_cast<const float*>(paletteAddr));
     }
   } else if (subCmd == GX_AURORA_CLEAR_MODEL_IDENTITY) {
     if (dx9::active()) {

@@ -87,7 +87,7 @@ void set_camera_view(const float* mtx3x4) noexcept;
 // what went into it. Rendering is unaffected; see docs/dx9/remix-material-interface.md and
 // dusklight-ao/docs/remix-open-issues.md issue 15.
 void set_model_identity(uint64_t modelKey, uint64_t instanceKey, uint32_t jointCount, uint32_t slotCount,
-                        const uint16_t* slotToJoint) noexcept;
+                        const uint16_t* slotToJoint, const float* jointPalette) noexcept;
 void clear_model_identity() noexcept;
 
 // State relays ----------------------------------------------------------------
@@ -127,7 +127,7 @@ inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uin
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
-inline void set_model_identity(uint64_t, uint64_t, uint32_t, uint32_t, const uint16_t*) noexcept {}
+inline void set_model_identity(uint64_t, uint64_t, uint32_t, uint32_t, const uint16_t*, const float*) noexcept {}
 inline void clear_model_identity() noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}

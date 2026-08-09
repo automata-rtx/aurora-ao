@@ -668,11 +668,12 @@ void clear_skinning() noexcept { g_skin = {}; }
 ModelIdentityState g_modelIdentity;
 
 void set_model_identity(uint64_t modelKey, uint64_t instanceKey, uint32_t jointCount, uint32_t slotCount,
-                        const uint16_t* slotToJoint) noexcept {
+                        const uint16_t* slotToJoint, const float* jointPalette) noexcept {
   g_modelIdentity = {};
   g_modelIdentity.modelKey = modelKey;
   g_modelIdentity.instanceKey = instanceKey;
   g_modelIdentity.jointCount = jointCount;
+  g_modelIdentity.jointPalette = jointPalette;
   g_modelIdentity.slotToJoint.fill(0xFFFF);
   if (slotToJoint != nullptr) {
     const uint32_t count = std::min<uint32_t>(slotCount, gx::MaxPnMtx);

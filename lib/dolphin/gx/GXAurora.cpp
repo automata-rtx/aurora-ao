@@ -104,7 +104,7 @@ void GXSetViewMtx(const void* mtx) {
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
 void GXSetModelIdentity(u64 modelKey, u64 instanceKey, u32 jointCount, u32 slotCount,
-                        const u16* slotToJoint) {
+                        const u16* slotToJoint, const void* jointPalette) {
   if (slotToJoint == nullptr) {
     slotCount = 0;
   }
@@ -119,6 +119,7 @@ void GXSetModelIdentity(u64 modelKey, u64 instanceKey, u32 jointCount, u32 slotC
   for (u32 i = 0; i < slotCount; ++i) {
     GX_WRITE_U16(slotToJoint[i]);
   }
+  GX_WRITE_U64(reinterpret_cast<u64>(jointPalette));
 }
 
 void GXClearModelIdentity(void) { GX_WRITE_AURORA(GX_AURORA_CLEAR_MODEL_IDENTITY); }

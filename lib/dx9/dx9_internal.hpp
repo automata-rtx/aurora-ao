@@ -359,6 +359,12 @@ struct ModelIdentityState {
   uint32_t jointCount = 0;
   uint32_t slotCount = 0;
   std::array<uint16_t, gx::MaxPnMtx> slotToJoint{};
+  // The model's whole joint palette, jointCount * 12 floats, row-major 3x4, indexed by joint -
+  // exactly the matrices the game would have loaded into GX slots, just addressed by joint instead.
+  // That equivalence is what makes global-joint indexing render identically to the compacted form:
+  // WORLDMATRIX(joint) ends up holding precisely what WORLDMATRIX(compactedSlot) would have held.
+  // Owned by the game and valid until the frame renders, same contract as GXSetSkinning's palette.
+  const float* jointPalette = nullptr;
 
   bool valid() const noexcept { return modelKey != 0 && instanceKey != 0 && jointCount != 0; }
 };

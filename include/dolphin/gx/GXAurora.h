@@ -127,6 +127,8 @@ extern "C" {
  * belongs to and what its blend indices mean. Rendering is identical on every backend.
  */
 #define GX_AURORA_SET_MODEL_IDENTITY 0x0053
+/* Followed by: u64 model key, u64 instance key, u32 joint count, u32 slot count, that many u16
+ * joint indices, then a u64 address of the joint palette (0 for none). */
 
 /**
  * Clears the model identity set above. Followed by nothing.
@@ -243,11 +245,17 @@ void GXSetSkinningDebugView(bool enable);
  * matrix, holding a joint index or 0xFFFF for a slot that is not a single joint - a weighted
  * envelope, for instance, which is a blend rather than a bone.
  *
+ * jointPalette is the model's whole palette - jointCount row-major 3x4 matrices indexed by joint,
+ * holding exactly what the game would load into a GX position-matrix slot for that joint. Supply
+ * it and the backend addresses the world matrices by joint instead of by compacted slot, which is
+ * what lets every draw of a character agree on what bone 7 means. Pass null to keep the compacted
+ * form. The buffer must stay valid until the frame renders, same contract as GXSetSkinning.
+ *
  * Call it after loading a matrix group and before its draw; call GXClearModelIdentity when the
  * model is done, or the next unrelated draw is attributed to this character.
  */
 void GXSetModelIdentity(u64 modelKey, u64 instanceKey, u32 jointCount, u32 slotCount,
-                        const u16* slotToJoint);
+                        const u16* slotToJoint, const void* jointPalette);
 
 /**
  * Clears the model identity set above.
