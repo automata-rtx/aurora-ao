@@ -712,10 +712,12 @@ there it rides the existing `D3DMATERIAL9` side channel:
 | Fact | Path | Was |
 | :-- | :-- | :-- |
 | "this draw is a water surface" | `D3DMATERIAL9::Ambient.g` → `LegacyMaterialData::d3dMaterial` → `SceneManager::determineMaterialData` | `Ambient.g` was unused |
-| "this draw is the projected overlay" | `D3DMATERIAL9::Ambient.b` → same → `RtInstance::m_isHidden` in `rtx_instance_manager.cpp` | `Ambient.b` was unused; `.a` still is |
+| "this draw is the projected overlay" | `D3DMATERIAL9::Ambient.b` → same → `RtInstance::m_isHidden` in `rtx_instance_manager.cpp` | `Ambient.b` was unused |
+| the MAxx tag, as a number | `D3DMATERIAL9::Ambient.a` → same → `hideSurfaceTag` | `Ambient.a` was the last free channel; the side band is now full |
 
-Two bits rather than one encoded enum, because a float channel compared against
-a threshold is what every other read site here already does.
+Two bits rather than one encoded enum for the roles, because a float channel
+compared against a threshold is what every other read site here already does.
+The tag is a small integer and a float carries it exactly.
 
 Remix's fork then builds a `TranslucentMaterialData` — index of refraction,
 transmittance colour and measurement distance from `rtx.dusklight.water.*` —
@@ -761,10 +763,10 @@ where a mark died rather than only that it did:
 
 | Line | Log | Means |
 | :-- | :-- | :-- |
-| `dusk.matname name=… role=surface` | game | the game recognised the material and emitted the command |
+| `dusk.matname name=… role=surface tag=MAxx` | game | the game recognised the material and emitted the command. A tag is reported for every material, water or not. |
 | `dx9.water: first SURFACE mark decoded from the FIFO` | game | it survived the FIFO and reached the backend |
 | `dx9.water: first SURFACE draw translated` | game | a draw was translated while marked, so a `D3DMATERIAL9` carrying `Ambient.g = 1` reached the device |
-| `dusklight.water tex0hash=… ior=… texXform=… proj=… blend=…` | Remix | Remix received it and built a translucent material |
+| `dusklight.water tex0hash=… ior=… tag=MAxx … blend=…` | Remix | Remix received it and built a translucent material. `tag=` is the field that says which layer of a lake this draw is. |
 
 `PROJECTED` has the same three game-side lines and ends at
 `dusklight.water.projected … hidden=1` instead. A fifth line,
@@ -795,38 +797,71 @@ The `proj=1` group being MA02/MA10 is confirmed twice over — by the name role
 read from `dKy_bg_MAxx_proc`, and independently by the D3D9 state shape. Those
 are now hidden.
 
-### Surface detail — the game's texture in the normal slot
+### Surface detail comes from an authored replacement, and from nothing else
 
-Water with no textures at all is featureless glass. Correct, and far too calm:
-the first session with the projected layer removed reported the water as
-consistent and **bland**.
+**A revision bound the draw's own colour texture into the water's normal slot,
+and it was reverted on 2026-08-09.** It was added because water with no textures
+reads as featureless glass, and it was wrong twice over:
 
-So the draw's own texture is bound as the translucent material's
-**normal map** (`rtx.dusklight.water.surfaceDetailFromGameTexture`, default on).
-Three things follow from that slot in particular:
+- a *colour* texture decoded as an unsigned octahedral tangent normal
+  (`packing.slangh:357`) is noise, not ripples; and
+- on a lake where a normal map had already been authored for one of the layers,
+  it put a **second** normal map alongside it — and per an RTX Remix rendering
+  engineer, overlapping normal maps do not blend correctly.
 
-- The ripples **scroll at the game's rate**, because the scroll is a texture
-  transform on the draw and the normal sample uses the same
-  `surfaceInteraction.textureCoordinates` as everything else. No animation rate
-  is invented here.
-- It is **the slot a replacement normal map lands in**. Authoring a normal map
-  against the ripple texture's hash upgrades this from a placeholder to the real
-  thing, with no further code.
-- Nothing about the albedo is touched, so the white cannot come back through it.
+The second point is the one that generalises: it is not a reason to tune the
+first idea, it is a reason for a body of water to present **one** surface.
 
-**Say plainly what this is until a normal map is authored:** the game supplies a
-*colour* texture, and the shader decodes `.xy` as an unsigned octahedral tangent
-normal (`unsignedOctahedralToHemisphereDirection`, `packing.slangh:357`). The
-result is an animated perturbation correlated with the ripple pattern, not
-physically meaningful ripples. `rtx.translucentMaterial.normalIntensity` scales
-it, and it is in the Dusklight Water panel next to the switch.
+So the game's textures are left exactly as they are. They keep their hashes,
+they stay replaceable, and detail arrives when a normal map is authored against
+them. The fork contributes the water physics and the texcoords; the look of the
+surface is the mod's.
 
-Remix's own dual-layer animated water (`rtx.translucentMaterial.animatedWaterEnable`)
-takes a *second* normal sample at a different scroll velocity and blends the two
-— the classic two-layer water look. It is **not** turned on from here: it needs
-the draw in the `AnimatedWater` category (a texture hash list), and its motion
-is Remix's clock rather than the game's. It composes with this rather than
-replacing it.
+### Tiling and scroll are the fork's, not the game's
+
+The water surface's texture coordinates are driven from
+`rtx.dusklight.water.uvTiling` and `scrollSpeed` in place of the transform the
+draw arrived with (`animateTexcoords`, default on, applied where
+`surface.textureTransform` is assigned in `rtx_instance_manager.cpp`).
+
+The game's mapping and scroll rate were authored for its own world scale and a
+640x480 rasterizer. Neither is something a path traced lake has to inherit, and
+a ripple texture stretched once across Lake Hylia reads as a smear — tiling is
+the control that fixes that, and there is no correct value for it.
+
+Two details that are easy to get wrong and are already handled: the time source
+is the same expression the shader uses for `cb.timeSinceStartSeconds`
+(`rtx_context.cpp`), so this and Remix's own animated water do not drift apart;
+and the scroll offset is wrapped with `fmod` before being scaled, so a long
+session does not walk the translation into a range where float precision shows.
+
+### One surface per body of water
+
+`rtx.dusklight.water.hideSurfaceTag` hides the water surfaces carrying one MAxx
+tag. A body of water arrives as several coincident surfaces, and stacking
+refracting interfaces is not what water is — quite apart from the normal map
+point above.
+
+Picking which layer survives needs to know which layer each draw *is*, so aurora
+carries the material's MAxx tag as a number beside the role:
+
+| Fact | Channel |
+| :-- | :-- |
+| is a water surface | `D3DMATERIAL9::Ambient.g` |
+| is the projected overlay | `Ambient.b` |
+| MAxx tag, as a number (9 = MA09, 0 = none) | `Ambient.a` |
+
+`Ambient.a` was the last free channel of the side band. The tag is read straight
+off the material name rather than derived from the role, because the role says
+what to *do* with a draw and the tag says which layer it *is*; a material that is
+not water still reports a tag, so the whole MAxx family shows up in the log
+rather than only the part already matched.
+
+**Default 0, hiding nothing.** Which layer should survive is a look decision and
+no session has made it. From the names seen so far a lake is MA09
+(`MeraWater`, the shine layer) over MA06 (`NigoriWater`, the murky body), so 6 is
+the first thing to try. **MA03 is fountains and waterfalls** — hiding that tag
+would delete them.
 
 ### Why a lake shows chunks with and without an authored normal map
 
