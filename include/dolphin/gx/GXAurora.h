@@ -249,7 +249,13 @@ void GXSetSkinningDebugView(bool enable);
  * holding exactly what the game would load into a GX position-matrix slot for that joint. Supply
  * it and the backend addresses the world matrices by joint instead of by compacted slot, which is
  * what lets every draw of a character agree on what bone 7 means. Pass null to keep the compacted
- * form. The buffer must stay valid until the frame renders, same contract as GXSetSkinning.
+ * form.
+ *
+ * Only the ADDRESS travels through the FIFO, and the FIFO is not drained until end_frame, so the
+ * buffer must stay allocated at that address, holding this frame's matrices, until the frame
+ * renders - the same contract as GXSetSkinning's palette. A per-draw scratch buffer satisfies
+ * neither half: by drain time it has been overwritten by a later model, or freed. This is not
+ * theoretical; it is what the first version of the caller did.
  *
  * Call it after loading a matrix group and before its draw; call GXClearModelIdentity when the
  * model is done, or the next unrelated draw is attributed to this character.
