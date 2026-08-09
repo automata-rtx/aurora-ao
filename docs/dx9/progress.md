@@ -111,6 +111,12 @@ each is named so the full account is findable.
 - **Draws needing more matrices than the cap are split** into per-palette
   groups rather than folded onto slot 0, which transformed vertices by the
   wrong joint. *(3.10)*
+- **Both of those are skipped for draws carrying a model identity.** When the
+  game publishes one, the blend index becomes the model's global joint index
+  and the whole palette is loaded, so every draw of a character agrees on what
+  bone 7 means — which is what lets one authored body replace a whole
+  character. It costs raw-D3D9 correctness for those models, deliberately.
+  `gx-to-d3d9-mapping.md` §6(a′). *(3.33)*
 
 ### Textures
 
@@ -251,6 +257,60 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.33 — a global joint numbering, so a character's draws agree on their bones (2026-08-08/09)
+
+**CI-green, NOT tested in game.** The first build of the three-repo feature this
+belongs to crashed on launch — game-side, not here — and the fix is also untested.
+
+The problem is a Remix one (R12): a capture is one mesh and one invented
+skeleton *per draw call*, and J3D draws a character as one draw per matrix
+group, so a body arrives as dozens of unrelated pieces. Merging them needs a
+single joint index space, and **no one repo has it**. The game knows which joint
+it loaded into which GX position-matrix slot; only this backend knows which slot
+each D3D9 blend index ended up meaning after the compaction R5 forces; only the
+fork can merge the meshes. So the game publishes its half, this backend composes
+the two, and the fork consumes the result.
+
+What landed here:
+
+- **`GXSetModelIdentity` / `GXClearModelIdentity`** (`GX_AURORA_SET_MODEL_IDENTITY`
+  `0x0053`, `…CLEAR…` `0x0054`), the public GX extension the game calls once per
+  matrix group. Carries a run-stable model key, an instance key, the joint count,
+  the slot→joint table, and a pointer to the model's joint palette.
+- **A second numbering for matrix-palette draws.** With an identity and a palette
+  in force, `decode_draw` sets `DecodedDraw::pnMtxGlobalJoints` and writes the
+  model's **global joint index** as the blend index; `dx9_draw.cpp` loads the
+  whole palette addressed by joint. Full description in
+  `gx-to-d3d9-mapping.md` §6(a′) — it is a numbering change, not a maths change:
+  `WORLDMATRIX(joint)` holds precisely what `WORLDMATRIX(compactedSlot)` held.
+- **`publish_draw_skeleton`**, which resolves `dusklight_SetDrawSkeleton` from
+  `d3d9.dll` by name (cached, including the not-found answer — stock Remix and
+  Microsoft's own `d3d9.dll` do not export it, and that is the ordinary case)
+  and hands the fork the blend-index → joint table for each emitted draw. It is
+  called on **every** path, including with no identity, because clearing the
+  fork's latch is what stops the next unrelated draw being merged into a body.
+
+**This spends R5 on purpose.** Those draws index past
+`MaxVertexBlendMatrixIndex`, so the raw D3D9 image scatters them; §0 has said
+since 2026-08-04 that the raw image is a feed and is never shown. Two guards
+keep the blast radius closed: a model with more than 255 joints keeps the
+compacted form (the index rides in a UBYTE4 lane), and the overflow split is
+skipped for these draws because it exists to rewrite indices back into
+per-group slots.
+
+**One contract worth reading before touching the caller.** Only the palette's
+*address* crosses the GX FIFO, and the FIFO is not drained until `end_frame`
+(`fifo.cpp` `drain()`, from `aurora.cpp` `end_frame`). A per-draw scratch buffer
+is therefore read after a later model has overwritten it — or after it has been
+freed. The first game-side caller did exactly that; `GXSetModelIdentity`'s
+header comment now says so in as many words.
+
+**Regression signature:** `dx9.skeleton model identity export not present` in
+the log means the fork half is missing or renamed, and the feature is silently
+inert rather than broken. Characters scattering across the world in *Remix*
+(not just raw D3D9) would mean the global indices and the loaded palette have
+gone out of step.
 
 ### 3.32 — dense particles were a draw-call problem, and the backend can now count draws (2026-08-08)
 

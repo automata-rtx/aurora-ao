@@ -215,11 +215,13 @@ fields, in this order):
 
 ## 6. Skinning [v1 — flagship feature]
 
-Two cases, both expressed as **fixed-function indexed vertex blending**, which
-RTX Remix understands natively (rest-pose verts hashed, bones replayed):
+**Three** forms, all expressed as **fixed-function indexed vertex blending**,
+which RTX Remix understands natively (rest-pose verts hashed, bones replayed).
+(a) and (a′) are the same draws under two different numbering schemes; which
+one applies depends on whether the game has published a model identity.
 
-**(a) Matrix-palette draws (PNMTXIDX attribute present)** — all normal
-characters:
+**(a) Matrix-palette draws (PNMTXIDX attribute present), compacted** — all
+normal characters, whenever no model identity is in force:
 - Load `g_gxState.pnMtx[…].pos` (× `view⁻¹` when the camera is set — §3) into
   `SetTransform(D3DTS_WORLDMATRIX(i))` (only when dirty).
 - **The palette is compacted per draw.** GX has 10 position matrices, but
@@ -232,9 +234,10 @@ characters:
   Excess beyond the cap folds onto slot 0 with a one-shot warning.
   **Remix never showed this**: it ignores the cap, reading the world-matrix
   state directly and skinning on the GPU — the bug is raw-D3D9 only, which is
-  why nothing under Remix ever surfaced it. The compaction stays because it is
-  free and keeps the standalone image usable for debugging, not because that
-  image is a product.
+  why nothing under Remix ever surfaced it. The compaction stays *for this
+  form* because it is free and keeps the standalone image usable for debugging,
+  not because that image is a product — and (a′) drops it entirely for exactly
+  that reason.
 - Vertex gets `BLENDINDICES = UBYTE4(compactedIndex, 0,0,0)` **and one stored
   weight of 1.0**; `D3DRS_VERTEXBLEND = D3DVBF_1WEIGHTS` +
   `D3DRS_INDEXEDVERTEXBLENDENABLE = TRUE`. Plain fixed-function would accept
@@ -251,6 +254,33 @@ characters:
   shader likewise skips bones with weight ≤ 0.
 - TEXMTXIDX attributes (per-vertex texture matrix select) are consumed from
   the stream but **[later]** (rare; env-mapped skinned parts may look off).
+
+**(a′) The same draws under the model's global joint numbering** (2026-08-08) —
+taken whenever the game has published a model identity through
+`GXSetModelIdentity` *and* supplied a joint palette, and the model has ≤ 255
+joints (`DecodedDraw::pnMtxGlobalJoints`, set in `decode_draw`):
+- **The compaction is skipped.** The blend index written into the vertex is the
+  model's own **global joint index**, and the whole joint palette is loaded —
+  `WORLDMATRIX(joint)` rather than `WORLDMATRIX(compactedSlot)`. Each palette
+  entry is a straight copy of the draw matrix the game would have loaded into a
+  GX slot for that joint, so the addressing changes and the rendering does not.
+- **The overflow split is skipped too** (`dx9_draw.cpp`, gated on
+  `!draw.pnMtxGlobalJoints`). It exists to rewrite indices back into per-group
+  slots, which would undo the whole thing.
+- **This deliberately spends R5.** An index past
+  `MaxVertexBlendMatrixIndex` reads an undefined matrix on real fixed-function
+  hardware, so the raw D3D9 image scatters these models. §0 says the raw image
+  is a feed and is never shown; Remix ignores the cap. The point is that every
+  draw of a character then agrees on what bone 7 means, which is what lets one
+  authored body replace a whole character.
+  [`unsupported-effects.md`](unsupported-effects.md) R5 and R12.
+- **The palette pointer's lifetime is a contract, not a detail.** Only the
+  address crosses the GX FIFO, and the FIFO is not drained until `end_frame`,
+  so the game's buffer must still hold this frame's matrices at that address
+  when the drain happens. See `GXSetModelIdentity`'s header comment; the first
+  caller used a per-draw scratch buffer and was wrong.
+- The `>255 joints` guard is not decorative: the blend index rides in a UBYTE4
+  lane. Such a model keeps form (a).
 
 **(b) `GXSetSkinning` extension draws (J3DSkinDeform, 2 actors):**
 - Palette pointer = `jointCount` × 3x4 row-major host-endian floats → load

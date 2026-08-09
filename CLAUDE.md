@@ -240,6 +240,16 @@ camera, working input across resizes, and **HD texture replacement packs**
 (2026-08-06 — the pack goes to Remix through the API rather than through D3D9,
 so texture tagging is untouched; `docs/dx9/texture-replacements.md`).
 
+**Characters can now be addressed by their own joint numbering.** With a model
+identity published (`GXSetModelIdentity`, 2026-08-08), a matrix-palette draw
+writes the model's **global joint index** as its blend index and loads the whole
+joint palette, instead of the per-draw compaction R5 forces. That is what lets
+the fork merge a character's draws into one captured mesh and bind one
+replacement to a whole body. It spends R5 deliberately — the raw D3D9 image
+scatters those models, which §0 says is not a cost. **CI-green, NOT tested in
+game**, and the first build of the wider feature crashed on launch (game-side).
+`docs/dx9/progress.md` §3.33, `gx-to-d3d9-mapping.md` §6(a′).
+
 **One `GXBegin` block is one D3D9 draw call**, and Remix charges per draw rather
 than per pixel — a draw too small for its own BLAS still contributes its own
 geometry entry and surface to a bucket that rebuilds every frame. A game-side
