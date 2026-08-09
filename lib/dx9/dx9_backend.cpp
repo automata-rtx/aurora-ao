@@ -331,6 +331,13 @@ static bool reset_device(uint32_t width, uint32_t height) noexcept {
 }
 
 bool begin_frame() noexcept {
+  // Water is a property of the draws a material brackets, never of a frame. The game clears
+  // it at the end of each material packet; clearing here as well means a frame that ends
+  // mid-bracket - an early return, an exception, a path that never reaches the close - opens
+  // the next one with water off rather than marking everything drawn until the next J3D
+  // material happens to load.
+  g_dusklightWater = false;
+
   uint32_t width = 0;
   uint32_t height = 0;
   current_window_size(width, height);
