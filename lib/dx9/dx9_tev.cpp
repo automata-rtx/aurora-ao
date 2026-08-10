@@ -83,6 +83,19 @@ const char* d3dta_name(DWORD ta) noexcept {
 // scores zero on every TEV signal may still be glowing correctly by this route,
 // and until this field existed neither log could say which.
 // docs/dx9/remix-material-interface.md §9.
+// What the game said this draw represents (GXSetDrawClass). Spelled out rather than
+// logged as a number so a reader without the header can follow the line.
+const char* draw_class_name(uint8_t drawClass) noexcept {
+  switch (drawClass) {
+  case GX_AURORA_DRAW_CLASS_PARTICLE:
+    return "particle";
+  case GX_AURORA_DRAW_CLASS_HAZE:
+    return "haze";
+  default:
+    return "none";
+  }
+}
+
 const char* blend_name() noexcept {
   switch (g_gxState.blendMode) {
   case GX_BM_NONE:
@@ -1741,7 +1754,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.colorAuthored ? 1.f : 0.f,
                      selfLit.readsRaster ? 0.f : 1.f,
                      albedoTexRepIndex,
-                     albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage);
+                     albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage,
+                     g_gxState.drawClass);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1770,7 +1784,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
              "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
-             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} texrep={} grp={}",
+             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} texrep={} class={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1785,7 +1799,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              rampWhy, rampOther,
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
-             albedoTexRepIndex,
+             albedoTexRepIndex, draw_class_name(g_gxState.drawClass),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction

@@ -105,11 +105,13 @@ each is §0 applied — extend the fork rather than contort the stream.
 | `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
 | `Ambient.g` | 1-based index of the HD texture replacement this draw's albedo wants, 0 for none | `dusklightTexRep::handleFromLegacyMaterial` | [`texture-replacements.md`](texture-replacements.md) |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to; only meaningful when it is non-zero | `dusklightTexRep::handleForRasterStage` | same |
+| `Ambient.a` | what this draw's transparency represents — `GX_AURORA_DRAW_CLASS_*`: 0 none, 1 particle, 2 haze | `rtx_dusklight_transparency.h` → `alphaState.isParticle` | §11 |
 
-**Free channels remaining: `Ambient.a` and `Power`.** Nothing reads them today.
+**Free channels remaining: `Power`.** Nothing reads it today.
 That list is here so the next thing that needs a side channel takes one that is
-actually spare — `Ambient.g` and `Ambient.b` were free until 2026-08-05 and this
-table is the only place that would have said so.
+actually spare — `Ambient.g` and `Ambient.b` were free until 2026-08-05, and
+`Ambient.a` until 2026-08-10, and this table is the only place that would have
+said so.
 
 Note also that `Ambient.g`/`.b` are the only side-channel fields read on the
 **rasterized** path (`D3D9DeviceEx::BindTexture`) as well as the ray-traced one.
@@ -672,3 +674,136 @@ approximation, which is what shipped before this.
   multiply already has, not a new one.
 - `rtx.dusklight.rampMaterials` turns it off live, which is also how to A/B it
   against the approximation.
+
+---
+
+## 11. Transparency: what a blended draw *is* — 2026-08-10
+
+Written after two complaints that turned out to be one mechanism: enemy death
+smoke is noisy and its transparency reads wrong, and the layered fog wall in
+front of Death Mountain is noisy and reads wrong in a different way.
+
+**Implemented, syntax-unverified (no MinGW in the session container), untested
+in game.** The decode in §11.4 is the one part that was executed — see there.
+
+### 11.1 Remix has two transparency renderers, and picks by texture tag
+
+An alpha-blended D3D9 draw goes down one of two very different paths, chosen in
+`rtx_instance_manager.cpp`, `setAlphaState`:
+
+```cpp
+out.isParticle = drawCall.testCategoryFlags(InstanceCategories::Particle);
+```
+
+That flag comes from **texture categorisation** (`rtx.particleTextures`) and
+nothing else. What each path then does:
+
+| | Untagged (today's default) | Tagged a particle |
+| :-- | :-- | :-- |
+| TLAS | primary, non-opaque | separate **unordered** TLAS |
+| How layers combine | a **stochastic pick** — one layer survives per pixel per frame (`resolve.slangh`, `handleStochasticAlphaBlend`; `rtx.enableStochasticAlphaBlend` defaults **true**) | all layers accumulated in one order-independent traversal (`resolveVertexUnordered`) |
+| Where its light comes from | a search for a neighbouring **opaque** pixel, borrowing its denoised radiance; the volumetric cache only if that search fails (`composite_alpha_blend.comp.slang`) | the volumetric radiance cache at the particle's own position (`evaluateOpaqueApproximations` → `evalVolumetricNEE`) |
+
+For a dense stack of smoke quads the untagged path is *one random layer a frame,
+lit by whatever solid thing happens to be near it on screen*. That is the noise
+and the wrong-looking transparency, and they are the same bug.
+
+**Why tagging cannot fix it here.** Rule 1: a tag is one answer per texture and
+this game reuses textures across contexts. Worse, several of these draws land
+after Remix's RTX injection boundary, where they are never categorised at all —
+so the dev-menu tagging UI cannot reach exactly the draws that need it
+(`dusklight-ao/docs/remix-open-issues.md` issue 6).
+
+### 11.2 So the game says it per draw
+
+`GXSetDrawClass(GX_AURORA_DRAW_CLASS_*)` → `g_gxState.drawClass` →
+`D3DMATERIAL9::Ambient.a` → `DusklightTransparency::treatAsParticle` → OR'd into
+`out.isParticle`. Three values: `none` (0), `particle` (1), `haze` (2).
+
+Placed in `m_Do_graphic.cpp` around the six `if (fapGmHIO_getParticle())` blocks
+that draw JPA groups under a **perspective** projection. The 2D groups
+(`draw2Dgame`, `draw2Dback`, `draw2Dfore`, `draw2Dmenu*`) are deliberately left
+unclassified: Remix rasterizes those and they are not world volumes.
+
+A draw carrying no class reads 0 and takes the stock path, so **an older game
+build against a newer DLL renders exactly as it does today.** That is why this
+needed no protocol bump — it is not part of the `rtx.dusklight.env` push
+contract. (It was also worth avoiding: `claude/remix-sphere-lights-system-0j781o`
+is unmerged at protocol **11** while `Fixed-Function-dev` is at 7, so 8–11 are
+spoken for. Checked 2026-08-10.)
+
+### 11.3 Why `haze` exists but is not promoted by default
+
+The obvious move is to promote both classes and be done. It would make the fog
+wall worse, and the reason is a number:
+
+- The froxel grid is capped at `rtx.dusklight.atmosphere.froxelMaxDistanceMaxMeters`
+  = **120 m** (`rtx_dusklight_atmosphere.cpp`, `target = clamp(end * scale, min, max)`).
+- `viewZToDepthSlice` **saturates** (`froxel.slangh`): a surface past the grid is
+  lit as though it stood at the grid's last slice.
+- Everything beyond that is instead carried by the game's own fog ramp in the
+  composite, whose handover *is* `froxelMaxDistance` (`DusklightAtmosphere.md` §5.2).
+
+Death Mountain is far beyond 120 m. So the split is by distance:
+
+| Class | Where it lives | Path | Why |
+| :-- | :-- | :-- | :-- |
+| `particle` | near — an enemy dies next to you | unordered TLAS | inside the grid, so the volumetric lighting is real |
+| `haze` | hundreds of metres out | composite (unchanged) | outside the grid; promoting it would trade a stochastic pick for a *saturated* froxel lookup **and lose the far fog ramp**, which only the composite path applies |
+
+`rtx.dusklight.transparency.hazeAsParticle` (default false) exists to A/B that
+claim in one session rather than argue it.
+
+### 11.4 The other half of the fix, in the fork
+
+The far fog ramp had never been applied to the transparent layer at all —
+`applyFog` in `composite.comp.slang` only ever touched `radianceOutput`. So a
+distant transparency kept whatever radiance the neighbour search gave it and
+**never faded**, while the opaque geometry around it faded correctly. In the far
+field that reads as the transparency being wrong rather than as fog being
+missing: a fog wall stays crisp against a mountain that has properly dissolved
+into the sky.
+
+The ramp is now factored into `dusklightFarFogRamp()` and run for the
+alpha-blend layer too, before the coverage weight and before the near in-scatter
+is added — which is stricter than the opaque path manages, because there the two
+arrive already summed.
+
+**This half is unconditional and needs no classification**, so it applies to
+every transparency including ones the game never labels.
+
+### 11.5 How to tell whether any of it happened
+
+- `matrep.sum … class=` — per material: `none`, `particle`, `haze`.
+  `class=none` on a draw you expected classified means the game-side call is
+  missing or cleared too early. Check that before looking at the fork.
+- `dusklight.xparency frames=… classifiedFrames=… particleDraws=… hazeDraws=…
+  promotedToUnordered=…` — one bounded line per 600 frames from the fork, behind
+  `rtx.dusklight.transparency.reportClasses`. `classifiedFrames=0` while
+  transparencies are plainly on screen is the signature of a game build that
+  predates `GXSetDrawClass`.
+
+**Regression signatures, so they are recognised rather than discovered:**
+
+- Smoke that was noisy becomes smooth but *flat* — the unordered path lights from
+  the volumetric cache, which is isotropic. Expected, and correct for smoke;
+  if it reads too dim the cache is the thing to look at, not this.
+- Smoke disappears in a room where the volumetrics are off — the unordered path
+  has no other light source. `rtx.volumetrics.enable` is the first check.
+- Distant transparencies suddenly *over*-fog — the §11.4 ramp is now reaching
+  something it should not. `rtx.dusklight.atmosphere.enable = False` isolates it.
+- Anything at all changes with `class=none` everywhere in the log — then it was
+  not this change, because every path is gated behind a non-zero class.
+
+### 11.6 What is not done
+
+- **Distant particles are still lit from a saturated froxel lookup** if anything
+  ever is promoted past 120 m. Closing that properly means either carrying the
+  Dusklight fog args into `RaytraceArgs` so the unordered path can run the same
+  ramp, or raising the grid cap — the first is correct, the second is cheap.
+  Neither was attempted here: `resolve.slangh` is the hottest shared shader path
+  in the runtime and this session could not compile it, let alone run it.
+- **The fog wall is not identified in the game source.** `haze` is plumbed end to
+  end and nothing calls it. Identifying the actor is what `class=` and the
+  `dusklight.xparency` line are for; adding the call afterwards is one line and
+  one `GXScopedDrawClass`.

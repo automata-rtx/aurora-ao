@@ -119,6 +119,35 @@ extern "C" {
  */
 #define GX_AURORA_SET_VIEW_MTX 0x0052
 
+/**
+ * Declares what kind of thing the following draws are, for backends that have to treat
+ * transparency differently depending on what it represents. Must be followed by one u32
+ * carrying a GX_AURORA_DRAW_CLASS_* value. Latches until changed; reset to NONE each frame.
+ *
+ * Only the D3D9 backend reads it, and only to answer a question Remix cannot answer for
+ * itself: an alpha-blended draw is either a *volume* seen edge-on (smoke, dust, a layered
+ * fog wall) or a *surface* that happens to be see-through (glass, water). Remix decides that
+ * by texture tag, which is one answer per texture in a game that reuses textures across
+ * contexts - so the game says it per draw instead. docs/dx9/remix-material-interface.md §11.
+ */
+#define GX_AURORA_SET_DRAW_CLASS 0x0053
+
+/** Unclassified. The backend falls back to whatever it would have done anyway. */
+#define GX_AURORA_DRAW_CLASS_NONE 0
+
+/**
+ * A participating volume drawn as sprites - smoke, dust, steam, an explosion puff. Many
+ * overlapping quads whose blended sum is the effect; no single quad is a surface.
+ */
+#define GX_AURORA_DRAW_CLASS_PARTICLE 1
+
+/**
+ * Layered translucent scenery standing in for distance - a haze wall in front of a far
+ * mountain, a depth-cue curtain. Geometry rather than sprites, but the same volume argument
+ * applies: the layers are a medium, not a stack of windows.
+ */
+#define GX_AURORA_DRAW_CLASS_HAZE 2
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -204,6 +233,19 @@ void GXClearSkinning(void);
  * Call whenever the view matrix changes (per frame / per view).
  */
 void GXSetViewMtx(const void* mtx);
+
+/**
+ * Declare what the following draws represent (a GX_AURORA_DRAW_CLASS_* value). Latches until
+ * changed, and is reset to GX_AURORA_DRAW_CLASS_NONE at the start of every frame, so a caller
+ * that sets it must clear it rather than rely on the reset. Rendering output is unchanged on
+ * every backend except D3D9, where it reaches RTX Remix as a per-draw hint about how the
+ * draw's transparency should be resolved. Wrap the emitting draw, e.g.
+ *
+ *     GXSetDrawClass(GX_AURORA_DRAW_CLASS_PARTICLE);
+ *     ... particle draws ...
+ *     GXSetDrawClass(GX_AURORA_DRAW_CLASS_NONE);
+ */
+void GXSetDrawClass(u32 drawClass);
 
 /**
  * Enable or disable the GPU-skinning debug view. When enabled, matrix-palette-skinned draws (those

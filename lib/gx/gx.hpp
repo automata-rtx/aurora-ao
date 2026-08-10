@@ -397,6 +397,12 @@ struct GXState {
   u8 skinInfluences = 0;             // influences per vertex (1-4)
   bool skinningActive = false;
 
+  // What the game says the current draws represent (GX_AURORA_DRAW_CLASS_*, GXAurora.h).
+  // Latched until changed, cleared each frame. Only the D3D9 backend reads it: it is how a
+  // draw tells Remix "my transparency is a volume, not a window" without a texture tag.
+  // docs/dx9/remix-material-interface.md §11.
+  u8 drawClass = 0;
+
   // Innermost GXPushDebugGroup label, mirrored into a fixed buffer so a
   // backend can name the draw it is looking at without a graphics debugger and
   // without allocating. The game pushes one group per process draw

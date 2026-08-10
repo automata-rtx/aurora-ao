@@ -80,7 +80,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
            tint=inHint tintVal=FFB80000 tfactor=FFB80000 tfUsed=1
            vtxColor=default-white selfLit=noRas+reg emisScore=0.75
            emisCol=B80000 emisEval=1 emisAuthored=1 blend=opaque ras=0
-           ramp=tfLow rampOther=F84040 vtxUse=const texrep=0 grp=-
+           ramp=tfLow rampOther=F84040 vtxUse=const texrep=0 class=none grp=-
 ```
 
 | Field | Means |
@@ -104,6 +104,7 @@ matrep.sum mk=… gxStages=1 d3dStages=1 albedoGx=0 albedoMap=GX_TEXMAP0
 | `vtxColor` | `stream` (real vertex colours), `default-white`, or `matColor` |
 | **`vtxUse`** | what GX says that stream *is*, and therefore what the fork does with it: `material` (lighting enabled → authored colour, forwarded), `bakedLight` (lighting disabled → finished output, withheld), `const` (no `CLR0`, evaluated into the material). Sent per draw in `D3DMATERIAL9::Specular.r`; see `remix-material-interface.md` §7c |
 | **`texrep`** | the 1-based HD-replacement index for the texture the fork will treat as this material's albedo, `0` if the pack has none for it. Sent per draw in `D3DMATERIAL9::Ambient.g`, with the stage it refers to in `Ambient.b`. This is the join key between a log line here and what Remix substituted — a non-zero value with nothing sharper on screen means the fork did not resolve it, which its own `texrep.rmx` counters separate. See `texture-replacements.md` |
+| **`class`** | what the game declared this draw represents, via `GXSetDrawClass`: `none`, `particle` (smoke, dust, an explosion puff — many overlapping quads whose blended sum is the effect), or `haze` (layered translucent scenery standing in for distance). Sent per draw in `D3DMATERIAL9::Ambient.a`; the fork turns anything but `none` into `alphaState.isParticle`, which moves the draw out of the stochastic alpha-blend path and into the unordered TLAS. `none` on a draw you expected to be classified means the game-side call is missing or was cleared too early — that is the first thing to check before looking at the fork. See `remix-material-interface.md` §11 |
 | **`grp`** | which piece of game code drew this, from a `GXPushDebugGroup` the game has open. **Currently always `-`** — see below |
 | **`selfLit`** | which self-illumination evidence fired: `noRas`, `reg`, `over`, or a `+`-joined combination; `none` if none did; `ortho` / `noColor` if the material was excluded before scoring. **`noRas` means the TEV colour program never reads the lit channel** — not that lighting is off, which is a different thing and was scored by mistake until 2026-08-05 |
 | `emisScore` | that evidence summed, 0..1. **Reported, not used** — three revisions cut on it and all three missed the lava, which scores 0.00. What the fork decides on is `emisEval`, `ras`, `emisAuthored` and the colour |

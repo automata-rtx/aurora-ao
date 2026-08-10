@@ -101,6 +101,11 @@ void GXSetViewMtx(const void* mtx) {
   }
 }
 
+void GXSetDrawClass(u32 drawClass) {
+  GX_WRITE_AURORA(GX_AURORA_SET_DRAW_CLASS);
+  GX_WRITE_U32(drawClass);
+}
+
 void GXSetSkinningDebugView(bool enable) { aurora::gx::skinDebugView = enable; }
 
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {

@@ -331,6 +331,11 @@ static bool reset_device(uint32_t width, uint32_t height) noexcept {
 }
 
 bool begin_frame() noexcept {
+  // The draw class latches, so a frame that died between GXSetDrawClass and its matching clear
+  // would leak "everything is smoke" into the next one. Cleared here rather than trusted to the
+  // caller, because that failure is silent, frame-shaped and miserable to chase.
+  g_gxState.drawClass = GX_AURORA_DRAW_CLASS_NONE;
+
   uint32_t width = 0;
   uint32_t height = 0;
   current_window_size(width, height);

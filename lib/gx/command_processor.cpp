@@ -2054,6 +2054,14 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     if (dx9::active()) {
       dx9::set_camera_view(view);
     }
+  } else if (subCmd == GX_AURORA_SET_DRAW_CLASS) {
+    CHECK(pos + 4 <= size, "GX_AURORA_SET_DRAW_CLASS read overrun");
+    const u32 drawClass = read_u32(data + pos, bigEndian);
+    pos += 4;
+    // Stored on every backend so the value is observable in one place; only the D3D9 path
+    // acts on it (dx9_tev.cpp, into the D3DMATERIAL9 side channel Remix reads).
+    g_gxState.drawClass = drawClass > GX_AURORA_DRAW_CLASS_HAZE ? static_cast<u8>(GX_AURORA_DRAW_CLASS_NONE)
+                                                               : static_cast<u8>(drawClass);
   }
 
   else {
