@@ -708,11 +708,30 @@ For a dense stack of smoke quads the untagged path is *one random layer a frame,
 lit by whatever solid thing happens to be near it on screen*. That is the noise
 and the wrong-looking transparency, and they are the same bug.
 
-**Why tagging cannot fix it here.** Rule 1: a tag is one answer per texture and
-this game reuses textures across contexts. Worse, several of these draws land
-after Remix's RTX injection boundary, where they are never categorised at all —
-so the dev-menu tagging UI cannot reach exactly the draws that need it
-(`dusklight-ao/docs/remix-open-issues.md` issue 6).
+**What tagging does and does not settle — corrected 2026-08-10.** The first
+draft of this section said tagging "cannot fix it here" and implied these draws
+were untagged. Both were wrong, and the owner corrected them:
+
+> *"I am tagging textures in the Remix runtime myself including particle
+> effects and a number of them do look better with it but not all. Ideally, I
+> should have to do as little texture tagging myself as possible."*
+
+So the accurate statement is narrower and more useful:
+
+- Tagging **works**, and is in use today. A tagged particle takes the right-hand
+  column above and a number of effects are better for it.
+- What tagging cannot do is be *per draw*. One answer per texture, in a game
+  that reuses textures across contexts, is wrong somewhere by construction — and
+  several of these draws land after Remix's RTX injection boundary where they are
+  never categorised at all, so the dev-menu UI cannot reach them
+  (`dusklight-ao/docs/remix-open-issues.md` issue 6).
+- **Every surviving tag is a translation nobody has written yet.** The per-draw
+  class is not there to make tagging possible; it is there to make it
+  unnecessary, so the out-of-the-box result is right without hand work.
+
+**Never infer from a document that a draw is untagged.** Only a log says that.
+This section's first draft made exactly that inference and reached a confident
+wrong diagnosis from it.
 
 ### 11.2 So the game says it per draw
 
@@ -731,6 +750,53 @@ needed no protocol bump — it is not part of the `rtx.dusklight.env` push
 contract. (It was also worth avoiding: `claude/remix-sphere-lights-system-0j781o`
 is unmerged at protocol **11** while `Fixed-Function-dev` is at 7, so 8–11 are
 spoken for. Checked 2026-08-10.)
+
+### 11.2b What the particle path costs — and why tagging helps some effects and not others
+
+This is the part the first draft missed entirely, and it is the answer to
+"a number of them do look better with it but **not all**."
+
+Moving a draw to the particle path is not a quality improvement with no other
+consequence. It changes **what lights the surface**, and it takes things away.
+From `evaluateOpaqueApproximations` (`resolve.slangh`), which is what the
+unordered path runs for every particle hit:
+
+```
+emissiveRadiance += albedo * evalVolumetricNEE(...volume froxel grid...) 
+                  + the material's own emission
+outgoingRadianceAttenuation *= 1 - opacity
+return true;     // <- "handled". The hit is never resolved as a surface.
+```
+
+That `return true` is the whole story. The particle **never becomes a g-buffer
+surface**, so it never reaches NEE, RTXDI, or any direct lighting at all.
+
+> **A tagged particle's only light is the volumetric radiance cache** (plus its
+> own emissive). No sun, no torch, no shadow, no bounce — except insofar as the
+> froxel grid already contains them.
+
+Which makes the split predictable, and matches "some but not all":
+
+| Tagging helps | Tagging does not help, or hurts |
+| :-- | :-- |
+| Dense overlapping smoke/dust, where getting **all** layers instead of one random one is worth more than shading fidelity | Anything that needs to read as *lit* — sunlit spray, a puff catching a torch |
+| Effects that are largely emissive anyway (fire, sparks), which carry their own colour through the same path | Anything with `rtx.volumetrics.enable` off or a thin medium — the cache is dark, so the particle is dark |
+| Particles in open, evenly lit air | Fast or large particles: the cache is `froxelGridResolutionScale`=8 (render res ÷ 8) × 64 slices with `maxAccumulationFrames`=128, so it is coarse and lags. A fast expanding puff is shaded from a stale, blocky field — which reads as **noise on the particle** even though the stochastic pick is gone |
+| Anything inside the froxel grid | Anything past it: the lookup **saturates** at `froxelMaxDistanceMaxMeters` (120 m) and the particle is lit as though it stood at the grid's edge |
+
+**So "tagged and still wrong" and "untagged and wrong" are different defects.**
+The per-draw class fixes the second. The first is a shading problem, and the
+knobs are on the volumetrics, not on the classification:
+`rtx.volumetrics.froxelGridResolutionScale` (spatial detail),
+`maxAccumulationFrames` (lag), `froxelDepthSlices`, and the atmosphere's
+`densityScale`.
+
+**Not attempted here, and worth stating as the open work:** giving particles a
+light source better than a 1/8-resolution lagging froxel grid — either by letting
+classified particles resolve as real surfaces for direct lighting, or by
+sharpening the cache for them. That is a design decision with a real performance
+bill, not a tweak, and it is the thing standing between "tag less" and "looks
+right out of the box".
 
 ### 11.3 Why `haze` exists but is not promoted by default
 
