@@ -52,6 +52,10 @@ Two consequences when you go reading game-side to explain a draw:
   word, so an empty grep is not evidence a thing does not exist.
 - **Some names are English spelled by ear** — `wether` is the weather system,
   `dKyd_lightSchejule` is the light schedule. Never "correct" one.
+- **`export LC_ALL=C.UTF-8` before grepping the game tree for Japanese.** Nearly
+  500 of its files carry literal kana/kanji — the original team's own debug
+  labels, which settle field meanings that the romaji alone leaves ambiguous.
+  Under the default `POSIX` locale `grep -P` matches **nothing**, silently.
 
 Full reference: `dusklight-ao/docs/japanese-naming.md` (in a session that has
 the game checked out, that is one directory up; it is also the canonical home
