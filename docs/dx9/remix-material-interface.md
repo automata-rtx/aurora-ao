@@ -837,31 +837,48 @@ session does not walk the translation into a range where float precision shows.
 
 ### One surface per body of water
 
-`rtx.dusklight.water.hideSurfaceTag` hides the water surfaces carrying one MAxx
-tag. A body of water arrives as several coincident surfaces, and stacking
-refracting interfaces is not what water is — quite apart from the normal map
-point above.
+A body of water arrives as several coincident surfaces, and stacking refracting
+interfaces is not what water is — quite apart from overlapping normal maps not
+blending correctly in Remix. So layers can be dropped, one switch each, all
+default off:
 
-Picking which layer survives needs to know which layer each draw *is*, so aurora
-carries the material's MAxx tag as a number beside the role:
+| Option | The game's word | What it is |
+| :-- | :-- | :-- |
+| `hideShimmerLayer` | mera | the shimmer / heat-haze pass |
+| `hideWavesLayer` | nami | waves |
+| `hideShorelineLayer` | mizugiwa | where the water meets the shore |
+| `hideMurkLayer` | nigori | the murky body |
+| `hideAdditiveLayer` | kasan (加算, *addition*) | additively blended passes |
 
-| Fact | Channel |
-| :-- | :-- |
-| is a water surface | `D3DMATERIAL9::Ambient.g` |
-| is the projected overlay | `Ambient.b` |
-| MAxx tag, as a number (9 = MA09, 0 = none) | `Ambient.a` |
+**These are the game's own labels, not a scheme invented here.** Twilight
+Princess is a Japanese production and this decompilation preserves the original
+team's naming, so the material suffix says what the pass is. The classifier is
+game-side (`waterLayerForMaterialName`) and the answer rides in
+`D3DMATERIAL9::Power`.
 
-`Ambient.a` was the last free channel of the side band. The tag is read straight
-off the material name rather than derived from the role, because the role says
-what to *do* with a draw and the tag says which layer it *is*; a material that is
-not water still reports a tag, so the whole MAxx family shows up in the log
-rather than only the part already matched.
+**An unrecognised layer is never hidden.** A name the classifier has not been
+taught arrives as `layer=unknown`, stays visible, and shows up in the log as a
+word to add. The opposite default would make a surface disappear silently.
 
-**Default 0, hiding nothing.** Which layer should survive is a look decision and
-no session has made it. From the names seen so far a lake is MA09
-(`MeraWater`, the shine layer) over MA06 (`NigoriWater`, the murky body), so 6 is
-the first thing to try. **MA03 is fountains and waterfalls** — hiding that tag
-would delete them.
+#### Why the MAxx tag could not do this
+
+An earlier revision hid by tag and **this document recommended trying `6`.** That
+was wrong: MA06 is *three* different surfaces —
+
+| Name | Word | |
+| :-- | :-- | :-- |
+| `cc_MA06_nami_v_x` | nami | waves |
+| `cc_MA06_mizugiwa_v_x` | mizugiwa | the shoreline |
+| `cc_MA06_NigoriWater_v_x` | nigori | the murky body |
+
+— so hiding the tag would have deleted a lake's waves and its shoreline to be rid
+of its murk. The control was built, shipped and recommended before the names were
+read. `hideSurfaceTag` is removed; `tag=` remains in the log as a grouping, and
+`layer=` is the field that decides anything.
+
+**`kasan` is the case worth remembering.** Its blend state was *measured* as
+`SRC_ALPHA,ONE` a session before anyone read the word, and 加算 means addition.
+The name had already said it. Read the vocabulary before measuring.
 
 ### Why a lake shows chunks with and without an authored normal map
 
