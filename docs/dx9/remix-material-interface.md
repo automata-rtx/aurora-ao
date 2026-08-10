@@ -683,8 +683,14 @@ Written after two complaints that turned out to be one mechanism: enemy death
 smoke is noisy and its transparency reads wrong, and the layered fog wall in
 front of Death Mountain is noisy and reads wrong in a different way.
 
-**Implemented, syntax-unverified (no MinGW in the session container), untested
-in game.** The decode in §11.4 is the one part that was executed — see there.
+**Implemented and CI-green; untested in game.** Precisely: dusklight-ao's build
+went green on all its targets with the submodule bumped, which compiles this
+repo's half and the game's `GXScopedDrawClass` calls; the fork's three Windows
+configs went green, which compiles the shader change including Slang. Neither
+was syntax-checked with the MinGW harness — the session container had no
+toolchain — so CI *is* the syntax check here. The class decode's boundary cases
+were additionally compiled and executed standalone. **Nothing has been run in
+game**, and CI cannot tell you whether any of it looks right.
 
 ### 11.1 Remix has two transparency renderers, and picks by texture tag
 
