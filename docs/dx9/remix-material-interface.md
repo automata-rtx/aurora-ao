@@ -934,6 +934,72 @@ independent of which game texture a draw carries, would be the translation-shape
 answer. Not built: it means loading a texture outside the replacement system, and
 nobody has asked for it.
 
+### A translucent material has NO partial coverage — and what that costs
+
+Read from `translucent_surface_material_interaction.slangh:123-171`. The only
+opacity term on a translucent surface is `diffuseOpacity`; it comes from the
+transmittance texture's alpha, and it feeds **only** the diffuse layer, which
+water disables. There is no path by which the draw's own alpha becomes coverage.
+
+So converting a draw to translucent **throws away its alpha blend**. For the
+water surface proper that is the intent — its look should come from transmittance
+and IoR. For a pass whose entire job is *feathering an edge*, it destroys the
+only thing that pass does, and the boundary goes hard.
+
+That is what a visible seam between water and the ground around it is, and it is
+Remix-exclusive by construction: the same draw rasterizes as a soft alpha blend.
+`mizugiwa` — the water's edge — therefore keeps its blend and falls through to
+the legacy path (`rtx.dusklight.water.shorelineAsBlend`, default on).
+
+**The general rule this is an instance of:** ask what a pass's alpha is *for*
+before converting it. Alpha carrying depth or tint is expendable under a path
+tracer; alpha carrying *coverage* is geometry, and nothing downstream replaces it.
+
+### How Remix identifies a texture, and what resolution it really sees
+
+- **The hash is `XXH3_64bits` over subresource 0** — mip 0's bytes of the D3D9
+  texture (`d3d9_common_texture.cpp:678`). Not the descriptor, not the whole
+  chain: the top mip's pixels.
+- **Aurora uploads at the GX texture's native size with its full mip chain** —
+  `create_from_rgba8(converted.data, obj.width(), obj.height(), obj.mip_count())`
+  (`dx9_texture.cpp:310`). Nothing downsamples.
+
+So a water texture that looks low resolution in the Remix texture browser **is
+the game's own art at its own size**. GameCube textures are small; that is not a
+loss in translation, and there is nothing to recover by changing the pipeline.
+
+What is *not* representative is treating that texture as the rendered result.
+Vanilla's apparent detail comes from stacking several passes and from the
+**indirect-texture warp**, which aurora drops (`tev: indirect texturing ignored`,
+three stages in the 2026-08-09 log). The flat texture is the input; the warp and
+the stack were the output.
+
+`dusklight.water` reports `tex=WxH` so this is answerable from a log.
+
+### How a body of water is actually built — d_a_obj_groundwater
+
+The Hyrule Field puddles are an actor, and its `Draw()` is the clearest statement
+of the layering in the codebase (`dusklight-ao src/d/actor/d_a_obj_groundwater.cpp`):
+
+```
+dComIfGd_setXluListDarkBG();                     // model1 -> the XLU list
+mDoExt_modelUpdateDL(mModel1);                   //   i.e. the game says: alpha blended
+dComIfGd_setList();
+...
+dComIfGd_setListInvisisble();                    // model2
+C_MTXLightPerspective(m, view->fovy, aspect, ...);
+mtxInfo->setEffectMtx(m);                        //   the camera-projected layer
+mDoExt_modelUpdateDL(mModel2);
+```
+
+Two models per puddle: an alpha-blended surface and a camera-projected overlay.
+Both animate their texture coordinates through **BTK** tracks (`mBtk1`, `mBtk2`)
+— texture SRT animation — and `mBck*` bones raise and lower the water level,
+which is why marking by material name survives a dungeon's water moving.
+
+The projected model is the layer the fork hides. The XLU one is the surface, and
+its being on the XLU list is the game stating outright that its alpha matters.
+
 ### What is not done
 
 - **The surface still arrives as more than one draw** — a base pass and usually
