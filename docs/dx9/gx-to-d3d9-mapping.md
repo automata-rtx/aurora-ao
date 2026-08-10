@@ -178,6 +178,8 @@ fields, in this order):
   per-draw hot path skips hashing. Rationale: Remix identifies game textures
   by content hash and holds references to the D3D9 texture *objects* across
   frames, but dusklight recreates `GXTexObj` wrappers freely — the `dDlst_2D*`
+  (`dDlst` = *drawlist*; game symbols are the decomp's, and mostly romanized
+  Japanese rather than English — `dusklight-ao/docs/japanese-naming.md`)
   drawlist items (minimap etc.) build a stack-local texobj **per draw, every
   frame**, each with a fresh `texObjId` that the PC `GXTexObjRAII` wrapper
   evicts right after the draw. With the old `texObjId`-keyed cache that meant

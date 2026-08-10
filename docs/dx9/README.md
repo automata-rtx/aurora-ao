@@ -91,6 +91,13 @@ If the question is about how the game *looks* under Remix rather than about the
 D3D9 backend, the design work is in the other two repos — start at
 `dusklight-ao/docs/kankyo-remix.md`.
 
+**Reading game code to explain a draw?** Twilight Princess's identifiers are the
+original Japanese team's names, kept by the decompilation — `kankyo` (環境) is
+*environment*, `wether` is the game's spelling of *weather*, and the tree mixes
+two romanization systems so a search for one spelling finds half a feature.
+`dusklight-ao/docs/japanese-naming.md` is the reference. Aurora's own code is
+unaffected: `lib/dx9/` is ordinary English `camelCase`.
+
 ## Design in one paragraph
 
 Aurora already funnels *every* draw (immediate-mode GX **and** J3D's baked

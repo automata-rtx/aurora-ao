@@ -6,6 +6,11 @@ having to look at pixels and describe them.
 Read [`remix-material-interface.md`](remix-material-interface.md) first — this
 document is the instrument, that one is the system being measured.
 
+**When a log leads you back into game code**, remember its names are romanized
+Japanese: `kankyo` (環境) is *environment*, `fpcDw_` is the process-control draw
+layer, and the tree spells some words two ways so one search finds half a
+feature. `dusklight-ao/docs/japanese-naming.md`.
+
 ---
 
 ## Why it exists
