@@ -118,7 +118,7 @@ bool in_offscreen() noexcept;
 // failure modes came out of it: left latched, the last water material marked everything
 // drained afterwards, and every material in the game turned translucent; cleared after
 // each material, the flag was always false by drain time and no water arrived at all.
-void set_dusklight_water(uint32_t role, uint32_t tag) noexcept;
+void set_dusklight_water(uint32_t role, uint32_t tag, uint32_t layer) noexcept;
 
 void on_evict_texture(uint32_t texObjId) noexcept;
 void on_evict_tlut(uint32_t tlutObjId) noexcept;
@@ -138,7 +138,7 @@ inline void draw_indexed(GXVtxFmt, uint16_t, const uint8_t*, uint32_t, const uin
 inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t) noexcept {}
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
-inline void set_dusklight_water(uint32_t, uint32_t) noexcept {}
+inline void set_dusklight_water(uint32_t, uint32_t, uint32_t) noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}

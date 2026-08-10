@@ -2055,17 +2055,19 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       dx9::set_camera_view(view);
     }
   } else if (subCmd == GX_AURORA_SET_DUSKLIGHT_WATER) {
-    CHECK(pos + 8 <= size, "GX_AURORA_SET_DUSKLIGHT_WATER read overrun");
+    CHECK(pos + 12 <= size, "GX_AURORA_SET_DUSKLIGHT_WATER read overrun");
     const u32 role = read_u32(data + pos, bigEndian);
     pos += 4;
     const u32 tag = read_u32(data + pos, bigEndian);
+    pos += 4;
+    const u32 layer = read_u32(data + pos, bigEndian);
     pos += 4;
     // Decoded here rather than acted on by the writer, because this is the point in the
     // stream the game meant: the FIFO is drained in end_frame, so the draws this brackets
     // are processed now, not when GXSetDusklightWater was called. Only the D3D9 backend
     // consumes it; every other backend renders water as it always did.
     if (dx9::active()) {
-      dx9::set_dusklight_water(role, tag);
+      dx9::set_dusklight_water(role, tag, layer);
     }
   }
 

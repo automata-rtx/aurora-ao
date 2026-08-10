@@ -66,6 +66,10 @@ inline uint32_t g_dusklightWaterRole = GX_AURORA_DUSKLIGHT_WATER_NONE;
 // because a body of water is several surfaces and only one of them should be the refracting
 // interface; the renderer decides which, and cannot without knowing them apart.
 inline uint32_t g_dusklightWaterTag = 0;
+// Which layer of a body of water this is (GX_AURORA_DUSKLIGHT_WATER_LAYER_*), classified
+// from the game's own material names. The tag is too coarse on its own: MA06 covers the
+// shoreline, the waves and the murk, which are three different surfaces.
+inline uint32_t g_dusklightWaterLayer = GX_AURORA_DUSKLIGHT_WATER_LAYER_UNKNOWN;
 
 // Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
 // D3D's camera-space texgen inputs back to GX's model-space inputs
@@ -220,7 +224,7 @@ inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALU
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
                                float isWaterSurface, float isWaterProjected,
-                               float waterTag) noexcept {
+                               float waterTag, float waterLayer) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
@@ -229,6 +233,9 @@ inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALU
   // roles, because a float channel compared against a threshold is what the read side
   // already does everywhere else; the tag is small enough that a float carries it exactly.
   mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, isWaterSurface, isWaterProjected, waterTag};
+  // Power is the last unused field of D3DMATERIAL9 and carries the water layer class. The
+  // side band is now completely full; anything further needs a different transport.
+  mat.Power = waterLayer;
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

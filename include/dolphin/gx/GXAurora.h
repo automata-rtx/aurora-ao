@@ -122,8 +122,10 @@ extern "C" {
 /**
  * Marks the draws that follow as Dusklight water, until cleared. Must be followed by a u32
  * GX_AURORA_DUSKLIGHT_WATER_* role and a second u32 carrying the material's MAxx tag as a
- * number (9 for MA09, 0 for none). The tag rides along because a body of water is drawn as
- * several surfaces and the renderer needs to tell them apart to keep one.
+ * number (9 for MA09, 0 for none), and a third u32 carrying a
+ * GX_AURORA_DUSKLIGHT_WATER_LAYER_* class. Tag and layer both ride along because a body of
+ * water is drawn as several surfaces and the renderer needs to tell them apart to keep one -
+ * and the tag alone cannot, since MA06 is the shoreline, the waves and the murk all at once.
  *
  * It is a FIFO command rather than a plain backend call because the FIFO is drained in
  * end_frame, not as the game issues draws: a global set from the game thread is read long
@@ -151,6 +153,33 @@ extern "C" {
  * above the first, carrying a screen-space image through it.
  */
 #define GX_AURORA_DUSKLIGHT_WATER_PROJECTED 2
+
+/*
+ * Which layer of a body of water a draw is, named from the game's own material names.
+ *
+ * Twilight Princess is a Japanese production and the decompilation preserves its naming, so
+ * these words are the developers' own labels for the passes: a lake is drawn as several of
+ * them stacked, and "the murky one" is a different surface from "the wave one" even though
+ * both carry the MA06 tag. The tag alone is too coarse to tell them apart - it was tried,
+ * and hiding MA06 would have deleted a lake's shoreline and its waves to be rid of its murk.
+ *
+ * UNKNOWN is the safe value: a name nobody has classified stays visible.
+ */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_UNKNOWN   0
+/** mera - the shimmer / heat-haze surface pass. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_SHIMMER   1
+/** nami - waves. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_WAVES     2
+/** mizugiwa - the water's edge, where it meets the shore. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_SHORELINE 3
+/** nigori - the murky body of the water. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_MURK      4
+/** funsui - a fountain. An object rather than a layer of a lake. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_FOUNTAIN  5
+/** kasan - an additively blended pass. Light over a surface, not a surface. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_ADDITIVE  6
+/** The indirect-textured pass: the warp the game uses to fake refraction. */
+#define GX_AURORA_DUSKLIGHT_WATER_LAYER_INDIRECT  7
 
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
@@ -262,7 +291,7 @@ void GXSetSkinningDebugView(bool enable);
  * layer - and treating all three as refracting interfaces stacks two or three sheets of
  * glass where there should be one surface.
  */
-void GXSetDusklightWater(u32 role, u32 tag);
+void GXSetDusklightWater(u32 role, u32 tag, u32 layer);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 

@@ -338,6 +338,7 @@ bool begin_frame() noexcept {
   // water material appears.
   g_dusklightWaterRole = GX_AURORA_DUSKLIGHT_WATER_NONE;
   g_dusklightWaterTag = 0;
+  g_dusklightWaterLayer = GX_AURORA_DUSKLIGHT_WATER_LAYER_UNKNOWN;
 
   uint32_t width = 0;
   uint32_t height = 0;
@@ -553,7 +554,7 @@ static void scale_copy_dst(uint32_t& width, uint32_t& height) noexcept {
   height = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(height) * scaleY)), 1);
 }
 
-void set_dusklight_water(uint32_t role, uint32_t tag) noexcept {
+void set_dusklight_water(uint32_t role, uint32_t tag, uint32_t layer) noexcept {
   // Hop 2 of 3, reported once per role. The three hops a water mark has to survive are
   // game -> FIFO (dusk.matname, game log), FIFO -> backend (here), and backend -> Remix
   // (dusklight.water, Remix log). Two rounds were spent unable to tell which of the three
@@ -569,6 +570,7 @@ void set_dusklight_water(uint32_t role, uint32_t tag) noexcept {
   }
   g_dusklightWaterRole = role;
   g_dusklightWaterTag = tag;
+  g_dusklightWaterLayer = layer;
 }
 
 void copy_tex(const void* dest, bool clear) noexcept {
