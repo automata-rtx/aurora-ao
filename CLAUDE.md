@@ -33,8 +33,29 @@ the D3D9 backend itself, the design work lives in the other two repos —
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/aurora-ao` | **this repo** — GX→D3D9 backend (`lib/dx9/`) | `docs/dx9/` |
-| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup) |
+| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup), `docs/japanese-naming.md` (how to read the game's symbol names) |
 | `automata-rtx/dxvk-remix` | the RTX Remix fork | `documentation/Dusklight*.md` |
+
+## The game's symbols are named in Japanese
+
+This repo's own code is ordinary English `camelCase`, and GX names come from
+Nintendo's SDK — but **the game symbols these documents cite are romanized
+Japanese**, because Twilight Princess was written by a Japanese team and the
+decompilation preserves its names. `kankyo` (環境) is *environment*;
+`dKyr_drawRain` is in `d_kankyo_rain.cpp` because rain is part of the
+environment system, not because `dKyr` means anything in English.
+
+Two consequences when you go reading game-side to explain a draw:
+
+- **Search in both romanizations.** The tree mixes kunrei-shiki (`si`, `tu`,
+  `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`, `sha`), sometimes for the same
+  word, so an empty grep is not evidence a thing does not exist.
+- **Some names are English spelled by ear** — `wether` is the weather system,
+  `dKyd_lightSchejule` is the light schedule. Never "correct" one.
+
+Full reference: `dusklight-ao/docs/japanese-naming.md` (in a session that has
+the game checked out, that is one directory up; it is also the canonical home
+for the glossary, which is mechanically checked against the game tree).
 
 ## Branches — ALL THREE repos use the same structure
 

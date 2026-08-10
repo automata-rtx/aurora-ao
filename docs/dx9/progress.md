@@ -20,7 +20,9 @@ link to them rather than re-explaining.
    about incorrectly here.
 2. **If the task is about how the game *looks* under Remix rather than about the
    D3D9 backend, you are in the wrong repo.** Go to
-   `dusklight-ao/docs/kankyo-remix.md`.
+   `dusklight-ao/docs/kankyo-remix.md`. If it sends you into game code, read
+   `dusklight-ao/docs/japanese-naming.md` too — those identifiers are romanized
+   Japanese, and one romanization finds half a feature.
 3. Read §"Why the backend is shaped the way it is" below. It is short and it
    prevents most re-litigation.
 4. `CLAUDE.md` at the repo root is the authority on branches, verification and
@@ -266,7 +268,8 @@ because the cost it exposed is a property of how this backend submits draws.
 Rain in Hyrule Field and snow in the Snowpeak exteriors ran at unusable frame
 rates under Remix. The kankyo weather effects are immediate-mode GX and were
 emitting **one `GXBegin`/`GXEnd` per quad** — `dKyr_drawRain` up to 250 drops ×
-4 offset layers, so up to a thousand draws a frame. This backend submits each
+4 offset layers, so up to a thousand draws a frame. (`dKy` is *kankyo*, 環境,
+the game's environment system; weather lives inside it.) This backend submits each
 `GXBegin` block as its own `*UP` call (`command_processor.cpp` decodes and
 submits immediately; there is no batching layer), so every quad became a
 separate draw in Remix. Fixed game-side in `d_kankyo_rain.cpp` by hoisting

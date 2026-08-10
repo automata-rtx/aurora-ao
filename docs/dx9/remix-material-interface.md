@@ -570,9 +570,11 @@ a decision about double-counting, not a research question.
 draw. **It has printed `-` for every material in every session so far.**
 
 Cause, verified by reading the game: `fpcDw_Execute` is where a draw is
-*scheduled*, not issued. TP actor draw methods call `mDoExt_modelEntryDL`, which
-enters models into a J3D draw buffer walked later by `dDlst_list_c` — long after
-the debug group has been popped. The hook was removed rather than left as a dead
+*scheduled*, not issued. (`fpc` is the game's process-control layer and `Dw` is
+*draw* — the game's symbols are romanized Japanese and clipped English,
+`dusklight-ao/docs/japanese-naming.md`.) TP actor draw methods call
+`mDoExt_modelEntryDL`, which enters models into a J3D draw buffer walked later
+by `dDlst_list_c` — long after the debug group has been popped. The hook was removed rather than left as a dead
 instrument; `dusklight-ao/src/f_pc/f_pc_draw.cpp` carries a note recording why.
 
 A correct implementation labels at draw-buffer *execution*, carrying the label

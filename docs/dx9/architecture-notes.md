@@ -202,8 +202,8 @@ Two distinct skinning mechanisms exist:
   loop that wraps each quad in its own `GXBegin`/`GXEnd` costs one draw per
   quad. That is affordable in raster and is not under Remix, where each draw
   contributes its own geometry entry and surface to a BLAS that rebuilds every
-  frame; the kankyo weather effects were spending ~1000 draws a frame that way
-  until 2026-08-08. Emitters that batch use `GXBegin(..., GX_AUTO)` around the
+  frame; the kankyo (環境, the game's environment system) weather effects were
+  spending ~1000 draws a frame that way until 2026-08-08. Emitters that batch use `GXBegin(..., GX_AUTO)` around the
   whole loop and carry per-particle colour in vertex `CLR0` rather than in
   `GX_TEVREG0`, because a GX state change cannot cross a `GXBegin` block.
   `dx9.draws` in the log is how this is measured. See

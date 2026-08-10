@@ -151,13 +151,15 @@ wrong; what was arriving was something else.
 
 **The torch emits three named resources at the same position**
 (`dusklight-ao/src/d/actor/d_a_ep.cpp:423-431`, names from
-`d_particle_name.cpp`):
+`d_particle_name.cpp`; the resource names are romanized Japanese, so glossing
+them as below is the convention —
+`dusklight-ao/docs/japanese-naming.md`):
 
 | ID | Resource | Role |
 | :-- | :-- | :-- |
 | `0x100` | `ZI_J_O_fire_a.jpa` | fire A |
 | `0x101` | `ZI_J_O_fire_b.jpa` | fire B |
-| `0x103` | `ZI_J_O_kagerou.jpa` | 陽炎, heat haze |
+| `0x103` | `ZI_J_O_kagerou.jpa` | 陽炎 *kagerou*, heat haze |
 
 (`0x102` / `fire_c` exists but the torch does not use it. The Forest Temple
 candle, `d_a_obj_lv1Candle00`, swaps the fire pair for `0x83a6`/`0x83a7` and
