@@ -380,6 +380,18 @@ dx9.draws frames=600 mean=412 peak=1387 - D3D9 draw calls per frame
 the weather is running, and a mean over 600 frames hides it. This existed
 nowhere before, which is why a thousand-draw frame went unnoticed for months.
 
+> **A companion line, game-side, since 2026-08-11.** `dx9.draws` is a *total*,
+> so it says a frame is expensive without saying which subsystem is spending it.
+> `vrkumo.draws` — same format, same 600-frame period, so the two read together —
+> counts the skybox cloud billboards alone. It exists because those were missed
+> by the batching sweep and the question could not be settled from the total
+> without asking whoever was playing to estimate how much of the screen was sky.
+>
+> **That is the pattern to copy** if another subsystem comes under suspicion:
+> count it where it is emitted, same period, one line, and leave `dx9.draws`
+> alone as the total it is. A per-subsystem breakdown does not belong in aurora,
+> which cannot see whose draw it is holding.
+
 **Syntax-checked** in both the d3d9-on and d3d9-off configs. The counter is
 plain arithmetic on a frame boundary; it has no failure mode that a build would
 not catch.
