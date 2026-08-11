@@ -691,6 +691,18 @@ Three changes:
    0.25** — the last is new, and is the only thing in GX that states "brighter
    than the display". The fork cut at `rtx.dusklight.emissive.threshold`, live
    in the overlay, so widening no longer costs a rebuild.
+
+   > **Superseded, like item 2 below — and `rtx.dusklight.emissive.threshold`
+   > no longer exists.** Three revisions cut on this weighted score and all
+   > three missed the Goron Mines lava, which scores **0.00** on every signal
+   > the score is built from. Rev 4 dropped scoring from the decision entirely
+   > in favour of a rule (self-lit AND a colour of its own AND that colour
+   > reading as a glow), which accepts 6 of 77 measured materials with no false
+   > positives and nothing to tune. The live options are
+   > `rtx.dusklight.emissive.{enable,brightness,colorSource,glowChroma,glowLuma,log}`.
+   > `remix-material-interface.md` §9. Kept above as the record of what was
+   > tried; noted here because a dangling option name sends a reader hunting
+   > through the overlay for a switch that is not there.
 2. **`grp=` on every `matrep.sum` line.** The game pushes a debug group per
    process draw at `fpcDw_Execute` — and aurora mirrors the innermost label into
    `GXState::currentDebugGroup()`. **This did not work and has been removed.**

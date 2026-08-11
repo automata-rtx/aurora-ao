@@ -166,8 +166,19 @@ too. PNG entries are skipped with a bounded log rather than failing quietly.
 | fork | `rtx_dusklight_env.h` | the four `env.texrep*` readouts the game pushes |
 | fork | `dxvk_imgui.cpp` | the HD Texture Pack overlay section, and `kRequiredProtocol` |
 
-**Protocol 7.** The game and the fork are a single versioned protocol; build
-both from the same commit point.
+**This feature landed at protocol 7.** That is history, not the current number —
+the wire has moved on several times since, and as of 2026-08-11 it is at 12.
+The game and the fork are a single versioned protocol, so build both from the
+same commit point; read the live number from `dusklight-ao`'s
+`tools/check-remix-protocol.py`, or from `remix_bridge.cpp` and the fork's
+`dxvk_imgui.cpp`, rather than from any document.
+
+> Until 2026-08-11 this line was just the bolded word *Protocol* and the number,
+> with no verb — which reads as a claim about the present, and was five versions
+> stale. Two mechanical checks watch for exactly that drift and **neither could
+> see this file**: aurora was in neither one's search path. Both now scan it, and
+> that bare phrasing is one of the patterns they match — so this note avoids
+> reproducing it verbatim, which would itself trip the check.
 
 ## 6. Failure modes and their signatures
 

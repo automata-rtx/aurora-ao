@@ -251,6 +251,25 @@ side-channel map runs **both** directions and includes `Power`, duplicate
 subcommand numbers fail, an unregistered subcommand fails, and the water packing
 in `GXAurora.h` is checked against the formula the documentation states.
 
+**Since 2026-08-11 a second checker reads this repo's documents too**, and it
+lives in the other repo: `dusklight-ao/tools/check-remix-protocol.py`. It
+validates any present-tense protocol number, and any `rtx.dusklight.*` option
+name these docs mention, against the fork's actual declarations. Both found real
+staleness here the moment aurora entered their search path — a bare bolded
+*Protocol 7* in `texture-replacements.md` that read as the current number while
+the wire was at 12, and `rtx.dusklight.emissive.threshold` in `progress.md` §3.23,
+an option that stopped existing when the evidence score was replaced by the rule.
+
+Two consequences:
+
+- **A doc-only edit here can fail a check that lives in dusklight.** Run
+  `python3 ../dusklight-ao/tools/check-remix-protocol.py` (or from a dusklight
+  checkout with this repo as `extern/aurora`) if you touch a protocol number or
+  name an `rtx.dusklight.*` option.
+- **State a protocol number as history or not at all.** "This feature landed at
+  protocol 7" is fine and always will be; the bare bolded form is one of the
+  patterns the checker treats as a claim about the present.
+
 **What it still cannot check, and therefore what a human has to:**
 
 - whether a "tested in game" claim is still true after the code under it changed
