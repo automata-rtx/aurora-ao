@@ -353,10 +353,21 @@ in the measured scene were screen blits. Replayed over that log the rule accepts
 **6 of 77 materials**, every lava and fire surface, no false positives, nothing
 to tune. `docs/dx9/remix-material-interface.md` §9.
 
-**`grp=` does not work and has never worked** — every material in every session
-logs `grp=-`. `fpcDw_Execute` schedules a draw; it does not issue one. The hook
-is removed. Identify a material by its logged shape instead: texture size and
-format, `tfactor`, and the ramp endpoints. §9 "Identification".
+**`grp=` carries the material's authored name — since 2026-08-11, and only when
+switched on.** It is not what the field was originally for, and the distinction
+matters: the *actor* that issued a draw is still unidentifiable, and the earlier
+hook that tried to name one printed `-` for every material in every session
+because `fpcDw_Execute` schedules a draw and does not issue one. What is built
+pushes from `J3DMatPacket::draw`, where the FIFO writes are, so `grp=` reads
+`Mat:MA00_Gake` — the name the original artists gave the surface, and the same
+name the game's own environment code dispatches on (`dKy_bg_MAxx_proc`).
+**Off by default**, because each push costs a `std::string` in the command
+processor per material per frame; `DUSK_MAT_LABELS=1` in the environment turns it
+on without a rebuild. A `grp=` ending in `~` is a name truncated at 48 chars, not
+a different material. Logged shape — texture size and format, `tfactor`, ramp
+endpoints — is still the identification that is always present. §9
+"Identification", which keeps material identity and actor identity apart.
+**No name reaches Remix; that transport is deliberately still open.**
 
 **Two-colour ramps are now reproduced exactly** rather than approximated — the
 fork evaluates the GX colour combiner (`a*(1-c) + b*c`) from both endpoints

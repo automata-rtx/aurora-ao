@@ -612,24 +612,95 @@ anything.
 None of 1–3 is built beyond what is noted above; 1 is instrumented and 2 is
 a decision about double-counting, not a research question.
 
-### Identification: `grp=` does not work
+### Identification: `grp=` carries the material's name, not the actor's
 
-`matrep.sum` carries a `grp=` field intended to name the game code that issued a
-draw. **It has printed `-` for every material in every session so far.**
+**These are two different questions and this section used to answer them as
+one.** Corrected 2026-08-11:
 
-Cause, verified by reading the game: `fpcDw_Execute` is where a draw is
-*scheduled*, not issued. (`fpc` is the game's process-control layer and `Dw` is
-*draw* — the game's symbols are romanized Japanese and clipped English,
-`dusklight-ao/docs/japanese-naming.md`.) TP actor draw methods call
-`mDoExt_modelEntryDL`, which enters models into a J3D draw buffer walked later
-by `dDlst_list_c` — long after the debug group has been popped. The hook was removed rather than left as a dead
-instrument; `dusklight-ao/src/f_pc/f_pc_draw.cpp` carries a note recording why.
+| Question | Field | State |
+| :-- | :-- | :-- |
+| *What did the game's artists call this surface?* | `grp=` | **built**, off by default — see below |
+| *Which actor or piece of game code issued this draw?* | — | **not built**, and nothing below changes that |
 
-A correct implementation labels at draw-buffer *execution*, carrying the label
-from registration. Nobody has built it. Until then, **the way to identify a
-material is its logged shape** — texture size and format, `tfactor`, and the
-ramp endpoints, all of which are in `matrep.sum` and now in `dusklight.emis`
-too.
+#### Why the first attempt printed `-`
+
+`matrep.sum`'s `grp=` was originally meant to name *the game code* that issued a
+draw, and it printed `-` for every material in every session. The cause, verified
+by reading the game, is worth keeping because it constrains any future attempt:
+`fpcDw_Execute` is where a draw is *scheduled*, not issued. (`fpc` is the game's
+process-control layer and `Dw` is *draw* — the game's symbols are romanized
+Japanese and clipped English, `dusklight-ao/docs/japanese-naming.md`.) TP actor
+draw methods call `mDoExt_modelEntryDL`, which enters models into a J3D draw
+buffer walked later by `dDlst_list_c` — long after the debug group has been
+popped. That hook was removed rather than left as a dead instrument;
+`dusklight-ao/src/f_pc/f_pc_draw.cpp` carries a note recording why.
+
+#### What is built: the material's own authored name
+
+The label is pushed from `J3DMatPacket::draw`
+(`dusklight-ao/libs/JSystem/src/J3DGraphBase/J3DPacket.cpp`), which brackets the
+`callDL()` that writes the draw into the FIFO — draw-buffer *execution*, which is
+where the paragraph above said a correct implementation would have to sit. It
+pushes `Mat:<name>`, so `grp=Mat:MA00_Gake` on a `matrep.sum` line means that
+material is the one the original artists named 崖 *gake*, cliff.
+
+**It was already there.** That push arrived with the game repo's first commit
+(`a6e5160`, 2026-06-15, the upstream PC-port import) and sat inside
+`#if DEBUG && TARGET_PC`. `DEBUG` is set only for `CMAKE_BUILD_TYPE=Debug`, and
+every CI artifact is `RelWithDebInfo`, so it had never been compiled into a build
+anyone ran. Nothing was designed on 2026-08-11 except its switch: the compile gate
+became `TARGET_PC` and the decision moved to runtime. Worth carrying as a habit —
+"we would have to build X" was true of *actor* identity and false of *material*
+identity, and one grep would have separated them.
+
+This is not cosmetic. **The game's own environment system dispatches on these
+names at runtime** — `dKy_bg_MAxx_proc` (`dusklight-ao/src/d/d_kankyo.cpp:11399`)
+walks a background model's materials and `memcmp`s `mat_name[3..6]` against
+`"MA00"`, `"MA01"`, `"MA04"`, `"MA16"` and others (`:11508`) to decide fog, murk
+and alpha behaviour. Background materials carry an `MAnn` semantic code plus a
+descriptive romaji suffix: `MA00_Gake` (cliff), `MA00_Kusa` — 草 *kusa*, grass —
+`MA00_Enkei_Tree_Color` — 遠景 *enkei*, distant scenery. So the classification we
+have been trying to infer from TEV state was authored, by hand, and is sitting in
+the model files.
+
+**It is off by default and it needs turning on for a session.** Cost: aurora's
+command processor builds a `std::string` per push while draining the FIFO, so
+labelling every material is one heap allocation per material per frame. The game
+compiles the push into release builds and gates it at runtime, so no rebuild is
+needed — `DUSK_MAT_LABELS=1` in the environment. A build configured with
+`-DDUSK_GFX_DEBUG_GROUPS=ON` (the default in Debug) has it on without the
+variable.
+
+Truncation: `GXState::MaxDebugGroupLabel` is 48, and `"Mat:"` leaves 43
+characters of name. The game formats into a buffer of exactly 48 so both sides
+cut at the same character, and marks a cut name with a trailing `~`. **A `grp=`
+ending in `~` is a truncated name, not a different material.**
+
+#### What this does *not* do
+
+`grp=` still does not say *which actor* drew a surface, and this change does not
+move toward that. Two materials in two rooms with the same authored name are
+still indistinguishable in the log.
+
+Nor does the name reach Remix. **The transport question is deliberately still
+open** — a name in the log is not a name in the renderer, and the point of
+turning the log on first is to find out what a transport would have to carry:
+how many distinct names a session sees, which `MAnn` codes occur, and whether
+the suffix is stable enough to key anything on. Decide after a session, not
+before. Note when that decision comes that the `D3DMATERIAL9` side band has **one
+free field left (`Ambient.a`, and an unmerged branch already claims it)** — see
+`in-flight-allocation.md` and `dusklight-ao/docs/japanese-naming-worklist.md`
+P17 — so any transport for this has to pack or take a different route.
+
+Until then, **the other way to identify a material is its logged shape** —
+texture size and format, `tfactor`, and the ramp endpoints, all of which are in
+`matrep.sum` and in `dusklight.emis` too. The name and the shape are
+complementary: the shape is always present, the name is more legible.
+
+Related but separate, and already live in every build: `dusk.matname` (game-side,
+`dusklight-ao/src/dusk/water_materials.hpp`) lists every *distinct* material name
+once, capped at 512. It answers "what names exist in this area"; it cannot join a
+name to a particular `matrep.sum` line, which is what `grp=` is for.
 
 ### What is still not built
 
@@ -843,9 +914,11 @@ failed revisions are that one fact seen from two sides:
 
 Anything that must describe *particular draws* has to travel in the command
 stream. The precedent was already here: `GX_AURORA_SET_VIEW_MTX` is a FIFO
-command for exactly this reason. It is also the same lesson that deleted the
+command for exactly this reason. It is also the same lesson that emptied the
 material report's `grp=` field — `fpcDw_Execute` schedules a draw, it does not
-issue one — one layer further down the same pipe.
+issue one — one layer further down the same pipe. `grp=` was refilled the same
+way on 2026-08-11, by pushing from `J3DMatPacket::draw` where the FIFO writes
+are; §9 "Identification".
 
 ### Reading the log
 

@@ -174,11 +174,16 @@ decisions it records as load-bearing:
   `D3DMATERIAL9::Specular` — free, because `D3DRS_LIGHTING` is off here so no
   D3D9 material is ever read. 6 of 77 materials in the measured scene, no false
   positives, nothing to tune. *(3.22, corrected 3.23, 3.27, 3.28)*
-- **`grp=` does not work.** It was meant to label every material with the game
-  code that drew it, and it prints `-` for all of them: the hook was at a draw
-  *scheduling* point, not an issuing one. Removed. Identifying a material still
-  means reading its texture size, format and ramp endpoints. *(3.23, corrected
-  3.27)*
+- **`grp=` names the *material*, not the game code that drew it.** The original
+  hook tried for the latter and printed `-` for everything, because it sat at a
+  draw *scheduling* point rather than an issuing one. What replaced it pushes
+  from `J3DMatPacket::draw`, which brackets the FIFO writes, so `grp=` reads
+  `Mat:MA00_Gake` — the artists' own name, and the one the game's environment
+  code dispatches on. **Off by default** (a `std::string` per material per frame
+  in the command processor); `DUSK_MAT_LABELS=1` turns it on with no rebuild.
+  Actor identity remains unbuilt, and no name reaches Remix. Logged shape —
+  texture size, format, ramp endpoints — is still the identification that is
+  always on. *(3.23, corrected 3.27, rebuilt 3.34)*
 - The hint advertises the material's **colour** texture where there is one, and
   a stage that *reads* its texture in preference to one that merely binds it —
   character eyes composite a 32×32 I8 highlight mask with the real 64×64 CMPR
@@ -257,6 +262,72 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.34 — `grp=` was built the whole time, in a branch nobody compiles (2026-08-11)
+
+**Nothing in `lib/` changed.** This entry is here because it changes what a
+`matrep.sum` line can tell you, and because three documents in this repo — this
+one, `CLAUDE.md`, and `remix-material-interface.md` §9 — were stating something
+false.
+
+**The finding.** `J3DMatPacket::draw` has been pushing a debug group named after
+the material — `"Mat: %s"` from `J3DMaterial::mMaterialName`, immediately before
+the `callDL()` that issues the draw — since the game repo's very first commit
+(`a6e5160`, 2026-06-15, the upstream PC-port import). Nobody here wrote it and
+nobody here noticed it. It sat inside `#if DEBUG && TARGET_PC`; `DEBUG` is
+defined only for `CMAKE_BUILD_TYPE=Debug`, and every artifact the owner tests is
+`RelWithDebInfo`, so **it has never once been compiled into a build anyone ran**.
+That is why `grp=` printed `-`, and it is a different reason from the one the
+documents recorded.
+
+The documented reason was true of a *different* hook: the 3.23 attempt pushed at
+`fpcDw_Execute`, a draw-*scheduling* point, and was correctly removed. Both facts
+are now in §9, kept apart. Collapsing them is what let "`grp=` does not work and
+has never worked" stand as a general truth over code that does exactly what the
+same paragraph said a correct implementation would have to do.
+
+**Also worth knowing before designing anything here:** `DUSK_GFX_DEBUG_GROUPS`,
+the project's own debug-group option, would not have helped by itself — it too
+defaults **off** outside `Debug`, so no CI artifact carries any of the game's
+debug-group pushes. Simply swapping one compile gate for the other would have
+produced a change nobody could observe. The game therefore compiles the material
+push into release builds and gates it at *runtime*, off by default,
+`DUSK_MAT_LABELS=1` in the environment to turn it on.
+
+**Why the name is worth the switch.** The game's own environment system
+dispatches on these names every frame — `dKy_bg_MAxx_proc` `memcmp`s
+`mat_name[3..6]` against `"MA00"` and friends. Background materials carry an
+`MAnn` semantic code plus a descriptive romaji suffix (`MA00_Gake`, 崖 *gake*,
+cliff; `MA00_Kusa`, 草 *kusa*, grass; `MA00_Enkei_Tree_Color`, 遠景 *enkei*,
+distant scenery). The classification this backend has been inferring from TEV
+state was authored by hand and shipped in the model files.
+
+**Two mechanical details** that would each have been a bug:
+
+- `GXState::MaxDebugGroupLabel` is 48 and the push used a 64-byte buffer, so a
+  long name was cut a second time, silently, in `command_processor`. The game now
+  formats into exactly 48 and marks a cut name with a trailing `~`. A `grp=`
+  ending in `~` is a truncated name, not a different material.
+- Each push allocates a `std::string` in `read_string` while draining the FIFO —
+  one per material per frame. That is the whole reason this is a switch. The
+  `gx.hpp` comment claiming the label costs no allocation was wrong about the
+  push, right about the mirror, and is corrected.
+
+**Deliberately not done.** No name reaches Remix, no side channel was designed,
+no water/sky/mist classification was added. The transport question is open **on
+purpose**: one ordinary `matrep` session with labels on says how many distinct
+names exist, which `MAnn` codes occur and whether the suffix is stable, and that
+is what a transport decision should rest on. When it is taken, note that the
+`D3DMATERIAL9` side band has one free field left (`Ambient.a`, already claimed by
+an unmerged branch — `in-flight-allocation.md`), so it will have to pack or go
+another way.
+
+**Syntax-checked** (MinGW, `J3DPacket.cpp`, in three configurations: default,
+`DUSK_GFX_DEBUG_GROUPS=1`, and the old `DEBUG=1`). **Untested in game.**
+Regression signature: with `DUSK_MAT_LABELS=1`, `matrep.sum` lines carry a `grp=`
+that is a material name rather than `-`; names cut mid-word *without* a trailing
+`~` mean the buffer sizes have drifted apart again; a frame-rate drop with it on
+is the per-frame allocation, which is expected and is why it is a switch.
 
 ### 3.33 — water rebased onto the current side band, and the allocation is checked (2026-08-11)
 
@@ -574,7 +645,9 @@ configuration on the strength of a prediction about untested code; and its
 closing claim that "the lava scores 0.25 on the over-range signal alone" was
 true of *a* lava material, not the pool — the same log has five lava-family
 materials scoring 0.00, 0.50, 0.50, 0.75 and 0.75, and nothing identifies which
-is on screen, because `grp=` does not work.
+is on screen, because `grp=` does not work. *(True when written. Since 3.34
+`grp=` carries the material's authored name when switched on, so a re-run of
+that session with `DUSK_MAT_LABELS=1` would say which of the five it was.)*
 
 **Syntax-checked**, both configs. Untested in game. Regression signature: too
 much of the world glowing means threshold 0 is too wide — raise it. Nothing

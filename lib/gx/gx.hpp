@@ -398,12 +398,30 @@ struct GXState {
   bool skinningActive = false;
 
   // Innermost GXPushDebugGroup label, mirrored into a fixed buffer so a
-  // backend can name the draw it is looking at without a graphics debugger and
-  // without allocating. The game pushes one group per process draw
-  // (fpcDw_Execute), so this is "which piece of game code issued this draw" -
-  // the thing that turns "which of these logged materials is the lava?" from a
-  // guess into a log field. Emitted as grp= on every material line; see
-  // docs/dx9/material-report.md.
+  // backend can name the draw it is looking at without a graphics debugger.
+  // Emitted as grp= on every material line; see docs/dx9/material-report.md.
+  //
+  // Corrected 2026-08-11. This used to say the game pushes one group per
+  // process draw at fpcDw_Execute. That hook was added in 3.23 and removed by
+  // 3.27 because it labelled nothing: fpcDw_Execute is where a draw is
+  // *scheduled*, and the GX commands are written much later, when dDlst_list_c
+  // walks the J3D draw buffer. What pushes here now is J3DMatPacket::draw,
+  // which brackets the
+  // callDL() that issues the draws, so the label is the **material's own
+  // authored name** ("Mat:MA00_Gake") rather than the name of the game code -
+  // a different question, and the one the log can actually answer. Actor
+  // identity is still unbuilt; remix-material-interface.md section 9 keeps the
+  // two apart.
+  //
+  // The mirror itself does not allocate, but the push it mirrors does: the
+  // command processor builds a std::string per GX_AURORA_DEBUG_GROUP_PUSH while
+  // draining the FIFO, so labelling every material costs one allocation per
+  // material per frame. That is why the game keeps it behind a switch (off by
+  // default) rather than always on.
+  //
+  // MaxDebugGroupLabel is mirrored game-side (kDusklightMaterialLabelMax in
+  // J3DPacket.cpp), because a label formatted into a larger buffer is cut a
+  // second time here, silently. If it changes, change it there too.
   static constexpr size_t MaxDebugGroupDepth = 8;
   static constexpr size_t MaxDebugGroupLabel = 48;
   std::array<std::array<char, MaxDebugGroupLabel>, MaxDebugGroupDepth> debugGroups{};
