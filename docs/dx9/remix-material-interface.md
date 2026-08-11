@@ -683,7 +683,29 @@ Written after two complaints that turned out to be one mechanism: enemy death
 smoke is noisy and its transparency reads wrong, and the layered fog wall in
 front of Death Mountain is noisy and reads wrong in a different way.
 
-**Implemented and CI-green; untested in game.** Precisely: dusklight-ao's build
+**TESTED IN GAME 2026-08-11 — the particle half works.** The owner reports
+particles "considerably better", and independently noticed that **water splash
+particles retain their colour when they did not previously**. That second one is
+worth more than the first, because it confirms a specific predicted mechanism
+rather than a general improvement: on the stochastic path a particle's lighting
+is `albedo × a neighbouring *opaque* pixel's denoised radiance`, so its colour
+was being multiplied by whatever solid surface happened to sit near it on screen.
+The unordered path multiplies albedo by the in-scattered light at the particle's
+own position instead. Splash colour surviving is exactly what removing the
+borrowed-neighbour term looks like — §11.1's table, observed.
+
+**What that result does *not* cover, stated plainly:**
+
+- The **distant fog wall** (§11.4). No report either way. The far-fog change is
+  unconditional so it did run, but nothing confirms how it reads.
+- The **`haze` class**. Plumbed, never called — nothing in the game sets it, so
+  it cannot have been exercised.
+- **`hazeAsParticle`**. Default off; not A/B'd.
+- Whether any of the owner's **existing particle texture tags are now
+  redundant**. The per-draw class covers the six perspective JPA groups; tags
+  covering anything else still carry their own weight.
+
+Build status behind that: CI-green on both halves. Precisely: dusklight-ao's build
 went green on all its targets with the submodule bumped, which compiles this
 repo's half and the game's `GXScopedDrawClass` calls; the fork's three Windows
 configs went green, which compiles the shader change including Slang. Neither
