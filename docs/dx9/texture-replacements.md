@@ -72,6 +72,34 @@ reproduce Remix's `XXH3` over subresource 0, which depends on Remix's mip
 packing, our `LockRect` pitch, and `rtx.useObsoleteHashOnTextureUpload` staying
 false. None of those is a contract. The index is a number aurora owns.
 
+### Where a pack author gets the filenames
+
+A pack file must be named `tex1_{w}x{h}_{textureHash:016x}[_{tlutHash:016x}]_{format}.dds`
+— `format_replacement_filename`, `texture_replacement.cpp:377`. That name carries **no
+description**: it is dimensions, a content hash and a format enum, so it says nothing
+about what the texture depicts.
+
+**That convention is Dolphin's, chosen deliberately so emulator packs drop in unchanged**
+(§1). So the answer to "how do I know which file is which" is: **dump from a GameCube
+emulator running the same ISO.** It writes the filenames this path expects, alongside the
+images, with a browser to match them up.
+
+> **Verified 2026-08-11 by the owner**, who ran the emulator dump against the same ISO and
+> confirmed the output was exactly as expected. This is a *tested* route, not a deduction
+> from the format being shared.
+
+Remix scene captures also pull every texture resident at capture time, but under Remix's
+own hash rather than the pack key, so they identify the image without giving you the
+filename.
+
+Aurora *can* also write these files itself — `dump_editable_texture_dds` (`:949`) emits
+the decoded image under the same name, for keys with no replacement registered, into
+`<cachePath>/texture_dumps/` (which the pack scanner explicitly skips, `:1206`). It is
+disabled by a hardcoded `config.allowTextureDumps = false` in dusklight
+(`src/m_Do/m_Do_main.cpp:646`) and has not been wired to a setting because **the emulator
+route already covers this**. It remains available if a case ever turns up that the
+emulator does not cover.
+
 ## 3. Two substitution sites, because Remix splits the frame
 
 This is the part that is easy to get wrong. **A UI draw never reaches material
