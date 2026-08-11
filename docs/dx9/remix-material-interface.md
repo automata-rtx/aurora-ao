@@ -106,10 +106,37 @@ each is §0 applied — extend the fork rather than contort the stream.
 | `Ambient.g` | 1-based index of the HD texture replacement this draw's albedo wants, 0 for none | `dusklightTexRep::handleFromLegacyMaterial` | [`texture-replacements.md`](texture-replacements.md) |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to; only meaningful when it is non-zero | `dusklightTexRep::handleForRasterStage` | same |
 
-**Free channels remaining: `Ambient.a` and `Power`.** Nothing reads them today.
-That list is here so the next thing that needs a side channel takes one that is
-actually spare — `Ambient.g` and `Ambient.b` were free until 2026-08-05 and this
-table is the only place that would have said so.
+**Free on this branch: `Ambient.a` and `Power`. Both are already claimed by
+in-flight branches — audited 2026-08-11 — so treat the side band as full.**
+
+| Nominally spare | Claimed by | Also claimed by |
+| :-- | :-- | :-- |
+| `Ambient.a` | `claude/water-rendering-investigation-7baezw` (MAxx tag) | `claude/dusklight-remix-transparency-e7l766` (draw class) |
+| `Power` | `claude/water-rendering-investigation-7baezw` (water layer) | — |
+
+`Ambient.a` is claimed **twice**, by two branches neither of which can see the
+other. A feature that needs a side channel today does not have one: it needs a
+packed encoding or a different transport, and it needs to say so before it is
+written rather than after.
+
+Worse, the water branch forked before 2026-08-05 and **reclaims `Ambient.g` and
+`Ambient.b`** — the HD texture pack channels, tested good in game on 2026-08-06.
+Its merge conflicts in `lib/dx9/dx9_internal.hpp`, and the obvious resolution —
+take the newer, self-consistent, well-commented side — silently deletes that
+feature from both repos. Measured, not predicted.
+
+**Read [`in-flight-allocation.md`](in-flight-allocation.md) before claiming a
+channel.** It carries the per-branch allocation, the same audit for the GX FIFO
+subcommand space (where **four** branches have each taken `0x0053`), and the
+recommended merge procedure for the water branch. This table is the only place
+that would have said `Ambient.g` and `Ambient.b` were taken; that document is
+the only place that says these last two are.
+
+`scripts/check_invariants.py` checks this table against `set_remix_material` in
+both directions and now includes `Power`. **It cannot catch the water case** — a
+channel that keeps being written with a different meaning satisfies both
+directions — and it cannot see an unmerged branch at all. Human review is the
+safeguard.
 
 Note also that `Ambient.g`/`.b` are the only side-channel fields read on the
 **rasterized** path (`D3D9DeviceEx::BindTexture`) as well as the ray-traced one.

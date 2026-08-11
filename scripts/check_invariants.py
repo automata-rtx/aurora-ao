@@ -106,7 +106,25 @@ def check_matrep_fields_documented() -> None:
 
 
 def check_side_channel_map() -> None:
-    """Channels aurora writes must be listed in remix-material-interface.md §2."""
+    """The channels set_remix_material writes and §2's field map must agree, both ways.
+
+    Both directions matter, and for different reasons.
+
+    write-without-row is the original case: a feature claims a channel and does
+    not update the table, so the next feature reads the table, believes the
+    channel is spare, and takes one already in use.
+
+    row-without-write is the case that motivated making this bidirectional, and
+    it is the more dangerous of the two because it is what a *merge* produces.
+    A branch that forked before a channel was claimed carries a
+    set_remix_material that never writes it. Resolving that conflict in that
+    branch's favour drops the claim from the code while §2 - which merges
+    cleanly, because the branch simply never touched those rows - goes on
+    describing it. Checking only writes ⊆ rows passes that tree green.
+
+    Power is checked alongside the four D3DCOLORVALUE fields because it is a
+    side channel like any other and was invisible here until 2026-08-11.
+    """
     global checks_run
     checks_run += 1
 
@@ -136,23 +154,59 @@ def check_side_channel_map() -> None:
             # Assigned wholesale from a parameter: every channel is in use.
             written |= {(field, c) for c in "rgba"}
 
-    documented: set[tuple[str, str]] = set()
-    for line in doc.splitlines():
+    # Power is a bare float rather than a D3DCOLORVALUE, so it has no channel.
+    power = re.search(r"mat\.Power\s*=\s*([^;]+);", body)
+    if power and not re.fullmatch(r"0(\.0*)?f?", power.group(1).strip()):
+        written.add(("Power", ""))
+
+    # Only the field map itself counts as documentation - the contiguous run of
+    # rows under its header. §2 also carries prose tables *about* channels (which
+    # in-flight branch claims which spare one), and those name fields without
+    # being a claim that set_remix_material writes them.
+    lines = doc.splitlines()
+    try:
+        start = next(
+            n for n, l in enumerate(lines)
+            if re.match(r"\|\s*Field\s*\|\s*Carries\s*\|", l)
+        )
+    except StopIteration:
+        fail("side-channels", "could not find the §2 field-map header in remix-material-interface.md")
+        return
+
+    field_map: list[str] = []
+    for line in lines[start + 1:]:
         if not line.lstrip().startswith("|"):
-            continue
+            break
+        field_map.append(line)
+
+    documented: set[tuple[str, str]] = set()
+    for line in field_map:
         first_cell = line.split("|")[1] if line.count("|") >= 2 else ""
         for field, chans in re.findall(
             r"`(Ambient|Diffuse|Specular|Emissive)\.([rgba]+)`", first_cell
         ):
             for c in chans:
                 documented.add((field, c))
+        if re.search(r"`Power`", first_cell):
+            documented.add(("Power", ""))
+
+    def name(field: str, chan: str) -> str:
+        return f"{field}.{chan}" if chan else field
 
     for field, chan in sorted(written - documented):
         fail(
             "side-channels",
-            f"dx9_internal.hpp writes D3DMATERIAL9::{field}.{chan} but "
+            f"dx9_internal.hpp writes D3DMATERIAL9::{name(field, chan)} but "
             f"remix-material-interface.md §2 has no row for it - that table is the only place "
             f"recording which channels are still spare",
+        )
+
+    for field, chan in sorted(documented - written):
+        fail(
+            "side-channels",
+            f"remix-material-interface.md §2 has a row for D3DMATERIAL9::{name(field, chan)} but "
+            f"set_remix_material does not write it - either a merge dropped the feature that "
+            f"claimed it, or the row is stale. See docs/dx9/in-flight-allocation.md",
         )
 
 
