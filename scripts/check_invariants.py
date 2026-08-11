@@ -254,11 +254,169 @@ def check_draw_stats_period() -> None:
                     )
 
 
+def check_aurora_opcode_registry() -> None:
+    """Every GX_AURORA_* subcommand must be unique and listed in the registry.
+
+    handle_aurora() in command_processor.cpp is a flat `else if` chain. Two
+    features that take the same number do NOT conflict there - both arms merge,
+    the first tested wins, and because the arms consume different payload
+    lengths the loser leaves the FIFO reader mid-payload. The symptom is a
+    garbled frame or a CHECK naming an opcode the game never called, which is
+    debugged nowhere near the cause.
+
+    On 2026-08-11 four unmerged branches had each taken 0x0053. Nothing can see
+    an unmerged branch, so this checks the two things that ARE checkable: that
+    the numbers in this tree are distinct, and that each one appears in the
+    registry comment - which is what makes a second claimant conflict in a place
+    where the conflict means something.
+    """
+    global checks_run
+    checks_run += 1
+
+    hdr = read("include/dolphin/gx/GXAurora.h")
+    if hdr is None:
+        fail("opcodes", "include/dolphin/gx/GXAurora.h is missing")
+        return
+
+    # Subcommand defines only: the payload enums (WATER_LAYER_*, DRAW_CLASS_*)
+    # are plain small integers, not slots in the dispatch chain.
+    defines: dict[str, int] = {}
+    for name, value in re.findall(
+        r"^#define\s+(GX_AURORA_[A-Z0-9_]+)\s+(0x[0-9A-Fa-f]{4})\s*$", hdr, re.M
+    ):
+        defines[name] = int(value, 16)
+
+    if not defines:
+        fail("opcodes", "no GX_AURORA_* subcommand defines found in GXAurora.h")
+        return
+
+    by_value: dict[int, list[str]] = {}
+    for name, value in defines.items():
+        by_value.setdefault(value, []).append(name)
+
+    for value, names in sorted(by_value.items()):
+        if len(names) > 1:
+            fail(
+                "opcodes",
+                f"{', '.join(sorted(names))} all use subcommand {value:#06x} - the else-if "
+                f"dispatch in command_processor.cpp does not conflict on this, so the losing "
+                f"arm silently desyncs the FIFO. See docs/dx9/in-flight-allocation.md",
+            )
+
+    registry = re.search(r"Aurora subcommand registry(.*?)\*/", hdr, re.S)
+    if not registry:
+        fail("opcodes", "the subcommand registry comment is gone from GXAurora.h")
+        return
+
+    body = registry.group(1)
+
+    # Only the "Allocated:" list counts as coverage by number. The registry also
+    # ends with "Next free: 0x00NN", and treating a bare value anywhere in the
+    # comment as an entry would let the very next opcode taken pass unlisted -
+    # precisely the case this check exists for.
+    allocated = re.search(r"Allocated:(.*?)(?:\n\s*\*\s*\n|Reserved)", body, re.S)
+    alloc_text = allocated.group(1) if allocated else ""
+    ranges = [
+        (int(lo, 16), int(hi, 16))
+        for lo, hi in re.findall(r"(0x[0-9A-Fa-f]{4})\s*-\s*(0x[0-9A-Fa-f]{4})", alloc_text)
+    ]
+    singles = {
+        int(v, 16)
+        for v in re.findall(r"(?<![-\w])(0x[0-9A-Fa-f]{4})(?!\s*-\s*0x)", alloc_text)
+    }
+
+    for name, value in sorted(defines.items(), key=lambda kv: kv[1]):
+        if name in body:
+            continue
+        if value in singles or any(lo <= value <= hi for lo, hi in ranges):
+            continue
+        fail(
+            "opcodes",
+            f"{name} = {value:#06x} is not in the registry comment in GXAurora.h - that list "
+            f"is what makes a second claimant conflict somewhere the conflict is meaningful",
+        )
+
+
+def check_water_packing_contract() -> None:
+    """The water packing is one contract written in two repositories.
+
+    GX_AURORA_DUSKLIGHT_WATER_PACK in GXAurora.h encodes role/tag/layer into
+    D3DMATERIAL9::Power; rtx_dusklight_water.h in the fork decodes it. Nothing
+    links them, so a change to either side is silent - and the failure it
+    produces is water rendering exactly as it did before the feature existed,
+    which reads as "the feature does not work" rather than "the wire changed".
+
+    Only aurora's half is visible from this repo. Check that the shape it states
+    is the shape the documentation states, so the fork's side has something
+    unambiguous to be checked against.
+    """
+    global checks_run
+    checks_run += 1
+
+    hdr = read("include/dolphin/gx/GXAurora.h")
+    doc = read("docs/dx9/remix-material-interface.md")
+    if hdr is None or doc is None:
+        fail("water-packing", "GXAurora.h or remix-material-interface.md is missing")
+        return
+
+    macro = re.search(
+        r"#define\s+GX_AURORA_DUSKLIGHT_WATER_PACK\(role,\s*tag,\s*layer\)\s*\\?\s*\n?\s*(.+)",
+        hdr,
+    )
+    if not macro:
+        # Water may simply not be present on this branch; only complain if the
+        # documentation says it is.
+        if "GX_AURORA_DUSKLIGHT_WATER_PACK" in doc:
+            fail(
+                "water-packing",
+                "remix-material-interface.md describes GX_AURORA_DUSKLIGHT_WATER_PACK but "
+                "GXAurora.h does not define it",
+            )
+        return
+
+    expr = macro.group(1)
+    tag_mul = re.search(r"\(u32\)\(tag\)\s*\*\s*(\d+)u", expr)
+    layer_mul = re.search(r"\(u32\)\(layer\)\s*\*\s*(\d+)u", expr)
+    if not tag_mul or not layer_mul:
+        fail(
+            "water-packing",
+            f"could not read the tag/layer multipliers out of "
+            f"GX_AURORA_DUSKLIGHT_WATER_PACK: {expr.strip()}",
+        )
+        return
+
+    stated = f"tag * {tag_mul.group(1)} + layer * {layer_mul.group(1)} + role"
+    if stated not in doc:
+        fail(
+            "water-packing",
+            f"GXAurora.h packs water as `{stated}` but remix-material-interface.md does not "
+            f"state that formula - the fork decodes from the documented one",
+        )
+
+    # The packing only stays lossless while the ranges fit their decimal slots.
+    for macro_name, limit, slot in (
+        ("GX_AURORA_DUSKLIGHT_WATER_ROLE_MAX", int(layer_mul.group(1)), "role"),
+        ("GX_AURORA_DUSKLIGHT_WATER_LAYER_MAX", int(tag_mul.group(1)) // int(layer_mul.group(1)), "layer"),
+    ):
+        m = re.search(r"#define\s+" + macro_name + r"\s+(\d+)", hdr)
+        if not m:
+            fail("water-packing", f"{macro_name} is missing - the packing has no stated bound")
+            continue
+        if int(m.group(1)) >= limit:
+            fail(
+                "water-packing",
+                f"{macro_name} is {m.group(1)}, which does not fit the {slot} slot "
+                f"(< {limit}) - the packed value would carry into the next field",
+            )
+
+
 def main() -> int:
     check_conflict_markers()
     check_matrep_fields_documented()
     check_side_channel_map()
     check_draw_stats_period()
+    check_aurora_opcode_registry()
+    check_water_packing_contract()
 
     if failures:
         print(f"{len(failures)} inconsistency/ies across {checks_run} checks:\n")

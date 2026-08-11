@@ -234,31 +234,54 @@ CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
 pinned submodule** — but it is fast, so run it here too rather than finding out
 after a submodule bump.
 
-**Two shared resources are currently over-subscribed by unmerged branches.**
-Audited 2026-08-11, `docs/dx9/in-flight-allocation.md`:
+**Two shared resources are nearly exhausted.** Audited 2026-08-11, current state
+in `docs/dx9/in-flight-allocation.md`:
 
-- **The `D3DMATERIAL9` side band is full.** `Ambient.a` and `Power` are the last
-  two the §2 table calls spare, and both are claimed — `Ambient.a` twice, by two
-  branches that cannot see each other. `claude/water-rendering-investigation-7baezw`
-  additionally **reclaims `Ambient.g`/`.b`**, the HD texture pack channels tested
-  good in game on 2026-08-06; its merge conflicts, and taking the newer side
-  deletes that feature from both repos. Rebase it, do not resolve it by hand.
-- **Four live branches have each taken GX FIFO subcommand `0x0053`.** The
-  `#define`s conflict; the `else if` dispatch in `command_processor.cpp` does
-  **not** — both arms merge, the first wins, and because the arms consume
-  different payload lengths the loser desyncs the FIFO rather than quietly doing
-  nothing. Allocate the numbers centrally before any of them merge.
+- **The `D3DMATERIAL9` side band has one field left: `Ambient.a`.** Water took
+  `Power` on 2026-08-11 — all three of its facts packed into it, specifically so
+  that `Ambient.a` would survive. `claude/dusklight-remix-transparency-e7l766`
+  has an unmerged claim on `Ambient.a`; after that, the next feature has to pack.
+- **GX FIFO subcommand `0x0053` is water's**, and `0x0054`–`0x0057` are reserved
+  in the registry comment at the top of `include/dolphin/gx/GXAurora.h` for the
+  three branches that had also taken `0x0053`. Take a number by adding it to that
+  registry in the same commit.
 
-**What it cannot check, and therefore what a human still has to:**
+**These are now checked mechanically** (`check_invariants.py`, 6 checks): the
+side-channel map runs **both** directions and includes `Power`, duplicate
+subcommand numbers fail, an unregistered subcommand fails, and the water packing
+in `GXAurora.h` is checked against the formula the documentation states.
+
+**What it still cannot check, and therefore what a human has to:**
 
 - whether a "tested in game" claim is still true after the code under it changed
 - whether a document's *prose* still describes reality, as opposed to its
   tables agreeing with the code
-- whether two in-flight branches are about to take the same spare side channel —
-  nothing can see a branch that has not merged yet. The side-channel check now
-  runs **both** directions and covers `Power`, but it still cannot catch a
-  channel that keeps being written with a *different meaning*, which is exactly
-  the water case
+- whether an unmerged branch is about to take the same channel or number —
+  nothing can see a branch that has not merged yet
+- a channel that keeps being written with a **different meaning**. Both
+  directions of the side-channel check pass and the field map reads as true.
+  This is what the water branch would have done to `Ambient.g`/`.b`; the only
+  defence is that a channel must be claimed in §2 in the same commit that writes
+  it, so the two changes are visible together
+
+## Verifying a change without a Windows machine
+
+```
+scripts/check_syntax.sh        # needs: apt-get install g++-mingw-w64-x86-64 libfmt-dev libabsl-dev
+scripts/check_invariants.py
+```
+
+`check_syntax.sh` type-checks 7 translation units against **real** MinGW
+`<d3d9.h>`/`<windows.h>` and real repo headers, in **both** the d3d9-on and
+d3d9-off configs — the second matters because every entry point has a no-op stub
+behind `#else` in `dx9.hpp`, and a signature change that misses the stub fails
+only there. Dawn, SDL3, Tracy and xxHash are shimmed in `scripts/syntax-harness/`.
+
+**It is not a build.** It does not link, does not run, and does not validate
+format strings (the container's fmt is 9.x against aurora's 11.x — the shim says
+so). `lib/gx/gx.cpp` and `lib/gfx/common.cpp` reach Dawn proper and are not
+covered. "Syntax-checked" is the honest claim; "compiles" is dusklight's CI and
+"works" is the owner.
 
 **When auditing documentation after a merge, re-derive the file list from the
 diff.** Auditing from memory is how the §2 table was missed twice: every gap

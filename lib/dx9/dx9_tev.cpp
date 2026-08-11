@@ -1741,7 +1741,26 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.colorAuthored ? 1.f : 0.f,
                      selfLit.readsRaster ? 0.f : 1.f,
                      albedoTexRepIndex,
-                     albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage);
+                     albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage,
+                     g_dusklightWaterRole, g_dusklightWaterTag, g_dusklightWaterLayer);
+
+  // Hop 3 of 3, reported once ever: a draw was translated while the water mark was set, so
+  // a D3DMATERIAL9 carrying a packed Power reached the device. If this line is present and
+  // Remix still logs no dusklight.water, the loss is on Remix's side of SetMaterial, not
+  // here. See set_dusklight_water in dx9.hpp for the other two hops.
+  if (g_dusklightWaterRole != GX_AURORA_DUSKLIGHT_WATER_NONE) {
+    static bool s_reportedSurface = false;
+    static bool s_reportedProjected = false;
+    const bool projected = g_dusklightWaterRole == GX_AURORA_DUSKLIGHT_WATER_PROJECTED;
+    bool& reported = projected ? s_reportedProjected : s_reportedSurface;
+    if (!reported) {
+      reported = true;
+      Log.info("dx9.water: first {} draw translated (matKey {:#x}, power {})",
+               projected ? "PROJECTED" : "SURFACE", matKey,
+               GX_AURORA_DUSKLIGHT_WATER_PACK(g_dusklightWaterRole, g_dusklightWaterTag,
+                                              g_dusklightWaterLayer));
+    }
+  }
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state

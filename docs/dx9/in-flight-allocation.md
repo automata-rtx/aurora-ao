@@ -1,16 +1,26 @@
-# In-flight allocation: side channels and FIFO opcodes
+# Allocation: side channels and FIFO opcodes
 
-**Audited 2026-08-11.** Investigation only — nothing in this document changed
-either feature's behaviour.
+**Audited 2026-08-11. The two collisions it was written for are resolved** —
+water was rebased onto `Fixed-Function-dev` the same day and re-derived against
+the current `set_remix_material`, and the subcommand space now has a registry.
+§1.6 and §2.4 record what was done; the rest is kept because the *shape* of both
+failures recurs and this is the only account of it.
 
-This document exists because two shared, finite resources are being allocated by
+**Current state, which is what most readers want:**
+
+| Resource | Free | Claimed by unmerged work |
+| :-- | :-- | :-- |
+| `D3DMATERIAL9` side band | `Ambient.a` only | `Ambient.a` — `claude/dusklight-remix-transparency-e7l766` |
+| GX FIFO subcommands | `0x0058` and up | `0x0054`–`0x0057` reserved, see the registry in `GXAurora.h` |
+
+This document exists because two shared, finite resources were being allocated by
 branches that cannot see each other:
 
 - the `D3DMATERIAL9` side band, whose field map is
   [`remix-material-interface.md`](remix-material-interface.md) §2
 - the aurora GX FIFO subcommand space, `include/dolphin/gx/GXAurora.h`
 
-Both are now over-subscribed, and in both cases the collision survives a `git
+Both were over-subscribed, and in both cases the collision survived a `git
 merge` — one because the obvious conflict resolution is the wrong one, the other
 because the place that matters does not conflict at all. That is the failure
 CLAUDE.md's "Merges that succeed and are still wrong" describes, twice, live.
@@ -22,7 +32,11 @@ from the commits fetched on 2026-08-11.
 
 ## 1. `D3DMATERIAL9` side channels
 
-### 1.1 What `Fixed-Function-dev` uses today
+### 1.1 What `Fixed-Function-dev` used before the rebase
+
+**This is the *pre-rebase* state, kept because §1.4 measures against it.** The
+current field map is [`remix-material-interface.md`](remix-material-interface.md)
+§2, which is the one to read when allocating.
 
 `lib/dx9/dx9_internal.hpp:222-239`:
 
@@ -85,13 +99,15 @@ Three parties want the same space. Read from each branch's `set_remix_material`:
 
 ### 1.3 The answer to "how many channels are free"
 
-**Zero, once water and transparency land — and the second of them to be written
-was already planning on space that was gone.**
+**At the time of the audit: zero**, once water and transparency landed as
+written. `Ambient.a` and `Power` were the only two §2 had ever called spare;
+`Ambient.a` was claimed twice over and `Power` once.
 
-`Ambient.a` and `Power` are the only two the §2 table has ever called spare.
-`Ambient.a` is claimed twice over and `Power` once. Any proposal elsewhere that
-assumes "there is a spare side channel" is planning on space that no longer
-exists; it needs either a packed encoding (§1.6) or a different transport.
+**After the rebase: one — `Ambient.a`.** Water was re-derived to pack all three
+of its facts into `Power` alone, which is what bought that back. It is still
+spoken for by `claude/dusklight-remix-transparency-e7l766`, so a proposal that
+assumes a free channel should confirm against that branch first; and the feature
+*after* that one has to pack, because there will be nothing left to pack into.
 
 ### 1.4 Why the merge is dangerous — measured, not predicted
 
@@ -149,7 +165,30 @@ never touched the function. Only the water branch *rewrote* the signature while
 behind, which is what turns staleness into a conflict whose resolution loses
 work.
 
-### 1.6 Recommended resolution for the water branch
+### 1.6 What was done — rebase, not hand resolution
+
+**Carried out 2026-08-11.** The recommendation and the reasoning are kept below
+because the next branch in this position needs both.
+
+Water was re-applied on top of the current `set_remix_material` rather than
+merged into it, and its channel assignment re-derived: all three facts —
+role, MAxx tag, layer — now share `D3DMATERIAL9::Power`, packed as
+`tag * 100 + layer * 10 + role`. `texRepIndex` and `texRepStage` keep
+`Ambient.g`/`.b` untouched, and `Ambient.a` is left free.
+
+`GX_AURORA_DUSKLIGHT_WATER_PACK` in `GXAurora.h` is the definition and
+`rtx_dusklight_water.h` decodes it; `check_invariants.py` now checks the two
+against the formula §2 states, because they are one contract in two repositories.
+
+**One thing the rebase does not carry over: the 2026-08-08 in-game measurement.**
+It was taken with the facts in `Ambient.g`/`.b`/`.a`. What it establishes — that
+the game marks the right draws and the marks survive the FIFO — still holds; that
+the *current* transport delivers them is untested.
+`remix-material-interface.md` §11 states this split, and names the regression
+signature: every draw reports `role=none` and water renders as it did before the
+feature existed.
+
+#### The recommendation, for the next branch in this position
 
 **Rebase onto `Fixed-Function-dev` and re-derive the assignment against the
 current signature. Do not resolve the conflict by hand.**
@@ -189,6 +228,11 @@ does not merely reclaim the channels — `rtx_dusklight_texrep.{h,cpp}` are
 ---
 
 ## 2. GX FIFO subcommand `0x0053`
+
+**Resolved 2026-08-11**: water holds `0x0053`, the other three claimants have
+reserved numbers in the registry comment at the top of `GXAurora.h`, and
+`check_invariants.py` fails on a duplicate or an unregistered subcommand. §2.4
+is what was done; §2.1–2.3 are why.
 
 ### 2.1 Four branches, one opcode
 
@@ -257,37 +301,38 @@ commands as its own operands. Expect a garbled frame, or a `CHECK` failure
 naming an opcode the game never called — **not** a missing feature. Anyone
 debugging that will start in the wrong place unless they know this.
 
-### 2.4 Recommendation: allocate the opcodes, do not resolve them arm by arm
+### 2.4 What was done: a registry, and one number each
 
 Resolving arm by arm gets each merge past the compiler and leaves the last
 merger to discover the desync. The two collisions above have the same cause —
 **a shared numbering with no registry, allocated by branches that cannot see
 each other** — and want the same treatment.
 
-**Recommended, and deliberately not implemented here** — assignment is the
-owner's to make, and taking a number in this session would repeat the mistake
-being reported:
+Implemented, 2026-08-11:
 
-1. **Write the registry down in `GXAurora.h` itself**, as a block above the
+1. **The registry is written down in `GXAurora.h` itself**, as a block above the
    `0x0050` group listing every allocated *and reserved* subcommand, including
    ones that live only on unmerged branches. `GXAurora.h` is the one file every
    claimant already edits, so a claim cannot be made without reading it — and a
    second claim on a reserved number then conflicts *in the registry*, where the
    conflict means something.
-2. **Give each in-flight branch its own number now**, before any of them merge —
-   for example `0x0053` transparency, `0x0054` water, `0x0055`/`0x0056` model
-   identity (it needs two), `0x0057` rest matrices. Any assignment works; what
-   matters is that it is made once, centrally, rather than four times in
-   parallel. Each branch then rebases and takes its assigned number, which is
-   the same motion §1.6 recommends for the channels.
-3. **Consider a compile-time guard.** A `static_assert` per opcode, or a
-   generated `switch` rather than an `else if` chain, turns a duplicate value
-   into a build error. A `switch` gets this from the language for free —
-   duplicate `case` labels do not compile — and is the cheaper of the two.
+2. **Each in-flight branch has a number reserved**: `0x0054`/`0x0055` model
+   identity (it needs two), `0x0056` rest matrices, `0x0057` draw class. Water
+   keeps `0x0053` because it merged first. Any assignment would have worked; what
+   matters is that it was made once, centrally, rather than four times in
+   parallel. Each branch takes its assigned number when it rebases — the same
+   motion §1.6 describes for the channels.
+3. **`check_invariants.py` enforces both halves**: two defines sharing a value
+   fails, and a define missing from the registry fails. That second one is what
+   makes a duplicate claim conflict *in the registry*, where the conflict means
+   something, instead of in an `else if` chain where it does not.
 
-Until then: **check this document and `GXAurora.h` on every live `claude/*`
-branch before taking a subcommand number.** Nothing automated can see an
-unmerged branch.
+**Still not done, and worth doing:** the dispatch is still an `else if` chain. A
+`switch` would make a duplicate a compile error for free — duplicate `case`
+labels do not compile — which is stronger than a script that has to be run.
+
+**And still true regardless:** nothing automated can see an unmerged branch, so
+check the live `claude/*` branches before taking a number.
 
 ---
 
@@ -298,23 +343,29 @@ blind to `Power`** until 2026-08-11. It walked the fields `set_remix_material`
 writes and required a §2 row for each; it never asked the reverse, and it only
 inspected `Ambient`/`Diffuse`/`Specular`/`Emissive`.
 
-Both gaps are now closed (this session):
+The script now runs six checks. Three are new or rebuilt as a result of this
+audit, and each was verified by breaking the tree deliberately and confirming the
+message names the right thing:
 
-- **`Power` is checked**, so water's `mat.Power = waterLayer` is no longer
-  invisible. Verified: it now fires on the water merge, where it did not before.
-- **The check runs both ways.** A §2 row for a channel `set_remix_material` no
-  longer writes is now a failure, naming a dropped feature as the likely cause.
+| Check | Catches | Verified by |
+| :-- | :-- | :-- |
+| side channels, **write → row** | a feature takes a channel and leaves §2 advertising it as spare | the original 2026-08-05 case |
+| side channels, **row → write** | a merge drops the code that claimed a channel while §2 keeps describing it | blanking the texrep writes with §2 intact |
+| `Power` included | the field the old check could not see at all | the water merge, which it now fails |
+| duplicate subcommand | two `GX_AURORA_*` defines sharing a value | pointing `SET_VIEW_MTX` at `0x0053` |
+| unregistered subcommand | a number taken without adding it to the registry | adding `0x0058` and `0x0054` unlisted |
+| water packing | `GXAurora.h` and the documented formula disagreeing, or a role/layer/tag value outgrowing its decimal slot | changing the multiplier; raising `LAYER_MAX` to 12 |
 
-**What that still does not catch, and it is the case in front of us.** The
-reverse check finds a channel that stops being *written*. It cannot find a
-channel that keeps being written with a **different meaning** — which is exactly
-`Ambient.g`/`.b` under the water merge, where both sides write the channel and
-only the meaning changes. Verified on the merged tree: the side-channel check
-passes.
+**What none of it catches, and it is the case this audit was about:** a channel
+that keeps being written with a **different meaning**. Both directions of the
+side-channel check pass, `Power` is present, the field map reads as true, and the
+feature underneath has been replaced. Nothing mechanical distinguishes
+"`Ambient.g` carries a texture index" from "`Ambient.g` carries a water flag".
 
-Nor can any of it see an unmerged branch, which is the whole subject of this
-document.
+The defence is structural rather than mechanical: **a channel must be claimed in
+§2 in the same commit that writes it**, so the two halves of the change are
+visible in one diff, and the row→write direction fails if a later merge removes
+one half without the other.
 
-**So the safeguard here is human review, and this document is its input.** Read
-§1.2 and §2.1 before claiming a channel or an opcode, and re-derive them from
-`git branch -r` rather than from this table if the date above is stale.
+Nor can any of it see an unmerged branch, which is what the current-state table
+at the top of this document is for — and that table is maintained by hand.
