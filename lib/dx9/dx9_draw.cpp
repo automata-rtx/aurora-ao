@@ -513,6 +513,7 @@ void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32
       const D3DMATRIX m = to_d3d(g_gxState.pnMtx[groupSlots[i]].pos);
       set_world_matrix(i, g_camera.valid ? mtx_multiply(m, g_camera.viewInv) : m);
     }
+    ++g_drawStats.frameDraws;
     g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(s_verts.size() / draw.stride),
                                       static_cast<UINT>(s_indices.size() / 3), s_indices.data(), D3DFMT_INDEX16,
                                       s_verts.data(), draw.stride);
@@ -527,6 +528,7 @@ void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
   switch (prim) {
   case GX_TRIANGLES:
     if (draw.vtxCount >= 3) {
+      ++g_drawStats.frameDraws;
       g_dx9.dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, draw.vtxCount / 3, draw.verts, draw.stride);
     }
     break;
@@ -538,6 +540,7 @@ void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
     }
     const uint32_t numIndices = build_indices(prim, static_cast<uint16_t>(draw.vtxCount), t_indexScratch);
     if (numIndices >= 3) {
+      ++g_drawStats.frameDraws;
       g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, draw.vtxCount, numIndices / 3,
                                         t_indexScratch.data(), D3DFMT_INDEX16, draw.verts, draw.stride);
     }
@@ -545,16 +548,19 @@ void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
   }
   case GX_LINES:
     if (draw.vtxCount >= 2) {
+      ++g_drawStats.frameDraws;
       g_dx9.dev->DrawPrimitiveUP(D3DPT_LINELIST, draw.vtxCount / 2, draw.verts, draw.stride);
     }
     break;
   case GX_LINESTRIP:
     if (draw.vtxCount >= 2) {
+      ++g_drawStats.frameDraws;
       g_dx9.dev->DrawPrimitiveUP(D3DPT_LINESTRIP, draw.vtxCount - 1, draw.verts, draw.stride);
     }
     break;
   case GX_POINTS:
     if (draw.vtxCount >= 1) {
+      ++g_drawStats.frameDraws;
       g_dx9.dev->DrawPrimitiveUP(D3DPT_POINTLIST, draw.vtxCount, draw.verts, draw.stride);
     }
     break;
@@ -565,6 +571,23 @@ void submit(const DecodedDraw& draw, GXPrimitive prim) noexcept {
 }
 
 } // namespace
+
+DrawStats g_drawStats;
+
+void draw_stats_end_frame() noexcept {
+  g_drawStats.periodDraws += g_drawStats.frameDraws;
+  g_drawStats.periodPeak = std::max(g_drawStats.periodPeak, g_drawStats.frameDraws);
+  g_drawStats.frameDraws = 0;
+
+  if (++g_drawStats.periodFrames < kDrawStatsPeriod) {
+    return;
+  }
+  Log.info("dx9.draws frames={} mean={} peak={} - D3D9 draw calls per frame", g_drawStats.periodFrames,
+           g_drawStats.periodDraws / g_drawStats.periodFrames, g_drawStats.periodPeak);
+  g_drawStats.periodFrames = 0;
+  g_drawStats.periodDraws = 0;
+  g_drawStats.periodPeak = 0;
+}
 
 void draw_prim(GXPrimitive prim, GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t vtxSize,
                bool bigEndian) noexcept {
@@ -618,6 +641,7 @@ void draw_indexed(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* vtxData, uint3
     return;
   }
   set_fvf(draw.fvf);
+  ++g_drawStats.frameDraws;
   g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, draw.vtxCount, indexCount / 3, indices, D3DFMT_INDEX16,
                                     draw.verts, draw.stride);
 }

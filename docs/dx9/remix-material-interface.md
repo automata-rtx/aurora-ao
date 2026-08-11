@@ -103,6 +103,18 @@ each is §0 applied — extend the fork rather than contort the stream.
 | `Diffuse.rgb` | the ramp endpoint TFACTOR does not hold → `RtSurface::rampOtherColor` | `rtx_instance_manager.cpp` | §10 |
 | `Diffuse.a` | "this material is a ramp" → `textureFlags` bit 15 | same | §10 |
 | `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
+| `Ambient.g` | 1-based index of the HD texture replacement this draw's albedo wants, 0 for none | `dusklightTexRep::handleFromLegacyMaterial` | [`texture-replacements.md`](texture-replacements.md) |
+| `Ambient.b` | the D3D9 stage `Ambient.g` refers to; only meaningful when it is non-zero | `dusklightTexRep::handleForRasterStage` | same |
+
+**Free channels remaining: `Ambient.a` and `Power`.** Nothing reads them today.
+That list is here so the next thing that needs a side channel takes one that is
+actually spare — `Ambient.g` and `Ambient.b` were free until 2026-08-05 and this
+table is the only place that would have said so.
+
+Note also that `Ambient.g`/`.b` are the only side-channel fields read on the
+**rasterized** path (`D3D9DeviceEx::BindTexture`) as well as the ray-traced one.
+Everything else in this table is consumed during material resolution, which UI
+draws never reach.
 
 ### The three things that do not survive, and are easy to emit by accident
 
@@ -575,9 +587,11 @@ a decision about double-counting, not a research question.
 draw. **It has printed `-` for every material in every session so far.**
 
 Cause, verified by reading the game: `fpcDw_Execute` is where a draw is
-*scheduled*, not issued. TP actor draw methods call `mDoExt_modelEntryDL`, which
-enters models into a J3D draw buffer walked later by `dDlst_list_c` — long after
-the debug group has been popped. The hook was removed rather than left as a dead
+*scheduled*, not issued. (`fpc` is the game's process-control layer and `Dw` is
+*draw* — the game's symbols are romanized Japanese and clipped English,
+`dusklight-ao/docs/japanese-naming.md`.) TP actor draw methods call
+`mDoExt_modelEntryDL`, which enters models into a J3D draw buffer walked later
+by `dDlst_list_c` — long after the debug group has been popped. The hook was removed rather than left as a dead
 instrument; `dusklight-ao/src/f_pc/f_pc_draw.cpp` carries a note recording why.
 
 A correct implementation labels at draw-buffer *execution*, carrying the label

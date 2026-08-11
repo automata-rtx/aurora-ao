@@ -49,6 +49,9 @@ struct ReplacementEntry {
   uint64_t id = 0;
   int32_t priority = 0;
   uint64_t sequence = 0;
+  // 1-based handle for renderers that load the file themselves (the D3D9 + Remix path).
+  // Only file-backed entries get one, because it is the file path that crosses the boundary.
+  uint32_t remixIndex = 0;
   EntryKind kind = EntryKind::Raw;
   std::span<const uint8_t> bytes;
   uint32_t width = 0;
@@ -95,6 +98,8 @@ uint64_t s_replacementCacheBytes = 0;
 uint64_t s_nextRegistrationId = 1;
 uint64_t s_nextSequence = 1;
 uint32_t s_sourceEntryCount = 0;
+// 1-based, so that 0 can mean "no replacement" in the D3D9 side channel.
+uint32_t s_nextRemixIndex = 1;
 
 unsigned char ascii_lower(unsigned char ch) noexcept {
   if (ch >= 'A' && ch <= 'Z') {
@@ -1006,6 +1011,7 @@ void clear_replacement_runtime_state_locked() noexcept {
   s_replacementLru.clear();
   s_replacementCacheBytes = 0;
   s_sourceEntryCount = 0;
+  s_nextRemixIndex = 1;
 }
 
 bool is_source_key(const aurora::texture::ReplacementKey& key) noexcept {
@@ -1027,6 +1033,7 @@ aurora::texture::ReplacementRegistration register_file_replacement(aurora::textu
       .id = registration.id,
       .priority = options.priority,
       .sequence = s_nextSequence++,
+      .remixIndex = s_nextRemixIndex++,
       .kind = EntryKind::File,
       .label = fmt::format("TextureReplacement {}", fs_path_to_string(path.filename())),
       .path = std::move(path),
@@ -1239,6 +1246,38 @@ void reload_replacement_directory(const std::filesystem::path& root, Replacement
   group = load_replacement_directory(root, options);
 }
 
+std::vector<ReplacementDescriptor> enumerate_selected_replacements() {
+  std::lock_guard lk(s_registryMutex);
+  std::vector<ReplacementDescriptor> out;
+  out.reserve(s_entriesByKey.size());
+  for (const auto& [replacementKey, entries] : s_entriesByKey) {
+    const auto* selected = select_entry(entries);
+    // Only file-backed entries carry a path for another renderer to load, and only they are
+    // given an index. Raw/virtual registrations are silently absent rather than reported as
+    // failures - they are a different transport, not a broken one.
+    if (selected == nullptr || selected->remixIndex == 0 || selected->kind != EntryKind::File) {
+      continue;
+    }
+    const auto* sourceKey = std::get_if<TextureSourceKey>(&replacementKey);
+    ReplacementDescriptor desc{
+        .id = selected->id,
+        .remixIndex = selected->remixIndex,
+        .priority = selected->priority,
+        .path = fs_path_to_string(selected->path),
+    };
+    if (sourceKey != nullptr) {
+      desc.key = *sourceKey;
+      desc.width = sourceKey->width;
+      desc.height = sourceKey->height;
+      desc.format = sourceKey->format;
+    }
+    out.push_back(std::move(desc));
+  }
+  std::sort(out.begin(), out.end(),
+            [](const ReplacementDescriptor& a, const ReplacementDescriptor& b) { return a.remixIndex < b.remixIndex; });
+  return out;
+}
+
 bool has_replacement(const GXTexObj* obj, const GXTlutObj* tlut) {
   const auto* obj_ = reinterpret_cast<const GXTexObj_*>(obj);
   if (tlut != nullptr) {
@@ -1357,5 +1396,59 @@ bool has_replacement(const GXTexObj_& obj, const GXTlutObj_& tlut) noexcept {
 std::string build_texture_replacement_name(const GXTexObj_& obj) noexcept {
   const auto key = build_source_key(obj);
   return format_replacement_filename(key);
+}
+
+namespace {
+// Key resolution only: no decode, no upload, no wgpu. This is what makes the D3D9 backend able
+// to ask "is there a replacement for this, and which one" without pulling in Dawn or paying for
+// a file read on the game thread.
+uint32_t remix_index_for_key_locked(const texture::TextureSourceKey& sourceKey) noexcept {
+  const auto replacementKey = find_source_replacement_key_locked(sourceKey);
+  if (!replacementKey.has_value()) {
+    return 0;
+  }
+  const auto* entry = find_selected_entry_locked(*replacementKey);
+  return entry != nullptr ? entry->remixIndex : 0;
+}
+
+uint32_t remix_index_pointer_key_locked(const GXTexObj_& obj) noexcept {
+  if (obj.data == nullptr) {
+    return 0;
+  }
+  const texture::ReplacementKey pointerKey{texture::TexturePointerKey{.data = obj.data}};
+  if (!s_entriesByKey.contains(pointerKey)) {
+    return 0;
+  }
+  const auto* entry = find_selected_entry_locked(pointerKey);
+  return entry != nullptr ? entry->remixIndex : 0;
+}
+} // namespace
+
+uint32_t find_replacement_index(const GXTexObj_& obj) noexcept {
+  std::lock_guard lk(s_registryMutex);
+  if (s_entriesByKey.empty()) {
+    return 0;
+  }
+  if (const uint32_t index = remix_index_pointer_key_locked(obj); index != 0) {
+    return index;
+  }
+  if (s_sourceEntryCount == 0) {
+    return 0;
+  }
+  return remix_index_for_key_locked(build_source_key(obj));
+}
+
+uint32_t find_replacement_index(const GXTexObj_& obj, const GXTlutObj_& tlut) noexcept {
+  std::lock_guard lk(s_registryMutex);
+  if (s_entriesByKey.empty()) {
+    return 0;
+  }
+  if (const uint32_t index = remix_index_pointer_key_locked(obj); index != 0) {
+    return index;
+  }
+  if (s_sourceEntryCount == 0) {
+    return 0;
+  }
+  return remix_index_for_key_locked(build_source_key(obj, tlut));
 }
 } // namespace aurora::gfx::texture_replacement

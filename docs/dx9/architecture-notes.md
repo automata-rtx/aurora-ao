@@ -125,14 +125,20 @@ From `lib/gx/gx.hpp` (`GXState`):
   lookup, see mapping doc §7).
 - Cache identity: `texObjId` + `texDataVersion` (and TLUT equivalents) —
   destroyed via `GX_AURORA_DESTROY_TEXOBJ/TLUT` (hook `evict_texture_object`).
-- Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and
-  DDS loading exist; v1 of the D3D9 backend skips replacement packs
-  (documented), can be added later via the same DDS decoding. Not a gap under
-  Remix: replacement is Remix's own job there, and since 2026-08-04 that
-  extends to API-submitted assets too (content-derived mesh hashes +
-  `submitExternalDraw` consulting `getReplacementMaterial` in the fork —
-  CI-green, no capture taken in game yet).
-  Aurora-side packs would only matter to the standalone image.
+- Texture replacement (Dolphin-format packs, `texture_replacement.cpp`) and DDS
+  loading exist, and **work on the D3D9 backend as of 2026-08-05, tested good
+  2026-08-06** — but not by uploading the pack. `lib/dx9/dx9_texture.cpp` still
+  goes straight from the GX source bytes to `convert_texture()`, deliberately:
+  the D3D9 texture is what Remix hashes, so changing it would re-key every tag,
+  `rtx.conf` category and USD binding. Instead `find_replacement_index()`
+  resolves *which* replacement a texture wants without decoding anything,
+  `ContentEntry` memoizes it, and the index rides to the fork in
+  `D3DMATERIAL9::Ambient.g` (its stage in `.b`). The fork loads the file itself
+  through `remixapi_CreateMaterial` and substitutes at two sites, because a UI
+  draw never reaches material resolution.
+  `find_replacement()` — the wgpu-handle consumer — remains wgpu-only and is
+  still unused here. Full design, both sites, and the failure table:
+  [`texture-replacements.md`](texture-replacements.md).
 - EFB copies: `GXCopyTex` → BP 0x52 → `copy_tex(dest, clear)` — the wgpu path
   resolves the current pass into a texture keyed by the destination pointer
   (`copyTextures`). Game uses this for shadow silhouettes (packed RGBA),
@@ -191,7 +197,17 @@ Two distinct skinning mechanisms exist:
   D3D9 alpha test `GREATEREQUAL 0x80`. Billboarding itself is just a
   view-aligned pos matrix computed by J3D on the CPU — nothing to do.
 - **Particles:** immediate-mode quads, alpha `GEQUAL n OR GEQUAL n`,
-  additive/standard blends.
+  additive/standard blends. **One `GXBegin` block is one `*UP` draw call here** —
+  the FIFO decodes and submits immediately and there is no batching layer — so a
+  loop that wraps each quad in its own `GXBegin`/`GXEnd` costs one draw per
+  quad. That is affordable in raster and is not under Remix, where each draw
+  contributes its own geometry entry and surface to a BLAS that rebuilds every
+  frame; the kankyo (環境, the game's environment system) weather effects were
+  spending ~1000 draws a frame that way until 2026-08-08. Emitters that batch use `GXBegin(..., GX_AUTO)` around the
+  whole loop and carry per-particle colour in vertex `CLR0` rather than in
+  `GX_TEVREG0`, because a GX state change cannot cross a `GXBegin` block.
+  `dx9.draws` in the log is how this is measured. See
+  [`progress.md`](progress.md) §3.32.
 - Immediate-mode surface (most-called): `GXBegin/End`, `GXPosition3f32/2f32/3s16`,
   `GXColor1u32/4u8`, `GXTexCoord2s16/2f32/2u16/2s8`, `GXNormal3f32`,
   `GXSetVtxAttrFmt/Desc`, `GXLoadPosMtxImm`, `GXSetCurrentMtx`, full TEV set,

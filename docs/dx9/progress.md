@@ -20,7 +20,9 @@ link to them rather than re-explaining.
    about incorrectly here.
 2. **If the task is about how the game *looks* under Remix rather than about the
    D3D9 backend, you are in the wrong repo.** Go to
-   `dusklight-ao/docs/kankyo-remix.md`.
+   `dusklight-ao/docs/kankyo-remix.md`. If it sends you into game code, read
+   `dusklight-ao/docs/japanese-naming.md` too — those identifiers are romanized
+   Japanese, and one romanization finds half a feature.
 3. Read §"Why the backend is shaped the way it is" below. It is short and it
    prevents most re-litigation.
 4. `CLAUDE.md` at the repo root is the authority on branches, verification and
@@ -50,6 +52,7 @@ the stage's alpha to build opacity and the alpha test). Full statement:
 | How should a given GX construct map to D3D9? | `gx-to-d3d9-mapping.md` |
 | Why did this surface come out the wrong colour? | `remix-material-interface.md` |
 | What do the `matrep.*` log lines mean? | `material-report.md` |
+| How do HD texture packs reach Remix, and why not through D3D9? | `texture-replacements.md` |
 | What the feed can't carry today, and where that work would go? | `unsupported-effects.md` |
 | What is broken right now, across all three repos? | `dusklight-ao/docs/remix-open-issues.md` |
 
@@ -254,6 +257,188 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.32 — dense particles were a draw-call problem, and the backend can now count draws (2026-08-08)
+
+**Tested in game 2026-08-08: the owner reports particle performance is "far
+better than previously."** Read that precisely — the *outcome* is tested. The
+`dx9.draws` figures were not reported back, so the predicted collapse from
+~1000 draws a frame to one is confirmed **by its effect, not by the counter**.
+Anyone with a log from a rainy Hyrule Field session can close that gap in a
+minute, and should.
+
+**The defect was in the game, not here**, but it is recorded in this repo
+because the cost it exposed is a property of how this backend submits draws.
+Rain in Hyrule Field and snow in the Snowpeak exteriors ran at unusable frame
+rates under Remix. The kankyo weather effects are immediate-mode GX and were
+emitting **one `GXBegin`/`GXEnd` per quad** — `dKyr_drawRain` up to 250 drops ×
+4 offset layers, so up to a thousand draws a frame. (`dKy` is *kankyo*, 環境,
+the game's environment system; weather lives inside it.) This backend submits each
+`GXBegin` block as its own `*UP` call (`command_processor.cpp` decodes and
+submits immediately; there is no batching layer), so every quad became a
+separate draw in Remix. Fixed game-side in `d_kankyo_rain.cpp` by hoisting
+`GXBegin`/`GXEnd` out of the per-quad loops.
+
+**Why this is worth knowing here: Remix charges per draw, not per pixel.** A
+draw too small for its own BLAS is merged into a shared bucket, but it still
+contributes its own `VkAccelerationStructureGeometryKHR` and its own surface,
+and that bucket rebuilds whenever the geometry moves — every frame, for
+weather. Read in the fork at `rtx_accel_manager.cpp`
+(`buildInfo.geometryCount = bucket->geometries.size()`, and the bucket's
+`originalInstances`).
+
+**Two owner observations did the diagnostic work, and both are reusable:**
+
+- **Marking the textures as particles in Remix's categorization UI changed
+  nothing.** That category only picks which TLAS a draw lands in and how the
+  resolve loop treats it. It is not a performance control, and if a particle
+  problem does not respond to it the cost is per draw, not per pixel.
+- **Tagging the same texture as UI made it smooth.** UI draws never enter the
+  raytraced scene, so that swap removes per-draw cost and nothing else. As a
+  *diagnostic* it is sharp: if UI-tagging fixes the frame rate, the answer is
+  draw count. (As a fix it is not free — it also removes the effect from the
+  path tracer, and for snow it double-composites the game's own planar
+  reflection copies.)
+
+**This does not contradict the grass entry in
+[`unsupported-effects.md`](unsupported-effects.md), and the difference is the
+point.** There, batching is called out as *destroying* asset-hash identity,
+because `rtx.geometryAssetHashRuleString` is `positions,indices,…` and grass has
+a stable per-blade display-list path available. Particles have no such path:
+every drop moves every frame, so the hash churned before batching and churns
+after. Batching costs nothing that was not already lost, and texture *tagging*
+is unaffected either way because tags key on the texture hash, not the geometry
+hash. **Batching is wrong for geometry that could have a stable identity and
+right for geometry that cannot.**
+
+**New in this repo: `dx9.draws`.** `lib/dx9/dx9_draw.cpp` counts every
+`DrawPrimitiveUP` / `DrawIndexedPrimitiveUP` the backend issues, including each
+draw of a palette-split skinned mesh, and logs one line every 600 frames:
+
+```
+dx9.draws frames=600 mean=412 peak=1387 - D3D9 draw calls per frame
+```
+
+`peak` is carried separately from `mean` because the spike only exists while
+the weather is running, and a mean over 600 frames hides it. This existed
+nowhere before, which is why a thousand-draw frame went unnoticed for months.
+
+**Syntax-checked** in both the d3d9-on and d3d9-off configs. The counter is
+plain arithmetic on a frame boundary; it has no failure mode that a build would
+not catch.
+
+### 3.31 — HD texture packs: tested good, and the first-launch cost explained (2026-08-06)
+
+**Tested in game. Worked on the first try** — replacements appear, texture
+tagging is unaffected, nothing else regressed.
+
+One characteristic came out of the session: **a long first-launch warm-up**,
+after which every later launch has the pack immediately.
+
+**And the first explanation written for it was wrong in the usual way** — it is
+worth reading §9 for the shape of the mistake, not just the answer. Remix keeps
+no on-disk cache of loaded *textures*: verified, `findAsset` reopens the `.dds`
+every launch and the only dedupe map dies with the process. From that the entry
+concluded the OS file cache must be the cause. It does not follow, and the step
+skipped a durable cache that does exist: **DXVK writes a pipeline state cache to
+disk**, on by default, and this runtime's own options document the first-load
+compilation cost that goes with it. Every first launch is slow for that reason,
+pack or no pack.
+
+So there are two candidates, one durable and one volatile, and **which dominates
+is unmeasured**. The texture side is also partly a *symptom*: creation is
+budgeted per frame, so slow frames from any cause stretch how long the pack
+takes to finish arriving. "Textures appear late" is not evidence that textures
+are what is slow.
+
+The experiment that separates them costs one reboot — it clears the OS page
+cache and keeps `.dxvk-cache`. Fixes are named in §9 and deliberately **not**
+taken, so this feature's "tested" claim stays intact.
+[`texture-replacements.md`](texture-replacements.md) §9.
+
+What the session did *not* exercise, and so is still only reasoned-about: BC7/BC5
+packs, a PNG entry being skipped, the device-loss path, multi-texture UI draws,
+and `$` TLUT wildcards on animated art.
+
+### 3.30 — HD texture packs reach Remix without entering D3D9 (2026-08-05)
+
+**Implemented. Protocol 6 → 7. CI-green on both repos; tested good 2026-08-06
+(see 3.31).** [`texture-replacements.md`](texture-replacements.md) is the design.
+
+3.29 concluded "substitute the replacement bytes at D3D9 texture creation". That
+works and it is the wrong trade: Remix's material hash *is* the stage-0 D3D9
+texture's content hash, so it would re-key every tag, every `rtx.conf` category
+and every USD binding the moment a pack is installed or edited. It also cannot
+carry BC7/BC5.
+
+So the bytes do not go through D3D9 at all. **Aurora's upload path is
+unchanged** — that is the whole point, and it makes tagging bit-identical to a
+pack-less run rather than merely "still working". The game hands each `.dds` to
+`remixapi_CreateMaterial` (used purely as a file loader; the material is never
+bound) and aurora tags each draw with a 1-based index in `Ambient.g`, with the
+stage it describes in `Ambient.b`.
+
+**Two substitution sites, and this is the part that is easy to get wrong.** A UI
+draw returns `{Rasterized, true}` from `makeDrawCallType` and never reaches
+material resolution at all — it samples whatever `BindTexture` bound. So the
+material-side swap alone would have left the HUD at the game's own resolution,
+which is most of what a pack is wanted for. The fork substitutes in
+`determineMaterialData` for path-traced draws and in `D3D9DeviceEx::BindTexture`
+for rasterized ones.
+
+`Ambient.b` exists because only *dirty* textures rebind: a multi-texture draw
+can rebind a stage the index says nothing about, and substituting there would be
+the wrong texture rather than a missing one.
+
+Two failure modes worth naming because both are silent: an unresolved handle
+falls back to the game's texture rather than binding the empty slot (which
+renders black, and would read as "the pack broke everything"); and the preserve
+path is held off only while a handle is *unsettled*, with "no material for this
+index" counting as settled, so a pack entry the game never created cannot
+disable instance preservation forever.
+
+Regression signature: `matrep.sum texrep=` and the overlay's two counter rows
+separate "the game never handed it over" from "the fork ignored it". If
+`tex0hash=` ever differs between pack-on and pack-off for the same scene, the
+upload path was changed and tagging *has* broken — that should be impossible.
+
+### 3.29 — HD texture packs on d3d9: feasible, and #17 was wrong about the HUD (2026-08-05) — SUPERSEDED IN PART BY 3.30
+
+**Investigation only. No code changed.** Its §4 change list is superseded: the
+substitute-in-aurora design it proposed was dropped for the reason above. Its
+finding about the HUD stands and is why 3.30 has two substitution sites.
+
+The registry half of the replacement system **already runs in D3D9 mode** —
+`dusk::texture_replacements::reload()` fires at `m_Do_main.cpp:701` for any
+backend but `BACKEND_NULL`, and registration never touches wgpu. What is missing
+is the consumer: `find_replacement()` returns a wgpu `TextureHandle` built by
+`g_device.CreateTexture`, and `lib/dx9/dx9_texture.cpp` never asks. The seam is
+one call earlier, at the `gfx::ConvertedTexture` the DDS/PNG loaders already
+produce.
+
+**The originals stay out of Remix's list for free, if the substitution happens
+at creation.** Remix hashes a D3D9 texture in `SetupForRtxFrom`
+(`d3d9_common_texture.cpp:666`) and feeds `g_imguiTextureMap` via
+`ImGUI::AddTexture`; that map *is* the categorization grid, and it truncates
+when it outruns the descriptor pool. Build the D3D9 texture from the
+replacement instead of from the GX bytes and no texture object exists for the
+original, so nothing to hash and nothing to suppress. Entry count is unchanged
+from today.
+
+**Correction to `unsupported-effects.md` #17 and `architecture-notes.md`
+§Textures**, both of which said aurora-side packs "only matter to the standalone
+image". True for path-traced surfaces; **false for the HUD.** `isRenderingUI`
+(`d3d9_rtx.cpp:561`, `orthographicIsUI` default true) classifies our HUD by
+projection, those draws are rasterized, and rasterized draws never reach
+`getReplacementMaterial`. The D3D9 texture is the only lever on HUD fidelity
+that exists. Both documents corrected.
+
+**The cost to weigh before any code:** `LegacyMaterialData::updateCachedHash()`
+is `m_cachedHash = colorTextures[0].getImageHash()` (`rtx_materials.h:1869`), so
+every USD binding and every hash-keyed `rtx.conf` entry is a function of the
+pack's bytes. Enabling the pack re-keys the scene once; editing one pack texture
+re-keys that material. Pick the pack, freeze it, then author — and treat it as
+part of the protocol rather than as a runtime toggle.
 
 ### 3.28 — self-lit is the rule; the score is retired (2026-08-05)
 

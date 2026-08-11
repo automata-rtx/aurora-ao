@@ -178,6 +178,8 @@ fields, in this order):
   per-draw hot path skips hashing. Rationale: Remix identifies game textures
   by content hash and holds references to the D3D9 texture *objects* across
   frames, but dusklight recreates `GXTexObj` wrappers freely — the `dDlst_2D*`
+  (`dDlst` = *drawlist*; game symbols are the decomp's, and mostly romanized
+  Japanese rather than English — `dusklight-ao/docs/japanese-naming.md`)
   drawlist items (minimap etc.) build a stack-local texobj **per draw, every
   frame**, each with a fresh `texObjId` that the PC `GXTexObjRAII` wrapper
   evicts right after the draw. With the old `texObjId`-keyed cache that meant
@@ -202,6 +204,16 @@ fields, in this order):
   filters → `D3DTEXF_POINT/LINEAR` (+ `MIPFILTER` from mipmap flag,
   LOD bias via `D3DSAMP_MIPMAPLODBIAS`, max aniso from config).
 - EFB-copy textures: separate map keyed by dest pointer + copy size (§10).
+- **HD replacement packs do not change any of the above.** The uploaded bytes
+  are always the game's own, deliberately — the D3D9 texture is what Remix
+  hashes, so substituting here would re-key every texture tag, `rtx.conf`
+  category and USD binding. What the content store gains is one extra field:
+  `ContentEntry::remixIndex`, the 1-based index of the replacement registered
+  for this content, resolved **once per distinct content** (not per draw) right
+  where the texture is built, and reported through `resolve_texmap`'s
+  out-parameter. `lib/dx9/dx9_tev.cpp` forwards it in `D3DMATERIAL9::Ambient.g`
+  and the fork does the substitution.
+  [`texture-replacements.md`](texture-replacements.md).
 
 ## 6. Skinning [v1 — flagship feature]
 
@@ -482,6 +494,15 @@ pre-transformed `D3DFVF_XYZRHW` vertices — **[later]** behind a config flag
 (`dx9RhwUi`), since Remix's default heuristics (ortho + no depth) usually
 suffice.
 
+**One consequence is now load-bearing.** Because a UI draw is rasterized, it
+never reaches material resolution, so *no* material-side mechanism can affect
+it — not a USD replacement, and not any of the `D3DMATERIAL9` side channels in
+[`remix-material-interface.md`](remix-material-interface.md) §2 except the two
+the HD texture pack added. That is why the pack substitutes in **two** places
+rather than one: the material for path-traced draws, and
+`D3D9DeviceEx::BindTexture` for these. Sharpening the HUD is not possible any
+other way. [`texture-replacements.md`](texture-replacements.md) §3.
+
 ## 13. What Remix sees (summary of intentional choices)
 
 - One `IDirect3DDevice9`, single-threaded draws, `DrawIndexedPrimitiveUP`.
@@ -514,6 +535,9 @@ suffice.
 - `SetTexture(stage 0..n)`. Which stage becomes the albedo is Remix's choice,
   not ours — see `remix-material-interface.md`; the mapper's job is to make the
   stage it picks readable rather than to assume stage order decides.
+  The one place aurora states an opinion about stage order is the HD texture
+  pack's `Ambient.b`, and it reports what it observed (the lowest stage that
+  actually bound a texture) rather than asserting a convention.
 - Alpha-tested cutouts via ALPHATEST render states (Remix "cutout" category).
   **Alpha is the second thing that must still be right**: Remix builds opacity
   and the alpha test from the stage's alpha op and args, so an alpha shortcut

@@ -33,8 +33,33 @@ the D3D9 backend itself, the design work lives in the other two repos —
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/aurora-ao` | **this repo** — GX→D3D9 backend (`lib/dx9/`) | `docs/dx9/` |
-| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/effect-lights.md` (how fire and glow get lights), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup) |
+| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/effect-lights.md` (how fire and glow get lights), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup), `docs/japanese-naming.md` (how to read the game's symbol names) |
 | `automata-rtx/dxvk-remix` | the RTX Remix fork | `documentation/Dusklight*.md` |
+
+## The game's symbols are named in Japanese
+
+This repo's own code is ordinary English `camelCase`, and GX names come from
+Nintendo's SDK — but **the game symbols these documents cite are romanized
+Japanese**, because Twilight Princess was written by a Japanese team and the
+decompilation preserves its names. `kankyo` (環境) is *environment*;
+`dKyr_drawRain` is in `d_kankyo_rain.cpp` because rain is part of the
+environment system, not because `dKyr` means anything in English.
+
+Two consequences when you go reading game-side to explain a draw:
+
+- **Search in both romanizations.** The tree mixes kunrei-shiki (`si`, `tu`,
+  `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`, `sha`), sometimes for the same
+  word, so an empty grep is not evidence a thing does not exist.
+- **Some names are English spelled by ear** — `wether` is the weather system,
+  `dKyd_lightSchejule` is the light schedule. Never "correct" one.
+- **`export LC_ALL=C.UTF-8` before grepping the game tree for Japanese.** Nearly
+  500 of its files carry literal kana/kanji — the original team's own debug
+  labels, which settle field meanings that the romaji alone leaves ambiguous.
+  Under the default `POSIX` locale `grep -P` matches **nothing**, silently.
+
+Full reference: `dusklight-ao/docs/japanese-naming.md` (in a session that has
+the game checked out, that is one directory up; it is also the canonical home
+for the glossary, which is mechanically checked against the game tree).
 
 ## Branches — ALL THREE repos use the same structure
 
@@ -173,6 +198,55 @@ be deleted. This applies to `Fixed-Function-dev` and `Fixed-Function` alike — 
 dusklight branch pinning a SHA that lives only on a `claude/*` branch still
 builds today and breaks the moment that branch is cleaned up.
 
+## Merges that succeed and are still wrong
+
+**A clean `git merge` is not a correct merge, and on this project that is not a
+theoretical worry.** Several features are developed on parallel branches that
+edit the same documents, and git only compares *lines*. It cannot see that two
+branches have made the same sentence false.
+
+Two instances, both real:
+
+- **The protocol double-bump.** Two branches independently took protocol 6 → 7.
+  Git *did* conflict, on the same lines — and that made it worse, not better:
+  both sides said `7`, so the obvious resolution is to keep 7 and move on,
+  shipping two features that claim one version. The conflict was flagged; the
+  resolution was the trap.
+- **The side-channel map.** A feature claimed `D3DMATERIAL9::Ambient.g` and
+  `.b` and updated three of the four places that describe the struct. The
+  canonical table in `docs/dx9/remix-material-interface.md` §2 merged cleanly
+  and went on advertising both channels as spare — so the next feature to want
+  one would have taken a channel already in use, surfacing as a material bug
+  nowhere near either change.
+
+**So, after any merge — and before pushing one:**
+
+```
+python3 scripts/check_invariants.py
+```
+
+It checks the facts this repo states in more than one place: the `matrep.sum`
+format string against `material-report.md`, the channels `set_remix_material`
+writes against the §2 field map, the `dx9.draws` reporting period against the
+four documents that quote it (two inside worked example lines a reader will take
+as literal output), and leftover conflict markers. This repo has no
+CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
+pinned submodule** — but it is fast, so run it here too rather than finding out
+after a submodule bump.
+
+**What it cannot check, and therefore what a human still has to:**
+
+- whether a "tested in game" claim is still true after the code under it changed
+- whether a document's *prose* still describes reality, as opposed to its
+  tables agreeing with the code
+- whether two in-flight branches are about to take the same spare side channel —
+  nothing can see a branch that has not merged yet
+
+**When auditing documentation after a merge, re-derive the file list from the
+diff.** Auditing from memory is how the §2 table was missed twice: every gap
+found on the third pass was in a document that had not been edited, which is
+exactly the set memory does not surface.
+
 ## Verification
 
 Verify D3D9 code with the MinGW syntax harness (see `docs/dx9/progress.md`
@@ -187,10 +261,22 @@ dusklight's workflow builds with the bumped submodule pin.
 is **effectively complete** for its stated priorities. Working under Remix:
 world/actor geometry, textures, terrain, alpha-tested foliage, UI/HUD, skinned
 characters on both paths, EFB colour copies, stable texture hashing, real
-camera, working input across resizes.
+camera, working input across resizes, and **HD texture replacement packs**
+(2026-08-06 — the pack goes to Remix through the API rather than through D3D9,
+so texture tagging is untouched; `docs/dx9/texture-replacements.md`).
 
-Remaining gaps are **catalogued rather than open** — 18 GX features beyond
-fixed-function and 11 Remix runtime limitations, all in
+**One `GXBegin` block is one D3D9 draw call**, and Remix charges per draw rather
+than per pixel — a draw too small for its own BLAS still contributes its own
+geometry entry and surface to a bucket that rebuilds every frame. A game-side
+loop that wraps each quad in its own `GXBegin`/`GXEnd` is therefore affordable
+in raster and ruinous here; the kankyo weather effects spent ~1000 draws a frame
+that way until 2026-08-08. `dx9.draws` in the log reports draws per frame (mean
+and peak over 600 frames) so this is measurable rather than guessed at.
+`docs/dx9/progress.md` §3.32.
+
+Remaining gaps are **catalogued rather than open** — 17 open GX features of 18
+catalogued (#17, texture packs, closed 2026-08-05) and 11 Remix runtime
+limitations, all in
 `docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
 not what has been given up: the fork is ours, so a "Remix limitation" is a work
 item until someone reads the fork and finds a real wall. The two-colour ramp
