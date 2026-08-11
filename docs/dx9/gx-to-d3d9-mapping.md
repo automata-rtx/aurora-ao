@@ -552,8 +552,13 @@ other way. [`texture-replacements.md`](texture-replacements.md) §3.
   `Specular.r` "the vertex colour stream is authored material colour",
   `Specular.g` "aurora evaluated a colour here", `Specular.b` "this material has
   a colour of its own", `Specular.a` **"this material is self-lit"** — the three
-  the emissive rule actually reads.
-  Field meanings are owned by `remix-material-interface.md` §§7c, 9, 10. This
+  the emissive rule actually reads — `Ambient.g`/`.b` the HD texture replacement
+  index and the stage it refers to, and `Power` all three water facts packed as
+  `tag * 100 + layer * 10 + role`. **`Ambient.a` is the only field left.**
+  Field meanings are owned by `remix-material-interface.md` §§7c, 9, 10, 11, and
+  the allocation is checked mechanically in both directions by
+  `scripts/check_invariants.py` — do not add a claim here without adding its §2
+  row in the same commit. This
   is the "prefer stating over encoding" rule in practice: a per-draw fact
   transmitted directly beats one inferred from fixed-function state.
 - No pixel/vertex shaders, no MSAA, no sRGB states, no queries.

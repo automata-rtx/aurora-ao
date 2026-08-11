@@ -145,4 +145,10 @@ bool is_offscreen() noexcept;
 /// code that registered draw types. Callable from the game thread only.
 void synchronize();
 
+// Dusklight water is marked with GXSetDusklightWater (dolphin/gx/GXAurora.h), not from
+// here. There was a gfx-level entry point; it set a backend global directly, which is
+// read when the FIFO drains in end_frame rather than when the game calls it, so it only
+// ever described the last material of the frame. Removed rather than fixed in place so
+// the broken shape cannot come back.
+
 } // namespace aurora::gfx

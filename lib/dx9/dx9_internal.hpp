@@ -58,6 +58,19 @@ struct Device {
 };
 extern Device g_dx9;
 
+// Dusklight water, set by the game around the material whose draws are water. Not part of
+// StateCache: that caches D3D9 state to avoid redundant Set* calls, and this is an input to
+// what gets built rather than a record of what was sent. See dx9.hpp set_dusklight_water.
+inline uint32_t g_dusklightWaterRole = GX_AURORA_DUSKLIGHT_WATER_NONE;
+// The MAxx tag the marked material carried, as a number: 9 for MA09, 0 for none. Carried
+// because a body of water is several surfaces and only one of them should be the refracting
+// interface; the renderer decides which, and cannot without knowing them apart.
+inline uint32_t g_dusklightWaterTag = 0;
+// Which layer of a body of water this is (GX_AURORA_DUSKLIGHT_WATER_LAYER_*), classified
+// from the game's own material names. The tag is too coarse on its own: MA06 covers the
+// shoreline, the waves and the murk, which are three different surfaces.
+inline uint32_t g_dusklightWaterLayer = GX_AURORA_DUSKLIGHT_WATER_LAYER_UNKNOWN;
+
 // Model-view (WORLD*VIEW) inverse for the current draw, used to compensate
 // D3D's camera-space texgen inputs back to GX's model-space inputs
 // (docs #7). Invalid for per-vertex matrix-palette / skinned draws, where a
@@ -222,13 +235,21 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALUE& ramp,
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
-                               uint32_t texRepIndex, uint32_t texRepStage) noexcept {
+                               uint32_t texRepIndex, uint32_t texRepStage,
+                               uint32_t waterRole, uint32_t waterTag,
+                               uint32_t waterLayer) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
   mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, static_cast<float>(texRepIndex),
                               static_cast<float>(texRepStage), 0.f};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
+  // All three water facts share Power, the side band's last field - role, the MAxx tag and
+  // the layer, packed as tag*100 + layer*10 + role. See GX_AURORA_DUSKLIGHT_WATER_PACK for
+  // why decimal, and remix-material-interface.md §2 for why they share one field: Ambient.a
+  // is the only other thing left and taking both would leave nothing at all.
+  mat.Power = static_cast<float>(
+      GX_AURORA_DUSKLIGHT_WATER_PACK(waterRole, waterTag, waterLayer));
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {
     return;

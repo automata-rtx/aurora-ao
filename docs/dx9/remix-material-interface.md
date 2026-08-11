@@ -105,11 +105,42 @@ each is §0 applied — extend the fork rather than contort the stream.
 | `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
 | `Ambient.g` | 1-based index of the HD texture replacement this draw's albedo wants, 0 for none | `dusklightTexRep::handleFromLegacyMaterial` | [`texture-replacements.md`](texture-replacements.md) |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to; only meaningful when it is non-zero | `dusklightTexRep::handleForRasterStage` | same |
+| `Power` | all three water facts packed: `tag * 100 + layer * 10 + role` | `dusklightWater::waterRole` / `waterTag` / `waterLayer` | §11 |
 
-**Free channels remaining: `Ambient.a` and `Power`.** Nothing reads them today.
-That list is here so the next thing that needs a side channel takes one that is
-actually spare — `Ambient.g` and `Ambient.b` were free until 2026-08-05 and this
-table is the only place that would have said so.
+**One channel is free: `Ambient.a`. That is the whole of what is left.**
+
+`Power` was the other, and water took it on 2026-08-11 — all three of its facts
+at once, packed, precisely so that `Ambient.a` would survive for something else
+(§11). The next feature that wants a side channel is the last one that can have
+a field to itself; the one after that has to pack, and should say so in its
+design rather than discovering it during a merge.
+
+**Before claiming `Ambient.a`, check the live `claude/*` branches.**
+`claude/dusklight-remix-transparency-e7l766` has an unmerged claim on it (a
+per-draw transparency class). Nothing automated can see an unmerged branch, so
+that check is manual and it is the one that has gone wrong before —
+[`in-flight-allocation.md`](in-flight-allocation.md) records the full history,
+including the four branches that had each taken GX FIFO subcommand `0x0053`.
+
+### What is checked mechanically, and what is not
+
+`scripts/check_invariants.py` compares this table against `set_remix_material`
+**in both directions**, and includes `Power`:
+
+- a channel written with no row here fails — the original case, where a feature
+  takes a channel and leaves the table advertising it as spare;
+- a row here with nothing writing it fails — which is what a merge produces when
+  a branch that forked before a channel existed wins the conflict.
+
+It also checks that the water packing constants in `GXAurora.h` and the fork's
+decode in `rtx_dusklight_water.h` agree, since those are one contract written in
+two repositories.
+
+**What it still cannot catch:** a channel that keeps being written with a
+*different meaning*. Both directions are satisfied and the field map reads as
+true. That is exactly what the water branch would have done to `Ambient.g`/`.b`
+before it was rebased, and the only defence is that a channel now has to be
+claimed in this table in the same commit that writes it.
 
 Note also that `Ambient.g`/`.b` are the only side-channel fields read on the
 **rasterized** path (`D3D9DeviceEx::BindTexture`) as well as the ray-traced one.
@@ -691,3 +722,283 @@ approximation, which is what shipped before this.
   multiply already has, not a new one.
 - `rtx.dusklight.rampMaterials` turns it off live, which is also how to A/B it
   against the approximation.
+
+## 11. Water — marked by the game, translucent in Remix
+
+**Status, stated precisely because the parts have different evidence behind
+them:**
+
+| Part | Evidence |
+| :-- | :-- |
+| The game recognises its own water and marks the right draws | **measured in game 2026-08-08**, 11 distinct water materials reached Remix |
+| Marking must travel in the FIFO, not a backend global | **measured twice, both failure modes** — see "the rule this cost two test sessions" |
+| The layer split (`mera`/`nami`/`mizugiwa`/`nigori`/`kasan`) | classifier written from the game's own names; **untested in game** |
+| **The transport** — all three facts packed into `D3DMATERIAL9::Power` | **changed on 2026-08-11 and untested.** The 2026-08-08 measurement was taken with the facts in `Ambient.g`/`.b`/`.a`, which HD texture packs already owned; see below |
+
+That last row is the one to hold onto. Water was developed on a branch that
+forked before HD texture packs claimed `Ambient.g` and `Ambient.b`, and it wrote
+its flags into those two channels. Merging it as written would have deleted
+texture packs — the code conflict resolves the wrong way and the field map merges
+clean (`in-flight-allocation.md`). The facts now share `Power` instead, which is
+new code on a tested design: **the mark is measured, the wire it travels on is
+not.**
+
+**Regression signature if the packing is wrong:** every water draw reports
+`role=none` and water renders exactly as it did before the feature existed —
+opaque, white-ish, roughness 0.7. Nothing crashes and nothing logs an error. The
+`dx9.water` and `dusklight.water` lines below are what distinguish it.
+
+### Why water is told rather than inferred
+
+Twilight Princess has no water material. It has a naming convention:
+environment-driven materials are named `***MAxx*`, and `dKy_bg_MAxx_proc`
+(`d_kankyo.cpp:11418`) dispatches on those four characters every frame to drive
+fog, shine and the projected reflection layer.
+
+Nothing in the GX state says "water". A texture hash would be wrong by
+construction, since this game reuses water textures on non-water draws. So the
+game says so directly, per draw: `GXSetDusklightWater(role, tag, layer)`. That is
+§1 of CLAUDE.md — translate, don't tag.
+
+### Water is not one thing, and that is the whole difficulty
+
+A body of water arrives as **two or three coincident draws**, and only one of
+them is the surface. Reading that same dispatch function:
+
+| Tags | What the game does with them | Role |
+| :-- | :-- | :-- |
+| `MA03 MA09 MA17 MA19` | fog type, and for MA09 the shine rate `mWaterSurfaceShineRate` | **surface** |
+| `MA06` | `dKy_murky_set` — the murky body | **surface** |
+| `MA02 MA10` | `dComIfGd_setListInvisisble()`, then a `C_MTXLightPerspective` built from the live camera's fovy and aspect installed as the material's texture matrix | **projected** |
+| `MA00 MA01 MA04 MA16` | the water-*in* fog overlay | excluded entirely |
+
+`MA02`/`MA10` are a **painted reflection projected from the camera**, not the
+water. The submerged fog is excluded because it is what the camera looks
+*through*; refracting it would put a second water surface in front of the eye.
+
+`MA03` is the one tag that is not water on its own — `cc_MA03_Sunbeam_v` is a
+light shaft. It is admitted only when the name also contains `Water` or
+`Funsui`. Everything rejected still reports, so a water surface named some third
+way shows up in the log as a name to add rather than as absent water.
+
+### The transport
+
+`GXSetDusklightWater` writes `GX_AURORA_SET_DUSKLIGHT_WATER` (`0x0053`) into the
+FIFO, followed by three u32 — role, tag, layer. `command_processor.cpp` decodes
+it and calls `dx9::set_dusklight_water`, which sets the state `apply_tev` reads
+at the tail of each draw's translation.
+
+**All three facts share one field.** `D3DMATERIAL9::Power` carries
+
+```
+Power = tag * 100 + layer * 10 + role
+```
+
+with role 0–2, layer 0–7, tag 0–99, so the largest value is 9972 and a `float32`
+represents every integer to 16777216 exactly. `GX_AURORA_DUSKLIGHT_WATER_PACK`
+in `GXAurora.h` is the definition; `rtx_dusklight_water.h` decodes it, and
+`scripts/check_invariants.py` checks the two against each other because they are
+one contract written in two repositories.
+
+Decimal rather than bit fields **on purpose**: this number is read by a human in
+a log far more often than by code, and `power=921` is legible as MA09 / waves /
+surface where `0x25` is not. Rule 2 of CLAUDE.md — the log is the diagnostic
+instrument, so it is worth designing for.
+
+Why one field for three facts, when the previous revision spent three: the side
+band had exactly two fields left, and water taking both would have left nothing
+at all for anything after it. Packing costs one multiply and leaves `Ambient.a`
+for the next feature (§2).
+
+Remix's fork then builds a `TranslucentMaterialData` — index of refraction,
+transmittance colour and measurement distance from `rtx.dusklight.water.*` —
+instead of falling through to `as<OpaqueMaterialData>()`, which is the line that
+made every water layer an opaque, roughness-0.7 white sheet.
+
+The check sits **after** the replacement-material lookup, so a hand-authored
+material for a water texture still wins. That is how a normal map gets onto the
+surface: the scrolling UV ripple layers keep arriving as their own draws, and
+replacing those textures is the intended way to author real water normals.
+
+### The rule this cost two test sessions to learn
+
+**A backend global set from the game thread does not describe the draws around
+it. The FIFO is drained in `end_frame`.**
+
+`GXCallDisplayList` (`lib/dolphin/gx/GXDispList.cpp`) writes the display list
+into the FIFO buffer; `gx::fifo::drain()` runs from `gfx::end_frame`
+(`lib/gfx/common.cpp`) and from `lib/aurora.cpp`. Everything in
+`command_processor.cpp` — including `apply_tev`, and therefore every material
+decision this document describes — happens **there**, after the game thread has
+issued every draw in the frame.
+
+So a side-band global reads as whatever the game thread last wrote before the
+drain, which is the *last* material of the frame, for *every* draw in it. Both
+failed revisions are that one fact seen from two sides:
+
+| Revision | Game thread did | Command processor saw | In game |
+| :-- | :-- | :-- | :-- |
+| set only, never cleared | left the flag latched after the last water material | `true` for the whole drain | every material in the game turned translucent |
+| set, then cleared per material packet | set and cleared, both before any drain | `false` for the whole drain | no water at all; zero `dusklight.water` lines against 7 materials marked |
+
+Anything that must describe *particular draws* has to travel in the command
+stream. The precedent was already here: `GX_AURORA_SET_VIEW_MTX` is a FIFO
+command for exactly this reason. It is also the same lesson that deleted the
+material report's `grp=` field — `fpcDw_Execute` schedules a draw, it does not
+issue one — one layer further down the same pipe.
+
+### Reading the log
+
+Three hops, one line each, each reported once ever, so a single session says
+where a mark died rather than only that it did:
+
+| Line | Log | Means |
+| :-- | :-- | :-- |
+| `dusk.matname name=… role=surface tag=MAxx` | game | the game recognised the material and emitted the command. A tag is reported for every material, water or not. |
+| `dx9.water: first SURFACE mark decoded from the FIFO` | game | it survived the FIFO and reached the backend |
+| `dx9.water: first SURFACE draw translated (matKey …, power …)` | game | a draw was translated while marked, so a `D3DMATERIAL9` carrying that packed `Power` reached the device. **Check the number**: `power=921` is tag 9, layer 2, role 1. A `power` of 0 here with a `dusk.matname` line above it means the packing lost the mark. |
+| `dusklight.water tex0hash=… ior=… tag=MAxx layer=… power=…` | Remix | Remix received it, decoded the same three facts, and built a translucent material |
+
+`PROJECTED` has the same three game-side lines and ends at
+`dusklight.water.projected … hidden=1` instead. A fifth line,
+`dusklight.water.replaced`, means the mark arrived and a hand-authored
+replacement claimed the draw first — intended, since that is how a normal map
+gets onto the surface, but counted separately so it is never mistaken for the
+mark failing.
+
+`dusk.matname` reports every distinct material name with its verdict, capped at
+512 with a notice at the cap. The cap was 192 and it bit: a Hyrule Field session
+exhausted it before reaching Lake Hylia, so the one area the report was wanted
+was past the end of the list. **512 was also reached**, later, in the
+2026-08-08 23:47 session.
+
+### Measured 2026-08-08 23:47 — the first session where water arrived
+
+11 distinct water materials reached Remix, every hop reported. The water was
+translucent and still did not read as one continuous surface. The shape of what
+arrived is the finding:
+
+| Shape | Count | What it is |
+| :-- | :-- | :-- |
+| `texXform=3 proj=1` | 4 | the camera-projected overlay — `C_MTXLightPerspective` is exactly a projective texgen with a camera-built matrix |
+| `texXform=2 proj=0` | 5 | a scrolling surface pass |
+| `texXform=0 proj=0` | 2 | a still surface pass |
+
+The `proj=1` group being MA02/MA10 is confirmed twice over — by the name role
+read from `dKy_bg_MAxx_proc`, and independently by the D3D9 state shape. Those
+are now hidden.
+
+**That session predates the `Power` packing.** It establishes that the game
+marks the right draws and that the marks survive the FIFO; it says nothing about
+whether the current transport delivers them.
+
+### Surface detail comes from an authored replacement, and from nothing else
+
+**A revision bound the draw's own colour texture into the water's normal slot,
+and it was reverted on 2026-08-09.** It was added because water with no textures
+reads as featureless glass, and it was wrong twice over:
+
+- a *colour* texture decoded as an unsigned octahedral tangent normal
+  (`packing.slangh:357`) is noise, not ripples; and
+- on a lake where a normal map had already been authored for one of the layers,
+  it put a **second** normal map alongside it — and per an RTX Remix rendering
+  engineer, overlapping normal maps do not blend correctly.
+
+The second point is the one that generalises: it is not a reason to tune the
+first idea, it is a reason for a body of water to present **one** surface.
+
+So the game's textures are left exactly as they are. They keep their hashes,
+they stay replaceable, and detail arrives when a normal map is authored against
+them. The fork contributes the water physics and the texcoords; the look of the
+surface is the mod's.
+
+### Tiling and scroll are the fork's, not the game's
+
+The water surface's texture coordinates are driven from
+`rtx.dusklight.water.uvTiling` and `scrollSpeed` in place of the transform the
+draw arrived with (`animateTexcoords`, default on, applied where
+`surface.textureTransform` is assigned in `rtx_instance_manager.cpp`).
+
+The game's mapping and scroll rate were authored for its own world scale and a
+640x480 rasterizer. Neither is something a path traced lake has to inherit, and
+a ripple texture stretched once across Lake Hylia reads as a smear — tiling is
+the control that fixes that, and there is no correct value for it.
+
+Two details that are easy to get wrong and are already handled: the time source
+is the same expression the shader uses for `cb.timeSinceStartSeconds`
+(`rtx_context.cpp`), so this and Remix's own animated water do not drift apart;
+and the scroll offset is wrapped with `fmod` before being scaled, so a long
+session does not walk the translation into a range where float precision shows.
+
+### One surface per body of water
+
+A body of water arrives as several coincident surfaces, and stacking refracting
+interfaces is not what water is — quite apart from overlapping normal maps not
+blending correctly in Remix. So layers can be dropped, one switch each, all
+default off:
+
+| Option | The game's word | What it is |
+| :-- | :-- | :-- |
+| `hideShimmerLayer` | mera | the shimmer / heat-haze pass |
+| `hideWavesLayer` | nami | waves |
+| `hideShorelineLayer` | mizugiwa | where the water meets the shore |
+| `hideMurkLayer` | nigori | the murky body |
+| `hideAdditiveLayer` | kasan (加算, *addition*) | additively blended passes |
+
+**These are the game's own labels, not a scheme invented here.** Twilight
+Princess is a Japanese production and this decompilation preserves the original
+team's naming, so the material suffix says what the pass is. The classifier is
+game-side (`waterLayerForMaterialName`) and the answer rides in the `layer`
+digit of `D3DMATERIAL9::Power`.
+
+**An unrecognised layer is never hidden.** A name the classifier has not been
+taught arrives as `layer=unknown`, stays visible, and shows up in the log as a
+word to add. The opposite default would make a surface disappear silently.
+
+#### Why the MAxx tag could not do this
+
+An earlier revision hid by tag and **this document recommended trying `6`.** That
+was wrong: MA06 is *three* different surfaces —
+
+| Name | Word | |
+| :-- | :-- | :-- |
+| `cc_MA06_nami_v_x` | nami | waves |
+| `cc_MA06_mizugiwa_v_x` | mizugiwa | the shoreline |
+| `cc_MA06_NigoriWater_v_x` | nigori | the murky body |
+
+— so hiding the tag would have deleted a lake's waves and its shoreline to be rid
+of its murk. The control was built, shipped and recommended before the names were
+read. `hideSurfaceTag` is removed; `tag=` remains in the log as a grouping, and
+`layer=` is the field that decides anything.
+
+**`kasan` is the case worth remembering.** Its blend state was *measured* as
+`SRC_ALPHA,ONE` a session before anyone read the word, and 加算 means addition.
+The name had already said it. Read the vocabulary before measuring.
+
+### Why a lake shows chunks with and without an authored normal map
+
+**Measured 2026-08-09 15:56, and the cause is simply that a body of water is
+drawn from more than one texture.** That session's log has one replaced hash
+(`e7ae56e2c3fddcfc`) and three unreplaced ones still on the water path with
+`normalTex=1` — the raw colour texture in the normal slot, which is the noisy
+look. Replacing one hash fixes the draws that use it and nothing else, so a lake
+comes out in patches with hard edges between them. The `dusklight.water` lines
+name every hash that reached Remix; that is the list to author against.
+
+**A note on how this was first diagnosed, because it is the failure this
+document's rules exist to prevent.** A second mechanism was proposed and shipped
+on top of the above: that the replacement itself was opaque. It was not — the
+Remix Toolkit lets a material's type be overridden to translucent, which is what
+had been done, and an opaque water ripple would have been obvious on sight. The
+inference required the person testing not to notice something plainly visible,
+which is never a sound reading. The capturer fact below is real and worth
+keeping; it was not the cause here.
+
+**A capture genuinely cannot express water.** `GameCapturer::captureMaterial`
+writes an albedo texture path and nothing else, so every water draw captures as
+an *opaque* material and anything authored from that capture stays opaque unless
+its type is changed by hand in the Toolkit.
+`rtx.dusklight.water.applyToReplacements` exists for that: an opaque replacement
+on a water draw keeps its authored normal map and gets the water treatment
+around it, while a replacement that is *already* translucent is left completely
+alone, because that author meant it.
