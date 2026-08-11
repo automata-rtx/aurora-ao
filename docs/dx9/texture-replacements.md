@@ -199,14 +199,24 @@ synchronously, so the caller's wide string need not outlive the call; that
 `makePreloadSource` drops every texture path unless a material EXT is chained;
 that `ManagedTexture::requestMips` is atomic and `MAX_MIPS` is 32.
 
-Also verified: `LegacyMaterialData::computeIdentityHash()`
-(`rtx_materials.cpp:40-120`) hashes `Ambient.r` but **not** `.g` or `.b`. That
-is why the preserve path needs an explicit guard — a stable instance would
-otherwise latch its pre-residency material forever. Leaving the index out of
-that hash is nonetheless safe: `colorTextureHash0` is in it, and the index is a
-function of the same texture content, so it carries no information the hash does
-not already have. Nothing else in the fork reads `Ambient.g` or `Ambient.b`;
-both were unwritten before this change.
+**Superseded 2026-08-11.** `LegacyMaterialData::computeIdentityHash()` used to
+hash `Ambient.r` but **not** `.g` or `.b`, and this document argued that leaving
+the index out was safe because `colorTextureHash0` is in the hash and the index
+is a function of the same texture content.
+
+That argument was sound for texture packs and useless as a general rule, which is
+the point worth keeping. Water then claimed `Power` — a channel derived from the
+*material's name*, not its texture — and the same argument does not hold for it
+at all: two draws sharing a texture can carry different water roles, and this
+game reuses water textures on non-water draws by design. Rather than re-deriving
+the argument per channel, **every side channel is now in that hash**
+(`rtx_materials.cpp`), and the fork's `check_dusklight_invariants.py` fails if an
+allocated channel is missing from it.
+
+The **preserve-path guard is still needed** and for its original reason, which is
+residency rather than identity: the index does not change when a replacement
+finishes loading, so a stable instance would otherwise latch its pre-residency
+material forever. That is unaffected by the hash change.
 
 **Inferred, not measured:** that the lowest bound D3D9 stage is always the one
 the fork assigns `colorTextures[0]`; that `tryRequestMips` is sufficient to hold

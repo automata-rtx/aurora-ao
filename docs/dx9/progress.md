@@ -63,7 +63,7 @@ Every entry below states which one it is.
 
 | Term | Means |
 | :-- | :-- |
-| **syntax-checked** | Passes `x86_64-w64-mingw32-g++ -std=c++20 -fsyntax-only` against real MinGW d3d9/windows headers, real repo headers and real absl/fmt/xxhash, in **both** the d3d9-on and d3d9-off configs. Dawn/SDL3 are shimmed, so `lib/gx/gx.cpp` and `lib/gfx/common.cpp` cannot be checked this way. |
+| **syntax-checked** | `scripts/check_syntax.sh` passes. Real MinGW `<d3d9.h>`/`<windows.h>`, real repo headers, real absl and fmt, `-fsyntax-only`, in **both** the d3d9-on and d3d9-off configs — the second is not optional, since every entry point has a no-op stub behind `#else` in `dx9.hpp` and a signature change that misses it fails only there. Dawn, SDL3, Tracy and xxHash are shimmed (`scripts/syntax-harness/`), so `lib/gx/gx.cpp` and `lib/gfx/common.cpp` cannot be checked this way. **It does not validate format strings** — the distro fmt is 9.x against aurora's 11.x, and the shim says so. Setup: `apt-get install g++-mingw-w64-x86-64 libfmt-dev libabsl-dev`. |
 | **CI-green** | Built by dusklight-ao's GitHub Actions with the submodule pin bumped. This repo has no CI of its own. |
 | **tested in game** | The owner ran it on Windows and reported back. |
 
@@ -253,6 +253,63 @@ and fog remap is off. A mode must be chosen; see
 Newest first. Per-checkpoint "next run" checklists have been removed once the
 run happened; where a run produced a durable finding it is folded into the
 section above or into the owning document.
+
+### 3.33 — water rebased onto the current side band, and the allocation is checked (2026-08-11)
+
+**Two shared resources were being allocated by branches that could not see each
+other, and both collisions survived a `git merge`.** The full audit is
+`in-flight-allocation.md`; this is what changed here.
+
+**The side band.** `claude/water-rendering-investigation-7baezw` forked before HD
+texture packs claimed `Ambient.g`/`.b` and wrote its water flags into them, plus
+`Ambient.a` and `Power`. Merging it as written deletes texture packs: the code
+conflict resolves the wrong way — the water side is newer, self-consistent and
+well commented — and the field map merges clean, so nothing in the diff says what
+was lost. Measured, not predicted: resolving it that way and silencing the two
+complaints the old check raised left the tree green with
+`grep -r texRepIndex lib/` returning nothing.
+
+Rebased rather than merged, and the assignment re-derived. All three water facts
+now share `Power`:
+
+```
+Power = tag * 100 + layer * 10 + role
+```
+
+role 0-2, layer 0-7, tag 0-99, maximum 9972, and a `float32` holds every integer
+to 16777216 exactly. Decimal rather than bit fields because the number is read by
+a human in a log far more often than by code — `power=921` is legible as MA09 /
+waves / surface. One field rather than three so `Ambient.a` survives; it is now
+the only spare channel there is.
+
+**The subcommand space.** Four live branches had each taken `0x0053`. The
+`#define`s conflict, but the `else if` chain in `command_processor.cpp` does
+**not** — both arms merge, the first tested wins, and because the arms consume
+different payload lengths the loser leaves the reader mid-payload and desyncs the
+FIFO. The symptom is a garbled frame or a `CHECK` naming an opcode the game never
+called, which is debugged nowhere near the cause. `GXAurora.h` now carries a
+registry comment listing every allocated number and reserving `0x0054`-`0x0057`
+for the other three claimants.
+
+**Checks, because human review is not the safeguard here.**
+`check_invariants.py` goes from 4 to 6: the side-channel map now runs **both**
+directions and includes `Power` (the reverse is what catches a merge that drops
+the code claiming a channel while the table still describes it), duplicate and
+unregistered subcommands fail, and the water packing is checked against the
+formula §2 states. Each was verified by breaking the tree and confirming the
+message names the right thing.
+
+`scripts/check_syntax.sh` is new and is why "syntax-checked" above now names
+something runnable. It caught a real error during this work: a first attempt
+compiled `dx9_tev.cpp` cleanly and it turned out `AURORA_ENABLE_D3D9` was
+undefined, so the whole file had been `#ifdef`-ed away — a vacuous pass reported
+as a real one, which is the exact failure mode the vocabulary table exists for.
+
+**Status.** Syntax-checked, both configs. **Not built, not tested in game.** The
+2026-08-08 measurement that water reaches Remix was taken on the old wire and
+does not cover this one. Regression signature: every draw decodes `role=none` and
+water renders opaque and white-ish exactly as before the feature existed;
+`power=` on the `dx9.water` and `dusklight.water` lines is what says so.
 
 ### 3.32 — dense particles were a draw-call problem, and the backend can now count draws (2026-08-08)
 
@@ -610,7 +667,12 @@ and dark inverted, would mean the endpoints are swapped;
 `rtx.dusklight.rampMaterials` turns it off live for an A/B against the
 approximation.
 
-### 3.23 — the emissive premise was wrong; label every draw (2026-08-04)
+### 3.23 — the emissive premise was wrong; label every draw (2026-08-04) — SUPERSEDED BY 3.28
+
+> **`rtx.dusklight.emissive.threshold` no longer exists.** 3.28 retired the score
+> and the cut with it — the rule is a conjunction now, and the only dial is
+> `rtx.dusklight.emissive.brightness`. Kept because the *measurements* below are
+> still the evidence base.
 
 **3.22 was tested in the Goron Mines. It fired on one material and that material
 was not lava.** The rule required GX lighting to be *disabled*; every candidate
