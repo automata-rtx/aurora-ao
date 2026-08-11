@@ -85,6 +85,27 @@ const char* d3dta_name(DWORD ta) noexcept {
 // docs/dx9/remix-material-interface.md §9.
 // What the game said this draw represents (GXSetDrawClass). Spelled out rather than
 // logged as a number so a reader without the header can follow the line.
+// Which of the game's draw lists issued this. Spelled out for the same reason as the class:
+// a number here would need the header to decode, and the point of the log is that it does not.
+const char* draw_phase_name(uint8_t drawPhase) noexcept {
+  switch (drawPhase) {
+  case GX_AURORA_DRAW_PHASE_SKY_OPA:   return "skyOpa";
+  case GX_AURORA_DRAW_PHASE_SKY_XLU:   return "skyXlu";
+  case GX_AURORA_DRAW_PHASE_BG_OPA:    return "bgOpa";
+  case GX_AURORA_DRAW_PHASE_BG_XLU:    return "bgXlu";
+  case GX_AURORA_DRAW_PHASE_MIDDLE:    return "middle";
+  case GX_AURORA_DRAW_PHASE_ACTOR_OPA: return "actorOpa";
+  case GX_AURORA_DRAW_PHASE_ACTOR_XLU: return "actorXlu";
+  case GX_AURORA_DRAW_PHASE_ZXLU:      return "zxlu";
+  case GX_AURORA_DRAW_PHASE_FILTER:    return "filter";
+  case GX_AURORA_DRAW_PHASE_INVISIBLE: return "invisible";
+  case GX_AURORA_DRAW_PHASE_SCREEN:    return "screen";
+  case GX_AURORA_DRAW_PHASE_LAST3D:    return "last3D";
+  case GX_AURORA_DRAW_PHASE_UI2D:      return "ui2D";
+  default:                             return "none";
+  }
+}
+
 const char* draw_class_name(uint8_t drawClass) noexcept {
   switch (drawClass) {
   case GX_AURORA_DRAW_CLASS_PARTICLE:
@@ -1755,7 +1776,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
                      selfLit.readsRaster ? 0.f : 1.f,
                      albedoTexRepIndex,
                      albedoTexRepStage == UINT32_MAX ? 0u : albedoTexRepStage,
-                     g_gxState.drawClass);
+                     g_gxState.drawClass, g_gxState.drawPhase);
 
   // The material translation report. Emitted here because this is the only
   // point where the GX input, every decision taken, and the finished D3D9 state
@@ -1784,7 +1805,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              "usesTex={} usesVtx={} alphaScale={:02X} hint={} form={} hintTex={:016X} hintLoose={} "
              "tint={} tintVal={:08X} tfactor={:08X} tfUsed={} vtxColor={} "
              "selfLit={} emisScore={:.2f} emisCol={:06X} emisEval={} emisAuthored={} "
-             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} texrep={} class={} grp={}",
+             "blend={} ras={} ramp={} rampOther={:06X} vtxUse={} texrep={} class={} phase={} grp={}",
              matKey, numStages, d3dStage, albedoIdx, amap, aw, ah, static_cast<GXTexFmt>(afmt),
              is_color_texture_format(afmt) ? 1 : 0, albedo.valid ? albedo.shape : "unevaluable",
              albedo.out0 & 0x00FFFFFFu, albedo.out1 & 0x00FFFFFFu, albedo.usesTexture ? 1 : 0,
@@ -1800,6 +1821,7 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
              !draw.hasVertexColor ? "const"
                                   : (albedo.vertexColorIsMaterial ? "material" : "bakedLight"),
              albedoTexRepIndex, draw_class_name(g_gxState.drawClass),
+             draw_phase_name(g_gxState.drawPhase),
              g_gxState.currentDebugGroup()[0] != '\0' ? g_gxState.currentDebugGroup() : "-");
 
     // Per-stage GX detail: the material the game asked for, not our reduction

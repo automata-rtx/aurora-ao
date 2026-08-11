@@ -335,6 +335,7 @@ bool begin_frame() noexcept {
   // would leak "everything is smoke" into the next one. Cleared here rather than trusted to the
   // caller, because that failure is silent, frame-shaped and miserable to chase.
   g_gxState.drawClass = GX_AURORA_DRAW_CLASS_NONE;
+  g_gxState.drawPhase = GX_AURORA_DRAW_PHASE_NONE;
 
   uint32_t width = 0;
   uint32_t height = 0;

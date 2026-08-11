@@ -403,6 +403,12 @@ struct GXState {
   // docs/dx9/remix-material-interface.md §11.
   u8 drawClass = 0;
 
+  // Which of the game's draw lists is executing (GX_AURORA_DRAW_PHASE_*, GXAurora.h).
+  // Diagnostic only - nothing renders differently because of it. This is the working
+  // replacement for grp=, which never worked because debug groups are pushed where a draw is
+  // scheduled rather than issued, and are compiled out in release besides.
+  u8 drawPhase = 0;
+
   // Innermost GXPushDebugGroup label, mirrored into a fixed buffer so a
   // backend can name the draw it is looking at without a graphics debugger and
   // without allocating. The game pushes one group per process draw

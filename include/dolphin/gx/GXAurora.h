@@ -148,6 +148,40 @@ extern "C" {
  */
 #define GX_AURORA_DRAW_CLASS_HAZE 2
 
+/**
+ * Declares which of the game's draw lists is currently being executed, for backends that need
+ * to attribute a draw to the code that issued it. Must be followed by one u32 carrying a
+ * GX_AURORA_DRAW_PHASE_* value. Latches until changed; reset each frame.
+ *
+ * This exists because GXPushDebugGroup cannot do it. A debug group pushed around an actor's
+ * draw method labels the moment the draw is *scheduled* into a J3D buffer, not the moment GX
+ * commands are *issued* when that buffer is walked - which is why every material ever logged
+ * reported grp=-. It is also compiled out in release builds. A phase set around the draw-list
+ * execution itself is written into the FIFO at the right moment and survives release.
+ *
+ * Diagnostic only: no backend changes rendering because of it. It reaches Remix packed
+ * alongside the draw class so a report can say which list a draw came from.
+ * docs/dx9/remix-material-interface.md §11.
+ */
+#define GX_AURORA_SET_DRAW_PHASE 0x0054
+
+#define GX_AURORA_DRAW_PHASE_NONE       0
+#define GX_AURORA_DRAW_PHASE_SKY_OPA    1  /* dComIfGd_drawOpaListSky */
+#define GX_AURORA_DRAW_PHASE_SKY_XLU    2  /* dComIfGd_drawXluListSky */
+#define GX_AURORA_DRAW_PHASE_BG_OPA     3  /* drawOpaListBG / DarkBG */
+#define GX_AURORA_DRAW_PHASE_BG_XLU     4  /* drawXluListBG / DarkBG */
+#define GX_AURORA_DRAW_PHASE_MIDDLE     5  /* drawOpaListMiddle */
+#define GX_AURORA_DRAW_PHASE_ACTOR_OPA  6  /* drawOpaList / Dark / Packet */
+#define GX_AURORA_DRAW_PHASE_ACTOR_XLU  7  /* drawXluList / Dark */
+#define GX_AURORA_DRAW_PHASE_ZXLU       8  /* drawListZxlu */
+#define GX_AURORA_DRAW_PHASE_FILTER     9  /* drawOpaListFilter */
+#define GX_AURORA_DRAW_PHASE_INVISIBLE  10 /* drawOpa/XluListInvisible */
+#define GX_AURORA_DRAW_PHASE_SCREEN     11 /* drawIndScreen / drawXluList2DScreen */
+#define GX_AURORA_DRAW_PHASE_LAST3D     12 /* drawOpaList3Dlast */
+#define GX_AURORA_DRAW_PHASE_UI2D       13 /* draw2DOpa / OpaTop / Xlu / drawCopy2D */
+/* Keep in step with draw_phase_name() in lib/dx9/dx9_tev.cpp and the fork's decoder. */
+#define GX_AURORA_DRAW_PHASE_COUNT      14
+
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
 
@@ -246,6 +280,17 @@ void GXSetViewMtx(const void* mtx);
  *     GXSetDrawClass(GX_AURORA_DRAW_CLASS_NONE);
  */
 void GXSetDrawClass(u32 drawClass);
+
+/**
+ * Declare which draw list is executing (a GX_AURORA_DRAW_PHASE_* value). Latches until changed
+ * and is reset to NONE each frame. Diagnostic only - no backend renders differently because of
+ * it. Wrap the draw-list call itself, not the actor's draw method:
+ *
+ *     GXSetDrawPhase(GX_AURORA_DRAW_PHASE_BG_XLU);
+ *     dComIfGd_drawXluListBG();
+ *     GXSetDrawPhase(GX_AURORA_DRAW_PHASE_NONE);
+ */
+void GXSetDrawPhase(u32 drawPhase);
 
 /**
  * Enable or disable the GPU-skinning debug view. When enabled, matrix-palette-skinned draws (those

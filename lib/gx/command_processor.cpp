@@ -2062,6 +2062,12 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     // acts on it (dx9_tev.cpp, into the D3DMATERIAL9 side channel Remix reads).
     g_gxState.drawClass = drawClass > GX_AURORA_DRAW_CLASS_HAZE ? static_cast<u8>(GX_AURORA_DRAW_CLASS_NONE)
                                                                : static_cast<u8>(drawClass);
+  } else if (subCmd == GX_AURORA_SET_DRAW_PHASE) {
+    CHECK(pos + 4 <= size, "GX_AURORA_SET_DRAW_PHASE read overrun");
+    const u32 drawPhase = read_u32(data + pos, bigEndian);
+    pos += 4;
+    g_gxState.drawPhase = drawPhase >= GX_AURORA_DRAW_PHASE_COUNT ? static_cast<u8>(GX_AURORA_DRAW_PHASE_NONE)
+                                                                 : static_cast<u8>(drawPhase);
   }
 
   else {

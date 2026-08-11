@@ -209,11 +209,15 @@ inline void set_texture(DWORD stage, IDirect3DBaseTexture9* tex) noexcept {
 //                 rasterized path substitutes per texture bind, and a multi-texture draw
 //                 can rebind a *different* stage while this material is current. Without
 //                 the stage that bind would take the albedo's replacement
-//   Ambient.a     what this draw's transparency represents, as a GX_AURORA_DRAW_CLASS_*
-//                 value the game declared through GXSetDrawClass: 0 none, 1 particle,
-//                 2 haze. Remix otherwise decides "is this a particle" from a texture tag,
-//                 which is one answer per texture in a game that reuses textures across
-//                 contexts; this is the per-draw answer instead              §11
+//   Ambient.a     drawClass + drawPhase * 256, packed. The low byte is what this draw's
+//                 transparency represents (GX_AURORA_DRAW_CLASS_*: 0 none, 1 particle,
+//                 2 haze) and drives behaviour; the high byte is which of the game's draw
+//                 lists issued it (GX_AURORA_DRAW_PHASE_*) and is diagnostic only.
+//                 Packed rather than given its own channel because Power is the last spare
+//                 and a diagnostic should not spend it - a float carries every integer to
+//                 2^24, so the pair is exact. Remix otherwise decides "is this a particle"
+//                 from a texture tag, which is one answer per texture in a game that reuses
+//                 textures across contexts; this is the per-draw answer instead     §11
 //   Specular.r    1 when the vertex colour stream is authored material
 //                 colour rather than baked lighting                §7c
 //   Specular.g    1 when aurora evaluated a presentable colour here. 0 for the
@@ -228,12 +232,13 @@ inline void set_remix_material(const D3DCOLORVALUE& emissive, const D3DCOLORVALU
                                float tFactorIsHigh, float vertexColorIsMaterial,
                                float evaluated, float colorAuthored, float selfLit,
                                uint32_t texRepIndex, uint32_t texRepStage,
-                               uint32_t drawClass) noexcept {
+                               uint32_t drawClass, uint32_t drawPhase) noexcept {
   D3DMATERIAL9 mat{};
   mat.Emissive = emissive;
   mat.Diffuse = ramp;
   mat.Ambient = D3DCOLORVALUE{tFactorIsHigh, static_cast<float>(texRepIndex),
-                              static_cast<float>(texRepStage), static_cast<float>(drawClass)};
+                              static_cast<float>(texRepStage),
+                              static_cast<float>(drawClass + drawPhase * 256u)};
   mat.Specular = D3DCOLORVALUE{vertexColorIsMaterial, evaluated, colorAuthored, selfLit};
   if (g_cache.remixMaterialValid &&
       std::memcmp(&g_cache.remixMaterial, &mat, sizeof(mat)) == 0) {

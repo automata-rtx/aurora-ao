@@ -105,7 +105,7 @@ each is §0 applied — extend the fork rather than contort the stream.
 | `Ambient.r` | which endpoint TFACTOR holds → `textureFlags` bit 16 | same | §10 |
 | `Ambient.g` | 1-based index of the HD texture replacement this draw's albedo wants, 0 for none | `dusklightTexRep::handleFromLegacyMaterial` | [`texture-replacements.md`](texture-replacements.md) |
 | `Ambient.b` | the D3D9 stage `Ambient.g` refers to; only meaningful when it is non-zero | `dusklightTexRep::handleForRasterStage` | same |
-| `Ambient.a` | what this draw's transparency represents — `GX_AURORA_DRAW_CLASS_*`: 0 none, 1 particle, 2 haze | `rtx_dusklight_transparency.h` → `alphaState.isParticle` | §11 |
+| `Ambient.a` | `drawClass + drawPhase * 256`. Low byte: what the transparency represents (`GX_AURORA_DRAW_CLASS_*`, drives behaviour). High byte: which draw list issued it (`GX_AURORA_DRAW_PHASE_*`, diagnostic) | `rtx_dusklight_transparency.h` → `alphaState.isParticle` | §11 |
 
 **Free channels remaining: `Power`.** Nothing reads it today.
 That list is here so the next thing that needs a side channel takes one that is
