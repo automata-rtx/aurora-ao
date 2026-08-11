@@ -545,10 +545,27 @@ like the lava surface, and its poor showing is much less surprising.
 
 **2. The game's own light lists.** `g_env_light` carries `pointlight[100]`
 (torches, braziers, candles, campfires), `efplight[5]` (effects) and
-`dungeonlight[8]` (per-room authored lights, positions and palette colours). The
-first two are already forwarded to Remix as sphere lights
-(`dusklight-ao/src/dusk/remix_bridge.cpp`). **`dungeonlight` is not**, and it is
-exactly the Goron Mines case: authored light sources placed in a dungeon room.
+`dungeonlight[8]` (per-room authored lights, positions and palette colours).
+There is a fourth the earlier revision of this paragraph missed: the `BOSS_LIGHT`
+spot list, which is where a large share of this game's torches and **all** of
+Link's lantern actually register.
+
+**Updated 2026-08-07.** The first two were mirrored into Remix as sphere lights
+at the positions the game gave them; that system is now **off by default**. Its
+placements are the problem — a GX point light casts no shadow, so the artists
+could put one wherever the shading looked best, and a path tracer casts a real
+shadow from the exact point. What replaced it puts the light at the **origin of
+the effect that draws the fire** and keeps only the game's colour, and where the
+registry carries one its reach. So these lists are still the parameter source;
+they stopped being the *position* source.
+`dusklight-ao/docs/effect-lights.md` is the design; the code is
+`dusklight-ao/src/dusk/effect_lights.cpp` with the API half still in
+`remix_bridge.cpp`.
+
+**`dungeonlight` is still not read at all**, and it is exactly the Goron Mines
+case: authored light sources placed in a dungeon room, with no effect beside
+them for the new system to attach to. That makes it the strongest candidate for
+the `effLightsOrphans` readout to point at.
 
 This is §1 "translate, don't tag" applied where it actually belongs — the game
 holds a *list of light sources*, and the emissive work has been trying to infer

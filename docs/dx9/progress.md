@@ -224,8 +224,12 @@ and fog remap is off. A mode must be chosen; see
 
 - **GX lighting is never evaluated** (`D3DRS_LIGHTING = FALSE`), so the game's
   own Link-following light reaches neither vertex colours nor albedo. That is
-  why the sun/moon must be injected through the Remix light API rather than
-  captured. **The GX "this channel is unlit" bit is no longer discarded**: it is
+  why **every** light in this game reaches Remix through the light API rather
+  than being captured: the sun/moon as a distant light, and fire and glow as
+  sphere lights placed at the origin of the effect that draws them
+  (`dusklight-ao/docs/effect-lights.md`, tested in game 2026-08-07). Indoors
+  the latter are the whole lighting solution — the sun/moon is gated off there
+  and Remix has no dome light type, so a sky is never NEE-sampled. **The GX "this channel is unlit" bit is no longer discarded**: it is
   the heaviest of the three signals in the self-illumination score *(3.23)* and
   it is what decides whether vertex colour is forwarded *(3.25)*. It is not
   sufficient on its own — 59% of one scene is unlit and the Goron Mines lava is

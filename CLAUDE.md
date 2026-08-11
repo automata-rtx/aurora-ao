@@ -33,7 +33,7 @@ the D3D9 backend itself, the design work lives in the other two repos —
 | Repo | Role | Its docs |
 | :-- | :-- | :-- |
 | `automata-rtx/aurora-ao` | **this repo** — GX→D3D9 backend (`lib/dx9/`) | `docs/dx9/` |
-| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup), `docs/japanese-naming.md` (how to read the game's symbol names) |
+| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/effect-lights.md` (how fire and glow get lights), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup), `docs/japanese-naming.md` (how to read the game's symbol names) |
 | `automata-rtx/dxvk-remix` | the RTX Remix fork | `documentation/Dusklight*.md` |
 
 ## The game's symbols are named in Japanese
