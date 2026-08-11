@@ -876,6 +876,27 @@ every transparency including ones the game never labels.
   `rtx.dusklight.transparency.reportClasses`. `classifiedFrames=0` while
   transparencies are plainly on screen is the signature of a game build that
   predates `GXSetDrawClass`.
+- `dusklight.xparency.survey` + `dusklight.xparency.row` — added 2026-08-11,
+  behind `rtx.dusklight.transparency.surveyUnclassified`. **This is what
+  identifies the fog wall**, and it exists because the 2026-08-11 session proved
+  the material report alone cannot: that log carried 30 `blend=alpha class=none`
+  draws and nothing in texture size, format or `tfactor` separates a distant haze
+  curtain from a decal. Size on screen and distance do, and neither was recorded
+  anywhere. Each row carries `tex0hash`, which joins to `matrep.rmx` and from
+  there to the game's `matrep.sum`.
+
+  **Read `spanDeg` together with `distance`, not alone.** Checked against
+  realistic geometry before shipping: a fog wall 4000 units across at 6000 units
+  reads 37°, but a mid-distance water surface reads 56° and a full-screen blit
+  reads 180°. Span alone would have put the blit on row 1 and called it the
+  answer. Rows where `camInside=1` — the camera is inside the draw's bounding box,
+  which is what a screen blit and any enclosing volume look like — sort last for
+  that reason. That is a property of the geometry, not a distance threshold
+  chosen to produce a tidy result.
+
+  So the wall is **a row near the top with a large `spanDeg` and a large
+  `distance`**, and the report says so in its own header rather than relying on
+  anyone remembering this paragraph.
 
 **Regression signatures, so they are recognised rather than discovered:**
 
@@ -898,6 +919,9 @@ every transparency including ones the game never labels.
   Neither was attempted here: `resolve.slangh` is the hottest shared shader path
   in the runtime and this session could not compile it, let alone run it.
 - **The fog wall is not identified in the game source.** `haze` is plumbed end to
-  end and nothing calls it. Identifying the actor is what `class=` and the
-  `dusklight.xparency` line are for; adding the call afterwards is one line and
-  one `GXScopedDrawClass`.
+  end and nothing calls it. As of 2026-08-11 the tool that identifies it exists —
+  the survey above — but it has not been run. Once a row names the texture,
+  `tex0hash` joins back through `matrep.rmx` to `matrep.sum`, and adding the call
+  is one line and one `GXScopedDrawClass`. **Nothing about the wall should be
+  written down until that log exists**; the first draft of this section guessed
+  at the mechanism from an unchecked premise and was wrong.
