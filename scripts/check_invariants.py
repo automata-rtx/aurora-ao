@@ -410,6 +410,107 @@ def check_water_packing_contract() -> None:
             )
 
 
+def check_log_format_strings() -> None:
+    """A Log.* format string must be a literal, because fmt's is consteval.
+
+    Log.info and friends take fmt::format_string, whose constructor is consteval from
+    fmt 10 onwards. Anything that reads a runtime value in that argument - a ternary
+    picking between two messages is the natural way to write it - is not a constant
+    expression, and MSVC rejects it as:
+
+        error C7595: 'fmt::v12::fstring<>::fstring': call to immediate function is
+        not a constant expression
+
+    which names the fmt header, not the offending line's actual problem.
+
+    Nothing else we can run catches it. scripts/check_syntax.sh shims fmt at the
+    container's 9.x, where format_string was still a plain type, and the shim's own
+    note says it does not validate format strings. This repo has no CI, so the first
+    report comes from dusklight's Windows job several minutes into a build - which is
+    where it came from on 2026-08-14, in set_dusklight_draw_meta's resolution notice.
+
+    The fix is always the same: two calls, each with its own literal.
+    """
+    global checks_run
+    checks_run += 1
+
+    # Log.report takes the level first and the format string second; every other level
+    # takes the format string first.
+    call_re = re.compile(r"\bLog\.(debug|info|warn|error|fatal|report)\s*\(")
+
+    for rel in tracked_files():
+        if not rel.endswith((".cpp", ".hpp", ".h")):
+            continue
+        src = read(rel)
+        if src is None or "Log." not in src:
+            continue
+
+        # Macro bodies are exempt. In ASSERT/FATAL and friends the format argument is the
+        # macro's own parameter, and the literal is supplied by the caller at expansion -
+        # which is where consteval evaluates it, so those are correct as written.
+        macro_spans: list[tuple[int, int]] = []
+        for d in re.finditer(r"^[ \t]*#[ \t]*define\b", src, re.MULTILINE):
+            end = d.end()
+            while True:
+                nl = src.find("\n", end)
+                if nl == -1:
+                    end = len(src)
+                    break
+                # A trailing backslash continues the definition onto the next line.
+                if src[:nl].rstrip().endswith("\\"):
+                    end = nl + 1
+                    continue
+                end = nl
+                break
+            macro_spans.append((d.start(), end))
+
+        for m in call_re.finditer(src):
+            if any(lo <= m.start() < hi for lo, hi in macro_spans):
+                continue
+            level, i = m.group(1), m.end()
+
+            if level == "report":
+                # Skip the level argument: scan to the first comma at paren depth 0.
+                depth = 0
+                while i < len(src):
+                    c = src[i]
+                    if c in "([{":
+                        depth += 1
+                    elif c in ")]}":
+                        if depth == 0:
+                            break
+                        depth -= 1
+                    elif c == "," and depth == 0:
+                        i += 1
+                        break
+                    i += 1
+
+            # Skip whitespace and comments to reach the format argument itself.
+            while i < len(src):
+                if src[i].isspace():
+                    i += 1
+                elif src.startswith("//", i):
+                    i = src.find("\n", i) + 1 or len(src)
+                elif src.startswith("/*", i):
+                    i = src.find("*/", i) + 2
+                else:
+                    break
+
+            # A literal, an adjacent-concatenated literal, or a raw/encoded literal is fine.
+            if i < len(src) and (src[i] == '"' or src.startswith(('R"', 'L"', 'u8"'), i)):
+                continue
+
+            line = src.count("\n", 0, m.start()) + 1
+            snippet = " ".join(src[m.start():m.start() + 90].split())
+            fail(
+                "log-format",
+                f"{rel}:{line}: Log.{level} is called with a format string that is not a "
+                f"literal - `{snippet}...`. fmt::format_string is consteval, so MSVC will "
+                f"reject this with C7595 naming the fmt header rather than this line. Use "
+                f"one call per literal message",
+            )
+
+
 def main() -> int:
     check_conflict_markers()
     check_matrep_fields_documented()
@@ -417,6 +518,7 @@ def main() -> int:
     check_draw_stats_period()
     check_aurora_opcode_registry()
     check_water_packing_contract()
+    check_log_format_strings()
 
     if failures:
         print(f"{len(failures)} inconsistency/ies across {checks_run} checks:\n")

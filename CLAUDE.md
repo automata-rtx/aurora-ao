@@ -246,10 +246,12 @@ in `docs/dx9/in-flight-allocation.md`:
   three branches that had also taken `0x0053`. Take a number by adding it to that
   registry in the same commit.
 
-**These are now checked mechanically** (`check_invariants.py`, 6 checks): the
+**These are now checked mechanically** (`check_invariants.py`, 7 checks): the
 side-channel map runs **both** directions and includes `Power`, duplicate
-subcommand numbers fail, an unregistered subcommand fails, and the water packing
-in `GXAurora.h` is checked against the formula the documentation states.
+subcommand numbers fail, an unregistered subcommand fails, the water packing
+in `GXAurora.h` is checked against the formula the documentation states, and
+every `Log.*` format string must be a literal (see the fmt `consteval` note
+under "Verifying a change without a Windows machine").
 
 **What it still cannot check, and therefore what a human has to:**
 
@@ -282,6 +284,20 @@ format strings (the container's fmt is 9.x against aurora's 11.x — the shim sa
 so). `lib/gx/gx.cpp` and `lib/gfx/common.cpp` reach Dawn proper and are not
 covered. "Syntax-checked" is the honest claim; "compiles" is dusklight's CI and
 "works" is the owner.
+
+**One consequence of that fmt gap has already cost a CI round, so it is now
+checked separately.** From fmt 10 the `format_string` constructor is
+`consteval`, so a `Log.*` format argument must be a constant expression — and
+the natural way to write a two-outcome notice, `Log.info(cond ? "a" : "b")`, is
+not one. MSVC rejects it as `error C7595: call to immediate function is not a
+constant expression`, naming the fmt header rather than the ternary. The harness
+cannot see it (its fmt predates the change) and this repo has no CI, so the
+first report came from dusklight's Windows job six minutes into a build, on
+2026-08-14, in `set_dusklight_draw_meta`'s resolution notice.
+`check_invariants.py` now requires every `Log.*` format string to be a literal
+and names the file and line. Macro bodies are exempt — in `ASSERT`/`FATAL` the
+literal is supplied at the expansion site, which is where `consteval` evaluates
+it. **The fix is always two calls, each with its own literal.**
 
 **When auditing documentation after a merge, re-derive the file list from the
 diff.** Auditing from memory is how the §2 table was missed twice: every gap

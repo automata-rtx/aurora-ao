@@ -584,10 +584,19 @@ PFN_dusklightSetDrawMeta resolve_draw_meta_export() noexcept {
       s_fn = reinterpret_cast<PFN_dusklightSetDrawMeta>(
           reinterpret_cast<void*>(GetProcAddress(d3d9, "dusklightSetDrawMeta")));
     }
-    Log.info(s_fn != nullptr
-                 ? "dx9.drawmeta: the Remix fork exports dusklightSetDrawMeta; per-draw metadata is live"
-                 : "dx9.drawmeta: no dusklightSetDrawMeta export in this d3d9.dll, so per-draw metadata is "
-                   "inert and every draw behaves as before. Expected against stock Remix or an older fork.");
+    // Two calls rather than one with a ternary. Log.info takes fmt::format_string, whose
+    // constructor is consteval, so the format string has to be a constant expression - and a
+    // ternary that reads the runtime s_fn is not one. MSVC rejects it as C7595 "call to immediate
+    // function is not a constant expression", pointing at the fmt header rather than at the
+    // ternary. Neither compiler in scripts/check_syntax.sh catches this: the harness shims fmt at
+    // 9.x, where format_string was not yet consteval, and its own note says it does not validate
+    // format strings. This one only appears in dusklight's CI.
+    if (s_fn != nullptr) {
+      Log.info("dx9.drawmeta: the Remix fork exports dusklightSetDrawMeta; per-draw metadata is live");
+    } else {
+      Log.info("dx9.drawmeta: no dusklightSetDrawMeta export in this d3d9.dll, so per-draw metadata is "
+               "inert and every draw behaves as before. Expected against stock Remix or an older fork.");
+    }
   }
 
   return s_fn;
