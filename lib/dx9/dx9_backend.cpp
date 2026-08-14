@@ -555,6 +555,57 @@ static void scale_copy_dst(uint32_t& width, uint32_t& height) noexcept {
   height = std::max<uint32_t>(static_cast<uint32_t>(std::lround(static_cast<float>(height) * scaleY)), 1);
 }
 
+// The fork's per-draw metadata export, resolved once and never required.
+//
+// GetProcAddress rather than a link-time import on purpose: the game already resolves the fork's
+// getRtxOptionValue exactly this way and warns when it is absent, and that is what lets the two
+// binaries be rebuilt independently. A stock Remix, or a fork built before this landed, simply
+// does not have the symbol and every draw behaves as it always did.
+namespace {
+
+using PFN_dusklightSetDrawMeta = void(__cdecl*)(const void*, uint32_t);
+
+// Mirrors DusklightDrawMeta in the fork's rtx_dusklight_drawmeta.h. The two are reconciled by
+// structSize at the call, not by being kept identical - add fields at the END only.
+struct DusklightDrawMetaWire {
+  uint32_t structSize;
+  uint32_t flags;
+};
+
+PFN_dusklightSetDrawMeta resolve_draw_meta_export() noexcept {
+  static bool s_resolved = false;
+  static PFN_dusklightSetDrawMeta s_fn = nullptr;
+
+  if (!s_resolved) {
+    s_resolved = true;
+    // Already loaded - the game links d3d9 and the fork *is* d3d9. Not LoadLibrary: taking a second
+    // reference to the module the process is running on would be a leak with no purpose.
+    if (HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll")) {
+      s_fn = reinterpret_cast<PFN_dusklightSetDrawMeta>(
+          reinterpret_cast<void*>(GetProcAddress(d3d9, "dusklightSetDrawMeta")));
+    }
+    Log.info(s_fn != nullptr
+                 ? "dx9.drawmeta: the Remix fork exports dusklightSetDrawMeta; per-draw metadata is live"
+                 : "dx9.drawmeta: no dusklightSetDrawMeta export in this d3d9.dll, so per-draw metadata is "
+                   "inert and every draw behaves as before. Expected against stock Remix or an older fork.");
+  }
+
+  return s_fn;
+}
+
+}  // namespace
+
+void set_dusklight_draw_meta(uint32_t flags) noexcept {
+  const PFN_dusklightSetDrawMeta fn = resolve_draw_meta_export();
+
+  if (fn == nullptr) {
+    return;
+  }
+
+  const DusklightDrawMetaWire meta { static_cast<uint32_t>(sizeof(DusklightDrawMetaWire)), flags };
+  fn(&meta, static_cast<uint32_t>(sizeof(meta)));
+}
+
 void set_dusklight_water(uint32_t role, uint32_t tag, uint32_t layer) noexcept {
   // Hop 2 of 3, reported once per role. The three hops a water mark has to survive are
   // game -> FIFO (dusk.matname, game log), FIFO -> backend (here), and backend -> Remix

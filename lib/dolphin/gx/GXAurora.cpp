@@ -110,6 +110,11 @@ void GXSetDusklightWater(u32 role, u32 tag, u32 layer) {
   GX_WRITE_U32(layer);
 }
 
+void GXSetDusklightDrawMeta(u32 flags) {
+  GX_WRITE_AURORA(GX_AURORA_SET_DUSKLIGHT_DRAW_META);
+  GX_WRITE_U32(flags);
+}
+
 void GX2SetPolygonOffset(f32 mFrontOffset, f32 mFrontScale, f32 mBackOffset, f32 mBackScale, f32 mClamp) {
   GX_WRITE_AURORA(GX2_SET_POLYGON_OFFSET);
   GX_WRITE_F32(mFrontOffset);

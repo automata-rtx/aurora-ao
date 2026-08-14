@@ -2069,6 +2069,16 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     if (dx9::active()) {
       dx9::set_dusklight_water(role, tag, layer);
     }
+  } else if (subCmd == GX_AURORA_SET_DUSKLIGHT_DRAW_META) {
+    CHECK(pos + 4 <= size, "GX_AURORA_SET_DUSKLIGHT_DRAW_META read overrun");
+    const u32 flags = read_u32(data + pos, bigEndian);
+    pos += 4;
+    // Decoded here for the same reason the water mark is: the FIFO is drained in end_frame, so a
+    // value the game writes at the moment it draws is read after every draw in the frame has gone
+    // past. This is the point in the stream the game meant.
+    if (dx9::active()) {
+      dx9::set_dusklight_draw_meta(flags);
+    }
   }
 
   else {
