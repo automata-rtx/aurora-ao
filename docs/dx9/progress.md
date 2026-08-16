@@ -63,7 +63,7 @@ Every entry below states which one it is.
 
 | Term | Means |
 | :-- | :-- |
-| **syntax-checked** | `scripts/check_syntax.sh` passes. Real MinGW `<d3d9.h>`/`<windows.h>`, real repo headers, real absl and fmt, `-fsyntax-only`, in **both** the d3d9-on and d3d9-off configs — the second is not optional, since every entry point has a no-op stub behind `#else` in `dx9.hpp` and a signature change that misses it fails only there. Dawn, SDL3, Tracy and xxHash are shimmed (`scripts/syntax-harness/`), so `lib/gx/gx.cpp` and `lib/gfx/common.cpp` cannot be checked this way. **It does not validate format strings** — the distro fmt is 9.x against aurora's 11.x, and the shim says so. Setup: `apt-get install g++-mingw-w64-x86-64 libfmt-dev libabsl-dev`. |
+| **syntax-checked** | `scripts/check_syntax.sh` passes. Real MinGW `<d3d9.h>`/`<windows.h>`, real repo headers, real absl and fmt, `-fsyntax-only`, in **three** configs — d3d9-on, d3d9-off, and d3d9-on with `-DNDEBUG`. The second is not optional, since every entry point has a no-op stub behind `#else` in `dx9.hpp` and a signature change that misses it fails only there; the third covers the release side of the `AURORA_GFX_DEBUG_GROUPS` blocks, which `include/aurora/gfx.h` defines only when `NDEBUG` is unset (added 2026-08-16). Dawn, SDL3, Tracy and xxHash are shimmed (`scripts/syntax-harness/`), so `lib/gx/gx.cpp` and `lib/gfx/common.cpp` cannot be checked this way. **It does not validate format strings** — the distro fmt is 9.x against aurora's 11.x, and the shim says so. Setup: `apt-get install g++-mingw-w64-x86-64 libfmt-dev libabsl-dev`. |
 | **CI-green** | Built by dusklight-ao's GitHub Actions with the submodule pin bumped. This repo has no CI of its own. |
 | **tested in game** | The owner ran it on Windows and reported back. |
 
@@ -320,7 +320,12 @@ state was authored by hand and shipped in the model files.
   a switch: the game-side `snprintf`, the push/pop FIFO writes per material per
   frame and the 48-byte mirror `memcpy` are all unchanged and none of them has
   been measured. Syntax-checked in the MinGW harness in the NDEBUG and non-NDEBUG
-  configurations; **not** measured, **not** tested in game.
+  configurations — and the harness was extended in the same pass to run the NDEBUG
+  one, because it did not before: `FLAGS` never carried `-DNDEBUG`, so the release
+  side of every `#if defined(AURORA_GFX_DEBUG_GROUPS)` block went unchecked and
+  this claim was true only of a compiler invocation typed by hand. It is now
+  `scripts/check_syntax.sh`'s third config and reproducible from a checkout.
+  **Not** measured, **not** tested in game.
 
 **Deliberately not done.** No name reaches Remix, no side channel was designed,
 no water/sky/mist classification was added. The transport question is open **on

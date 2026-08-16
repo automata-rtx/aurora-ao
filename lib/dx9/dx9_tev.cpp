@@ -1611,8 +1611,14 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
         IDirect3DBaseTexture9* tex = nullptr;
         if (hintTexture != nullptr && stage.texMapId == hintTexMapId) {
           // Already resolved for the hint in this same draw (see hintTexMapId).
-          // resolve_texmap's only side effect is stamping lastUsedFrame, which
-          // that first call did, so skipping it does not change cache ageing.
+          // resolve_texmap does more than stamp lastUsedFrame - it can drop a
+          // stale s_byObjId alias, build the texture, insert into s_byContent
+          // and query the replacement registry - but every one of those was
+          // performed by that first call, and the GX state this texmap resolves
+          // from cannot change inside one draw. So the second call is a cache
+          // hit returning the same texture and the same replacement index, with
+          // lastUsedFrame restamped to the frame it already holds: a no-op, and
+          // skipping it does not change cache ageing.
           tex = hintTexture;
           stageTexRepIndex = hintTexMapRepIndex;
         } else {

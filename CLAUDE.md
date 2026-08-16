@@ -274,10 +274,13 @@ scripts/check_invariants.py
 ```
 
 `check_syntax.sh` type-checks 7 translation units against **real** MinGW
-`<d3d9.h>`/`<windows.h>` and real repo headers, in **both** the d3d9-on and
-d3d9-off configs — the second matters because every entry point has a no-op stub
-behind `#else` in `dx9.hpp`, and a signature change that misses the stub fails
-only there. Dawn, SDL3, Tracy and xxHash are shimmed in `scripts/syntax-harness/`.
+`<d3d9.h>`/`<windows.h>` and real repo headers, in **three** configs — d3d9-on,
+d3d9-off, and d3d9-on with `NDEBUG`. The second matters because every entry point
+has a no-op stub behind `#else` in `dx9.hpp`, and a signature change that misses
+the stub fails only there. The third was added on 2026-08-16 because
+`AURORA_GFX_DEBUG_GROUPS` is defined by `include/aurora/gfx.h` **only when
+`NDEBUG` is unset**, so code behind it was never checked in the configuration CI
+actually ships. Dawn, SDL3, Tracy and xxHash are shimmed in `scripts/syntax-harness/`.
 
 **It is not a build.** It does not link, does not run, and does not validate
 format strings (the container's fmt is 9.x against aurora's 11.x — the shim says

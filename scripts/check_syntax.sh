@@ -13,9 +13,10 @@
 # It is not "builds" and it is certainly not "works". docs/dx9/progress.md
 # §"Verification vocabulary" is the authority on which word to use.
 #
-# Both configurations are checked. That is not optional: every dx9 entry point has a
-# no-op stub behind #else in dx9.hpp, and a signature change that misses the stub
-# fails only in the d3d9-off build - which is exactly the build nobody runs locally.
+# Three configurations are checked; see CONFIGS below for what each one is for. The
+# d3d9-off pass is not optional: every dx9 entry point has a no-op stub behind #else in
+# dx9.hpp, and a signature change that misses the stub fails only in the d3d9-off build -
+# which is exactly the build nobody runs locally.
 #
 # Setup, once:
 #   sudo apt-get install -y g++-mingw-w64-x86-64 libfmt-dev libabsl-dev
@@ -79,9 +80,27 @@ fails=0
 checked=0
 missing=0
 
-for cfg in on off; do
-  cfgflags=()
-  [ "$cfg" = "on" ] && cfgflags=(-DAURORA_ENABLE_D3D9=1)
+# Three configurations, each covering something the others cannot:
+#
+#   d3d9=on            the backend proper.
+#   d3d9=off           the no-op stubs behind #else in dx9.hpp - see the note above.
+#   d3d9=on,NDEBUG     the release side of the AURORA_GFX_DEBUG_GROUPS blocks. That macro
+#                      is defined by include/aurora/gfx.h only when NDEBUG is NOT set, so
+#                      without this pass every #if defined(AURORA_GFX_DEBUG_GROUPS) body
+#                      is checked and none of its #else is - which is the half a release
+#                      build compiles. Added 2026-08-16, after an entry in progress.md
+#                      claimed harness coverage the harness did not have.
+#
+# Only the first config reports a missing unit, so a listed-but-absent file is named once.
+CONFIGS=(
+  "on|-DAURORA_ENABLE_D3D9=1"
+  "off|"
+  "on,NDEBUG|-DAURORA_ENABLE_D3D9=1 -DNDEBUG"
+)
+
+for entry in "${CONFIGS[@]}"; do
+  cfg=${entry%%|*}
+  read -r -a cfgflags <<< "${entry#*|}"
 
   for unit in "${UNITS[@]}"; do
     if [ ! -f "$unit" ]; then
@@ -103,4 +122,4 @@ if [ "$fails" -ne 0 ] || [ "$missing" -ne 0 ]; then
   exit 1
 fi
 
-echo "check_syntax: $checked translation units syntax-checked (both d3d9 configs)"
+echo "check_syntax: $checked translation units syntax-checked (d3d9 on, d3d9 off, d3d9 on + NDEBUG)"
