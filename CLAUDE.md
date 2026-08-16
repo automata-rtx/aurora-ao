@@ -237,10 +237,18 @@ after a submodule bump.
 **Two shared resources are nearly exhausted.** Audited 2026-08-11, current state
 in `docs/dx9/in-flight-allocation.md`:
 
-- **The `D3DMATERIAL9` side band has one field left: `Ambient.a`.** Water took
-  `Power` on 2026-08-11 — all three of its facts packed into it, specifically so
-  that `Ambient.a` would survive. `claude/dusklight-remix-transparency-e7l766`
-  has an unmerged claim on `Ambient.a`; after that, the next feature has to pack.
+- **The `D3DMATERIAL9` side band is closed to new features, and has been a
+  non-problem since 2026-08-14.** Water took `Power` on 2026-08-11 — all three of
+  its facts packed into it, specifically so that `Ambient.a` would survive.
+  `Ambient.a` is nominally the last field, with an unmerged claim from
+  `claude/dusklight-remix-transparency-e7l766` — **but do not take it, and do not
+  tell the next feature to pack.** The transport for a new per-draw fact is now a
+  flag word: `dusklightSetDrawMeta`, a versioned export on the fork's `d3d9.dll`,
+  fed by this repo's `GX_AURORA_SET_DUSKLIGHT_DRAW_META` (`0x0058`). **A new
+  per-draw fact is a new bit, not a new channel.** The scarcity was never a real
+  constraint — `D3DMATERIAL9` is fixed by the D3D9 API, but that boundary is not,
+  because this repo is the D3D9 caller and the fork is the D3D9 implementation and
+  both are ours. This bullet asserted the opposite until 2026-08-16.
 - **GX FIFO subcommand `0x0053` is water's**, and `0x0054`–`0x0057` are reserved
   in the registry comment at the top of `include/dolphin/gx/GXAurora.h` for the
   three branches that had also taken `0x0053`. Take a number by adding it to that

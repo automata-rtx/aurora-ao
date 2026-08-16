@@ -10,8 +10,8 @@ failures recurs and this is the only account of it.
 
 | Resource | Free | Claimed by unmerged work |
 | :-- | :-- | :-- |
-| `D3DMATERIAL9` side band | `Ambient.a` only | `Ambient.a` — `claude/dusklight-remix-transparency-e7l766` |
-| GX FIFO subcommands | `0x0058` and up | `0x0054`–`0x0057` reserved, see the registry in `GXAurora.h` |
+| `D3DMATERIAL9` side band | `Ambient.a` only — **but closed to new features, see below** | `Ambient.a` — `claude/dusklight-remix-transparency-e7l766` |
+| GX FIFO subcommands | `0x0059` and up (`0x0058` is drawmeta's) | `0x0054`–`0x0057` reserved, see the registry in `GXAurora.h` |
 
 This document exists because two shared, finite resources were being allocated by
 branches that cannot see each other:
@@ -106,8 +106,20 @@ written. `Ambient.a` and `Power` were the only two §2 had ever called spare;
 **After the rebase: one — `Ambient.a`.** Water was re-derived to pack all three
 of its facts into `Power` alone, which is what bought that back. It is still
 spoken for by `claude/dusklight-remix-transparency-e7l766`, so a proposal that
-assumes a free channel should confirm against that branch first; and the feature
-*after* that one has to pack, because there will be nothing left to pack into.
+assumes a free channel should confirm against that branch first.
+
+**But the sentence that used to follow — "the feature after that one has to pack,
+because there will be nothing left to pack into" — has been false since
+2026-08-14, and it is corrected here rather than deleted because it is the kind of
+claim a session re-derives a whole design around.** On that date
+`dusklightSetDrawMeta` was built: a versioned export on the fork's own `d3d9.dll`,
+fed by `GX_AURORA_SET_DUSKLIGHT_DRAW_META` (`0x0058`), carrying a flags word.
+**So a new per-draw fact is a new bit, not a new channel**, and nothing has to
+pack. Keep `Ambient.a` for a value that must survive the *capture* path, where the
+material struct is the only carrier. The scarcity was never a real constraint:
+`D3DMATERIAL9` is fixed by the D3D9 API, but that boundary is not, because this
+repo is the D3D9 caller and the fork is the D3D9 implementation and both are ours.
+`dxvk-remix/documentation/DusklightSideChannels.md` is the authority.
 
 ### 1.4 Why the merge is dangerous — measured, not predicted
 
