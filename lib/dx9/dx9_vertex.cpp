@@ -18,7 +18,19 @@ struct AttrPlan {
   uint8_t frac = 0;
   uint8_t srcSize = 0;  // bytes this attr occupies in the stream
   const gx::AttrArray* array = nullptr; // for INDEX8/16
+  // Bound for the INDEX8/16 fetch, precomputed here rather than in the per-vertex
+  // loop. hasArray is false when the array has no backing store at all -
+  // J3DShape issues GDSetArraySized(attr, nullptr, 0, stride) for every attribute
+  // a model lacks, so that is a real state rather than a defensive one.
+  uint32_t maxIndex = 0;
+  bool hasArray = false;
 };
+
+// Substituted for an attribute with no backing array, so every consumer below
+// reads defined zeros instead of forming an address from a null base. Sized for
+// the widest element one index can address (NBT: 9 x F32); the decoder never
+// reads more than 3 components from it.
+constexpr uint8_t kZeroComps[36] = {};
 
 thread_local std::vector<uint8_t> t_scratch;
 // GX position-matrix slot per decoded vertex; only filled for matrix-palette
@@ -141,6 +153,29 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
     default:
       warn_once(0x1000 + i, "invalid vertex attr type");
       return false;
+    }
+    if (p.array != nullptr) {
+      // Bound for the array fetch in the decode loop below, precomputed once per
+      // attribute rather than per vertex. compBytes is the span one index
+      // addresses:
+      //   - colours take their width from gx::comp_type_size, not the local
+      //     comp_size(), whose parameter is a GXCompType and whose enumerators
+      //     collide with the colour formats. A flat 4 would be an overestimate
+      //     for RGB565/RGBA4 and would clamp the array's last entry.
+      //   - NBT3 is three separate indices into 3-component elements (which is
+      //     why srcSize is 3/6 above), so its span is 3 components even though
+      //     comp_cnt_count reports 9. Plain NBT is one index over all 9.
+      // AttrArray::size is exact where J3DModelLoader derives it and an admitted
+      // overcount on J3DShape's deform path - safe for a bound, which is part of
+      // why an out-of-range index clamps below rather than dropping the draw.
+      // stride 0 (GXInit's default) yields maxIndex 0, leaving the address
+      // exactly where it is today. 2026-08-16.
+      const uint32_t elemComps = nbt3 ? 3u : static_cast<uint32_t>(p.cnt);
+      const uint32_t compBytes =
+          elemComps * ((attr == GX_VA_CLR0 || attr == GX_VA_CLR1) ? gx::comp_type_size(attr, attrFmt.type)
+                                                                  : comp_size(p.compType));
+      p.hasArray = p.array->data != nullptr && p.array->size >= compBytes;
+      p.maxIndex = (p.hasArray && p.array->stride != 0) ? (p.array->size - compBytes) / p.array->stride : 0u;
     }
     srcOffset += p.srcSize;
   }
@@ -301,13 +336,32 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
       const uint8_t* comps = s;
       bool compBe = bigEndian;
       if (p.attrType == GX_INDEX8 || p.attrType == GX_INDEX16) {
-        const uint32_t index =
-            p.attrType == GX_INDEX8 ? *s : read_val<uint16_t>(s, bigEndian);
+        uint32_t index = p.attrType == GX_INDEX8 ? *s : read_val<uint16_t>(s, bigEndian);
         if (i == GX_VA_POS) {
           posIndex = index;
         }
-        comps = static_cast<const uint8_t*>(p.array->data) + static_cast<size_t>(index) * p.array->stride;
-        compBe = !p.array->le;
+        if (!p.hasArray) {
+          // The stream indexes an attribute that has no backing array - either
+          // never set, or set to (nullptr, 0) the way J3DShape does for every
+          // attribute a model lacks. Read defined zeros rather than form an
+          // address off a null base. Not observed; if it ever fires, the pairing
+          // of vtxDesc and the array set is what to look at.
+          warn_once(0x2300u | i, "vertex: indexed attribute has no backing array; reading zeros");
+          comps = kZeroComps;
+        } else {
+          // The index is an untrusted u8/u16 straight off the FIFO and this is
+          // the only place its address is formed. Clamping keeps the mesh on
+          // screen and localised - the bound can be conservative (see maxIndex) -
+          // while the warn turns what used to be a silent read of adjacent host
+          // memory into an answer a log can give. Not observed firing.
+          // 2026-08-16.
+          if (index > p.maxIndex) {
+            warn_once(0x2200u | i, "vertex: array index past the attribute array; clamped to 0");
+            index = 0;
+          }
+          comps = static_cast<const uint8_t*>(p.array->data) + static_cast<size_t>(index) * p.array->stride;
+          compBe = !p.array->le;
+        }
       }
 
       switch (i) {
@@ -366,19 +420,37 @@ bool decode_draw(GXVtxFmt fmt, uint16_t vtxCount, const uint8_t* data, uint32_t 
     }
 
     if (out.skinned) {
-      const auto* recs = reinterpret_cast<const InfluenceRec*>(g_skin.influences) +
-                         static_cast<size_t>(posIndex) * g_skin.influenceCount;
       float weights[3] = {0.f, 0.f, 0.f};
       uint32_t indices = 0;
-      for (uint32_t k = 0; k < g_skin.influenceCount; ++k) {
-        uint32_t bone = recs[k].bone;
-        if (bone > 255) {
-          warn_once(0x3002, "skin bone index > 255");
-          bone = 255;
-        }
-        indices |= bone << (k * 8);
-        if (k < out.weightCount) {
-          weights[k] = recs[k].weight;
+      // The influence table's length arrives with the skinning bracket
+      // (GX_AURORA_SET_SKINNING carries vtxCount) and was stored and never read.
+      // The bracket persists until GX_AURORA_CLEAR_SKINNING, so an indexed draw
+      // issued inside it against a larger position array would read past the end
+      // of a host buffer the game owns. Structurally the bracket spans one shape
+      // and the table is sized from that same shape, so this is hardening, not an
+      // observed failure. 2026-08-16.
+      //
+      // What the fallback actually produces, which is what the warning says: weights
+      // and indices are left at their initialisers, so under D3DVBF_nWEIGHTS the
+      // implicit last weight is 1 - sum(stored) = 1.0 and its blend-index byte is 0.
+      // The vertex is therefore bound rigidly to palette matrix 0 - g_cache.world[0],
+      // some arbitrary bone - not left unweighted on the model's base transform. On
+      // screen that is a vertex dragged to one bone, which is what to look for.
+      if (posIndex >= g_skin.vtxCount) {
+        warn_once(0x3003, "skinning: position index past the influence table; vertex bound rigidly to palette matrix 0");
+      } else {
+        const auto* recs = reinterpret_cast<const InfluenceRec*>(g_skin.influences) +
+                           static_cast<size_t>(posIndex) * g_skin.influenceCount;
+        for (uint32_t k = 0; k < g_skin.influenceCount; ++k) {
+          uint32_t bone = recs[k].bone;
+          if (bone > 255) {
+            warn_once(0x3002, "skin bone index > 255");
+            bone = 255;
+          }
+          indices |= bone << (k * 8);
+          if (k < out.weightCount) {
+            weights[k] = recs[k].weight;
+          }
         }
       }
       if (out.weightCount > 0) {

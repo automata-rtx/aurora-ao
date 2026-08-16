@@ -308,10 +308,19 @@ state was authored by hand and shipped in the model files.
   long name was cut a second time, silently, in `command_processor`. The game now
   formats into exactly 48 and marks a cut name with a trailing `~`. A `grp=`
   ending in `~` is a truncated name, not a different material.
-- Each push allocates a `std::string` in `read_string` while draining the FIFO —
-  one per material per frame. That is the whole reason this is a switch. The
-  `gx.hpp` comment claiming the label costs no allocation was wrong about the
-  push, right about the mirror, and is corrected.
+- Each push allocated a `std::string` in `read_string` while draining the FIFO —
+  one per material per frame. The `gx.hpp` comment claiming the label costs no
+  allocation was wrong about the push, right about the mirror, and is corrected.
+  **Superseded 2026-08-16:** the read is now `read_string_view` and the
+  `std::string` is built only inside `#if defined(AURORA_GFX_DEBUG_GROUPS)`,
+  because its only consumer — `gfx::push_debug_group` — has an empty body
+  otherwise, while `grp=` is served entirely by the fixed-size mirror. So a
+  release build no longer allocates for this; a Debug build (or one configured
+  `-DDUSK_GFX_DEBUG_GROUPS=ON`) still does, and genuinely consumes it. It remains
+  a switch: the game-side `snprintf`, the push/pop FIFO writes per material per
+  frame and the 48-byte mirror `memcpy` are all unchanged and none of them has
+  been measured. Syntax-checked in the MinGW harness in the NDEBUG and non-NDEBUG
+  configurations; **not** measured, **not** tested in game.
 
 **Deliberately not done.** No name reaches Remix, no side channel was designed,
 no water/sky/mist classification was added. The transport question is open **on
@@ -327,7 +336,9 @@ another way.
 Regression signature: with `DUSK_MAT_LABELS=1`, `matrep.sum` lines carry a `grp=`
 that is a material name rather than `-`; names cut mid-word *without* a trailing
 `~` mean the buffer sizes have drifted apart again; a frame-rate drop with it on
-is the per-frame allocation, which is expected and is why it is a switch.
+is the per-material FIFO push/pop and formatting, which is expected and is why it
+is a switch. (Until 2026-08-16 that sentence read "the per-frame allocation";
+the allocation is gone from release builds, the rest of the cost is not.)
 
 ### 3.33 — water rebased onto the current side band, and the allocation is checked (2026-08-11)
 

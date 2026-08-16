@@ -314,6 +314,15 @@ def check_aurora_opcode_registry() -> None:
     # ends with "Next free: 0x00NN", and treating a bare value anywhere in the
     # comment as an entry would let the very next opcode taken pass unlisted -
     # precisely the case this check exists for.
+    #
+    # Coverage is by NUMBER only. A `if name in body: continue` shortcut used to
+    # sit in the loop below, so a define merely *named* anywhere in the registry
+    # prose counted as registered - and 0x0058 walked through it on 2026-08-14,
+    # named in the "Next free" sentence but absent from the Allocated list, with
+    # the check reporting green. Removed 2026-08-16. Consequence, which is the
+    # intended behaviour rather than a side effect: the Reserved block is excluded
+    # from this scan, so a branch landing one of 0x0054-0x0057 now fails until it
+    # moves its number into the Allocated list. The Reserved prose says so.
     allocated = re.search(r"Allocated:(.*?)(?:\n\s*\*\s*\n|Reserved)", body, re.S)
     alloc_text = allocated.group(1) if allocated else ""
     ranges = [
@@ -326,8 +335,6 @@ def check_aurora_opcode_registry() -> None:
     }
 
     for name, value in sorted(defines.items(), key=lambda kv: kv[1]):
-        if name in body:
-            continue
         if value in singles or any(lo <= value <= hi for lo, hi in ranges):
             continue
         fail(

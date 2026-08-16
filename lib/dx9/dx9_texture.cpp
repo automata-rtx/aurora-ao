@@ -6,6 +6,7 @@
 #include "../gfx/texture_replacement.hpp"
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 #include <absl/hash/hash.h>
 
 #include <algorithm>
@@ -226,6 +227,51 @@ absl::flat_hash_map<const void*, CopyDest> s_copyTargets;
 // Offscreen render targets cached by size (like the wgpu offscreen cache).
 absl::flat_hash_map<uint64_t, OffscreenTarget> s_offscreenTargets;
 
+// Render-target allocation failures, reported once per distinct size.
+//
+// Both allocators below are reached from the FIFO drain: the copy path runs
+// every frame (the bloom chain copies into the same destination at two sizes
+// every frame - see CopyDest above and docs/dx9/progress.md §3.5), and the
+// offscreen path runs every frame in a scene that uses an offscreen pass -
+// inferred from its call site, not measured. D3DPOOL_DEFAULT render targets are
+// exactly what fails under VRAM pressure, the condition in which an uncapped
+// log is least affordable. Only the *logging* is memoized: the allocation is
+// still retried every call, so a target that succeeds once the driver frees
+// memory still appears. 2026-08-16.
+//
+// Deliberately NOT warn_once's s_warned set. That one prints
+// "dx9: unsupported: ..." and its keys are the triage list of unsupported GX
+// features (docs/dx9/unsupported-effects.md, where "the number of distinct keys
+// per reason is the useful signal"); a driver allocation failure is not one.
+// Keys are (tag << 48) | (width << 16) | height - disjoint fields, so the tag
+// cannot alias into the dimensions.
+//
+// Re-armed by texture_cache_release_default_pool(), which is what runs ahead of
+// a device Reset and at shutdown: the targets these keys describe are destroyed
+// there, so the same size failing again after a Reset is a new failure and is
+// reported again. A latch that never re-arms is a log that goes silent for the
+// rest of the run.
+constexpr uint64_t kCopyTargetWarnTag = 0xA1ull << 48;
+constexpr uint64_t kOffscreenTargetWarnTag = 0xA2ull << 48;
+constexpr uint32_t kTargetWarnMaxKeys = 16;
+absl::flat_hash_set<uint64_t> s_targetWarned;
+uint32_t s_targetWarnSuppressed = 0;
+
+bool target_warn_should_emit(uint64_t key) noexcept {
+  if (s_targetWarned.contains(key)) {
+    return false;
+  }
+  if (s_targetWarned.size() >= kTargetWarnMaxKeys) {
+    if (s_targetWarnSuppressed++ == 0) {
+      Log.warn("dx9: render-target failures cap={} distinct sizes reached - further sizes not reported",
+               kTargetWarnMaxKeys);
+    }
+    return false;
+  }
+  s_targetWarned.insert(key);
+  return true;
+}
+
 void release_offscreen_targets() noexcept {
   for (auto& [_, t] : s_offscreenTargets) {
     if (t.depth != nullptr) {
@@ -403,6 +449,11 @@ void texture_cache_release_default_pool() noexcept {
   }
   s_copyTargets.clear();
   release_offscreen_targets();
+  // Re-arm the render-target failure log along with the targets it describes. Every
+  // key in it names a size that no longer has an allocation, so the next failure at
+  // that size is a fresh one rather than a repeat.
+  s_targetWarned.clear();
+  s_targetWarnSuppressed = 0;
 }
 
 void texture_register_copy_placeholder(const void* dest) noexcept { s_copyDests[dest] = true; }
@@ -421,7 +472,10 @@ IDirect3DTexture9* texture_get_copy_target(const void* dest, uint32_t width, uin
   const HRESULT hr = g_dx9.dev->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
                                               D3DPOOL_DEFAULT, &tex, nullptr);
   if (FAILED(hr)) {
-    Log.warn("dx9: copy target {}x{} creation failed ({:#x})", width, height, static_cast<uint32_t>(hr));
+    if (target_warn_should_emit(kCopyTargetWarnTag | static_cast<uint64_t>(width) << 16 | height)) {
+      Log.warn("dx9: copy target {}x{} creation failed ({:#x}) - reported once per size, still retried every frame",
+               width, height, static_cast<uint32_t>(hr));
+    }
     if (entry.sizes.empty()) {
       s_copyTargets.erase(dest);
     }
@@ -467,7 +521,13 @@ OffscreenTarget* texture_get_offscreen(uint32_t width, uint32_t height) noexcept
     target.height = height;
     return &target;
   } while (false);
-  Log.warn("dx9: offscreen target {}x{} creation failed", width, height);
+  if (target_warn_should_emit(kOffscreenTargetWarnTag | static_cast<uint64_t>(width) << 16 | height)) {
+    Log.warn("dx9: offscreen target {}x{} creation failed - reported once per size, still retried every frame", width,
+             height);
+  }
+  // The erase below is required, not incidental: colorSurface/color are
+  // Release()d without being nulled, so leaving the entry would hand out a
+  // dangling target on the next call. It memoizes nothing.
   if (target.colorSurface != nullptr) {
     target.colorSurface->Release();
   }

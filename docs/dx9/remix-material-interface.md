@@ -663,13 +663,24 @@ descriptive romaji suffix: `MA00_Gake` (cliff), `MA00_Kusa` — 草 *kusa*, gras
 have been trying to infer from TEV state was authored, by hand, and is sitting in
 the model files.
 
-**It is off by default and it needs turning on for a session.** Cost: aurora's
-command processor builds a `std::string` per push while draining the FIFO, so
-labelling every material is one heap allocation per material per frame. The game
-compiles the push into release builds and gates it at runtime, so no rebuild is
-needed — `DUSK_MAT_LABELS=1` in the environment. A build configured with
-`-DDUSK_GFX_DEBUG_GROUPS=ON` (the default in Debug) has it on without the
-variable.
+**It is off by default and it needs turning on for a session.** Cost: the game
+formats the name and aurora writes a debug-group push and pop per material per
+frame, plus a 48-byte copy into the mirror the backend reads. None of that has
+been measured. The game compiles the push into release builds and gates it at
+runtime, so no rebuild is needed — `DUSK_MAT_LABELS=1` in the environment. A
+build configured with `-DDUSK_GFX_DEBUG_GROUPS=ON` (the default in Debug) has it
+on without the variable.
+
+Until 2026-08-16 this paragraph also charged one heap allocation per material per
+frame: the command processor built a `std::string` per push while draining the
+FIFO. It now reads the label as a `std::string_view` into the live FIFO buffer
+and constructs the `std::string` only inside
+`#if defined(AURORA_GFX_DEBUG_GROUPS)`, since that is the only configuration in
+which `gfx::push_debug_group` has a body — outside it the string had no consumer
+at all, `grp=` being served by the mirror. The allocation therefore survives only
+in Debug / `DUSK_GFX_DEBUG_GROUPS` builds, where it is genuinely used. **The view
+is valid only for the duration of the FIFO handler**, which is why the copy into
+the mirror sits immediately next to the read.
 
 Truncation: `GXState::MaxDebugGroupLabel` is 48, and `"Mat:"` leaves 43
 characters of name. The game formats into a buffer of exactly 48 so both sides

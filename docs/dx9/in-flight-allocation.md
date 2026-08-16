@@ -353,8 +353,28 @@ message names the right thing:
 | side channels, **row → write** | a merge drops the code that claimed a channel while §2 keeps describing it | blanking the texrep writes with §2 intact |
 | `Power` included | the field the old check could not see at all | the water merge, which it now fails |
 | duplicate subcommand | two `GX_AURORA_*` defines sharing a value | pointing `SET_VIEW_MTX` at `0x0053` |
-| unregistered subcommand | a number taken without adding it to the registry | adding `0x0058` and `0x0054` unlisted |
+| unregistered subcommand | a number taken without adding it to the registry | adding `0x0058` and `0x0054` unlisted — see the note below, this only became true on 2026-08-16 |
 | water packing | `GXAurora.h` and the documented formula disagreeing, or a role/layer/tag value outgrowing its decimal slot | changing the multiplier; raising `LAYER_MAX` to 12 |
+
+**The unregistered-subcommand row was not true of the tree until 2026-08-16, and
+the way it was untrue is worth keeping.** The check's loop began
+`if name in body: continue` — a define merely *named* anywhere in the registry
+prose counted as registered, without its number ever reaching the `Allocated:`
+list. `0x0058` was taken on 2026-08-14, named only in the "Next free" sentence
+two lines above the list, and the check reported green: the machine backstop was
+off for the most recent allocation while this table said it had been verified
+against that very number. The number is now in the `Allocated:` list and the name
+shortcut is gone, so coverage is by number only — confirmed by removing `0x0058`
+from the list again and watching the check name it.
+
+That removal has a deliberate consequence for the three reserved numbers. The
+`Allocated:(.*?)Reserved` regex excludes the `Reserved` block on purpose, so a
+branch landing `0x0054`–`0x0057` fails the check until it moves its number up
+into `Allocated:` — which is what "take a number by adding it to that registry"
+has always meant. The Reserved prose in `GXAurora.h` now says so explicitly, so
+the failure arrives with its own instruction. Do **not** answer it by widening
+the scan to include the `Reserved` block: that re-admits reserved-but-unlanded
+numbers as coverage, which is the same leniency in a new place.
 
 **What none of it catches, and it is the case this audit was about:** a channel
 that keeps being written with a **different meaning**. Both directions of the

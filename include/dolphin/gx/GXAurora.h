@@ -220,10 +220,14 @@ extern "C" {
  * That is not hypothetical. On 2026-08-11 four unmerged branches had each taken 0x0053.
  *
  * Allocated:  0x0001-0x0003, 0x0010, 0x0020-0x0022, 0x0030-0x003A,
- *             0x0040-0x0041, 0x0050-0x0053, 0x1000
+ *             0x0040-0x0041, 0x0050-0x0053, 0x0058, 0x1000
  *
  * Reserved for work in flight - do not take these, and do not assume a branch still wants
- * one without looking. Each branch takes its assigned number when it rebases:
+ * one without looking. Each branch takes its assigned number when it rebases - and when it
+ * does, MOVE the number out of this Reserved block and into the Allocated list above.
+ * scripts/check_invariants.py counts only the Allocated list, deliberately: a number that
+ * is merely reserved is not yet taken, so leaving it here after the define lands fails the
+ * check. That is the intended failure, and this sentence is the instruction it needs.
  *
  *     0x0054  GX_AURORA_SET_MODEL_IDENTITY    claude/remix-texture-geometry-issues-occh2f
  *     0x0055  GX_AURORA_CLEAR_MODEL_IDENTITY  (same branch - it needs two)

@@ -257,7 +257,7 @@ threshold to move and that is invisible if only acceptances are printed.
 dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
                selfLit=1 authored=1 ramp=1 rampOther=fffe63 tFactor=ffff0000
                glowChroma=0.5 glowLuma=0.7 src=albedo
-               verdict=emissive applied=1
+               verdict=emissive
 ```
 
 | Field | Means |
@@ -272,7 +272,14 @@ dusklight.emis mat=… tex0hash=… color=1,0.42,0 score=0.75 luma=0.55 chroma=1
 | `ramp` / `rampOther` / `tFactor` | the §10 ramp as it reached the fork. Under `src=albedo` these decide what the surface glows, so they are printed here rather than left to be joined by hand from two logs |
 | `glowChroma` / `glowLuma` / `src` | the two glow constants and the colour source, printed so an old log can be read without knowing what they were set to. The two are **or**'d: an authored glow is a strong colour or it is near-white-hot |
 | `verdict` | `emissive` or `rejected` |
-| `applied` | 0 when the verdict was `emissive` but `rtx.dusklight.emissive.enable` is off |
+
+**`applied=` is gone as of 2026-08-16, and its absence is not a broken log.**
+It meant "the rule accepted this surface but `rtx.dusklight.emissive.enable` is
+off". That option now gates the whole classification path rather than just the
+patch (`rtx_instance_manager.cpp`, the `DusklightEmissive::enable() &&
+isCandidate(...)` branch), so with the feature off **no `dusklight.emis` line is
+written at all** and the field could only ever have printed the same thing
+`verdict=` already says. It was removed rather than left printing a constant.
 
 **Aurora's half of the same decision is `selfLit=` / `emisScore=` on
 `matrep.sum`.** A surface with no `dusklight.emis` line at all was never
