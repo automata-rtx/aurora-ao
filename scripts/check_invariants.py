@@ -206,18 +206,19 @@ def check_side_channel_map() -> None:
             "side-channels",
             f"remix-material-interface.md §2 has a row for D3DMATERIAL9::{name(field, chan)} but "
             f"set_remix_material does not write it - either a merge dropped the feature that "
-            f"claimed it, or the row is stale. See docs/dx9/in-flight-allocation.md",
+            f"claimed it, or the row is stale. See docs/dx9/remix-material-interface.md §2",
         )
 
 
 def check_draw_stats_period() -> None:
-    """The dx9.draws reporting period is stated in the code and in four documents.
+    """The dx9.draws reporting period is stated in the code and quoted in the docs.
 
-    kDrawStatsPeriod is the only place it is true; material-report.md,
-    architecture-notes.md, CLAUDE.md and dusklight's playbook all quote it,
-    two of them inside a worked example line (`frames=600`) that a reader will
+    kDrawStatsPeriod is the only place it is true; the three files listed below
+    quote it, some inside a worked example line (`frames=600`) that a reader will
     take as literal output. Changing the constant without those is the ordinary
-    way a log example stops matching the log.
+    way a log example stops matching the log. Note this fails only on a
+    DISAGREEING number - it never requires one to be stated, so cutting a mention
+    is always safe.
     """
     global checks_run
     checks_run += 1
@@ -233,7 +234,7 @@ def check_draw_stats_period() -> None:
         return
     period = m.group(1)
 
-    for rel in ["docs/dx9/material-report.md", "docs/dx9/architecture-notes.md", "CLAUDE.md"]:
+    for rel in ["docs/dx9/material-report.md", "docs/dx9/design-decisions.md", "CLAUDE.md"]:
         doc = read(rel)
         if doc is None:
             continue
@@ -300,7 +301,7 @@ def check_aurora_opcode_registry() -> None:
                 "opcodes",
                 f"{', '.join(sorted(names))} all use subcommand {value:#06x} - the else-if "
                 f"dispatch in command_processor.cpp does not conflict on this, so the losing "
-                f"arm silently desyncs the FIFO. See docs/dx9/in-flight-allocation.md",
+                f"arm silently desyncs the FIFO. See the registry in include/dolphin/gx/GXAurora.h",
             )
 
     registry = re.search(r"Aurora subcommand registry(.*?)\*/", hdr, re.S)
@@ -534,7 +535,7 @@ def main() -> int:
         print(
             "\nThese are facts stated in more than one place that no longer agree. "
             "A clean git merge does not mean they do - see CLAUDE.md, "
-            "'Merges that succeed and are still wrong'."
+            "'A clean git merge is not a correct merge'."
         )
         return 1
 

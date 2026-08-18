@@ -231,7 +231,7 @@ absl::flat_hash_map<uint64_t, OffscreenTarget> s_offscreenTargets;
 //
 // Both allocators below are reached from the FIFO drain: the copy path runs
 // every frame (the bloom chain copies into the same destination at two sizes
-// every frame - see CopyDest above and docs/dx9/progress.md §3.5), and the
+// every frame - see CopyDest above and docs/dx9/design-decisions.md §Textures), and the
 // offscreen path runs every frame in a scene that uses an offscreen pass -
 // inferred from its call site, not measured. D3DPOOL_DEFAULT render targets are
 // exactly what fails under VRAM pressure, the condition in which an uncapped

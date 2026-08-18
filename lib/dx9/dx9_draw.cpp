@@ -179,7 +179,7 @@ void apply_alpha_compare() noexcept {
 // while TP sets fog per object - so which draw is submitted first decides the whole frame.
 // The fork instead drives fog, sky and sky-light from one medium built from the game's
 // kankyo state (rtx.dusklight.env.*); see dxvk-remix documentation/DusklightAtmosphere.md
-// §2.5 and §5. What is emitted here stays because it is cheap and correct per draw.
+// §8.3 and §5. What is emitted here stays because it is cheap and correct per draw.
 //
 // GX range adjust (GXSetFogRangeAdj) is not forwarded: the composite already fogs by
 // radial distance, which is what range adjust approximates. Backwards (REVEXP) fog is not

@@ -1,404 +1,162 @@
 # Claude session notes — aurora-ao
 
-## Owner's environment: interactive approval prompts are BROKEN
-
-Any tool call that pops an interactive approval/authorization prompt for the
-owner is bugged across ALL of their Claude Code sessions — the prompt always
-resolves as "no approval given" (e.g. MCP calls returning
-`MCP error -32003: MCP tool call requires approval`, or the `add_repo`
-authorization flow looping back to "there was no approval").
-
-**Never rely on a tool that requires interactive approval.** Route around it:
-
-- Reading other public repos (e.g. dxvk-remix for RTX Remix research): fetch
-  files via `raw.githubusercontent.com` instead of the `add_repo` flow.
-- Scheduling / reminders (`send_later` etc.): use a background `Monitor` /
-  background Bash watcher instead.
-- Questions for the owner: ask in plain chat text, not interactive pickers.
+**Interactive approval prompts are broken for the owner** — they always resolve
+as "no approval given". Read other public repos via `raw.githubusercontent.com`
+rather than `add_repo`, use a background watcher rather than `send_later`, and
+ask questions in plain chat.
 
 ## Read this first if you have no context
 
-This repo is the **GX→D3D9 fixed-function backend** for a three-repo project.
-Start at `docs/dx9/README.md`, then `docs/dx9/progress.md` §"How to resume".
+This repo is the **GX→D3D9 fixed-function backend** (`lib/dx9/`) for a three-repo
+project. Start at `docs/dx9/README.md`. `automata-rtx/dusklight-ao` is the game
+and vendors this repo at `extern/aurora` (`docs/kankyo-remix.md` for the design,
+`docs/remix-open-issues.md` for what is broken, `docs/japanese-naming-remix.md`
+for reading its symbol names); `automata-rtx/dxvk-remix` is the RTX Remix fork
+(`documentation/Dusklight*.md`).
 
-**If the task involves materials, colour, or anything a surface looks like under
+**If the task involves materials, colour, or what a surface looks like under
 Remix, read `docs/dx9/remix-material-interface.md` before doing anything else.**
 It is the most misunderstood system in the project — three sessions produced
 three incompatible explanations of one defect and shipped a fix that did nothing.
 
-If the task is about the *look* of the game under RTX Remix rather than about
-the D3D9 backend itself, the design work lives in the other two repos —
-`dusklight-ao/docs/kankyo-remix.md` is the entry point.
+| This repo's documents | Holds |
+| :-- | :-- |
+| `docs/dx9/README.md` | the router: mission, document map, how to resume, build and run, verification vocabulary |
+| `docs/dx9/design-decisions.md` | why the backend is shaped the way it is, each decision with the symptom that forced it |
+| `docs/dx9/remix-material-interface.md` | how a GX material becomes a Remix material — §0 is canonical, §2's field map is CI-parsed |
+| `docs/dx9/material-report.md` | the material report log: every field, and how to read it |
+| `docs/dx9/gx-to-d3d9-mapping.md` | the normative translation: conventions, gotchas, where it is deliberately lossy |
+| `docs/dx9/unsupported-effects.md` | what the backend cannot express, as a work list rather than a list of losses |
+| `docs/dx9/texture-replacements.md` | HD packs: the never-upload trap and the two substitution sites |
 
-| Repo | Role | Its docs |
-| :-- | :-- | :-- |
-| `automata-rtx/aurora-ao` | **this repo** — GX→D3D9 backend (`lib/dx9/`) | `docs/dx9/` |
-| `automata-rtx/dusklight-ao` | the game; vendors this repo at `extern/aurora` | `docs/kankyo-remix.md` (design), `docs/effect-lights.md` (how fire and glow get lights), `docs/remix-open-issues.md` (what is broken), `docs/remix-test-playbook.md` (how to test), `docs/dx9-fixed-function.md` (setup), `docs/japanese-naming.md` (how to read the game's symbol names) |
-| `automata-rtx/dxvk-remix` | the RTX Remix fork | `documentation/Dusklight*.md` |
+Status claims live in `dusklight-ao/docs/remix-open-issues.md`, not here.
+
+## What the D3D9 renderer is for
+
+**The raw fixed-function D3D9 image is never shown to a player.** It exists so
+Remix's DX9→Vulkan translation picks the scene up for free. **Remix's renderer is
+the product; D3D9 is the feed** — so where D3D9 cannot carry something
+faithfully, implement it in Remix rather than contorting D3D9. All three repos
+are ours, and "raw D3D9 stays correct" is not a design goal. "Remix cannot
+express X" is a statement about *stock* Remix; check whether the constraint is
+real before designing around it. The two-colour ramp sat on the unsupported list
+for that reason alone.
+
+**Two exceptions must still rasterize:** the **HUD** (Remix rasterizes UI draws)
+and **alpha** (Remix reads the stage's alpha for opacity and the alpha test).
+Full statement: `docs/dx9/remix-material-interface.md` §0.
+
+## Five rules, each learned expensively
+
+1. **Translate, don't tag.** A texture tag is wrong somewhere by construction; a
+   per-draw translation of the game's own state is right everywhere.
+2. **A question we would have to ask the owner is a defect in the logging.** They
+   play, they send a log, we know. Bounded, capped, self-describing.
+3. **Do not write inference as finding.** "Unknown" beats confident and wrong.
+4. **A fix that cannot be observed is a guess.** Instrument first; state the
+   regression signature.
+5. **Say what was verified.** "Compiles", "CI green" and "tested in game" are
+   three different claims.
 
 ## The game's symbols are named in Japanese
 
-This repo's own code is ordinary English `camelCase`, and GX names come from
-Nintendo's SDK — but **the game symbols these documents cite are romanized
-Japanese**, because Twilight Princess was written by a Japanese team and the
-decompilation preserves its names. `kankyo` (環境) is *environment*;
-`dKyr_drawRain` is in `d_kankyo_rain.cpp` because rain is part of the
-environment system, not because `dKyr` means anything in English.
+This repo's own code is English `camelCase` and GX names come from Nintendo's
+SDK, but **the game symbols these documents cite are romanized Japanese** —
+`kankyo` (環境) is *environment*, and `wether` is the weather system, not a typo
+to fix. Search in both romanizations (the tree mixes kunrei-shiki and Hepburn for
+one word, so an empty grep proves nothing) and `export LC_ALL=C.UTF-8` first, or
+`grep -P` on kana silently matches nothing. Reading a material name usually
+settles a classification before any measurement does. Full reference:
+`dusklight-ao/docs/japanese-naming-remix.md`.
 
-Two consequences when you go reading game-side to explain a draw:
+## Branches — all three repos use the same structure
 
-- **Search in both romanizations.** The tree mixes kunrei-shiki (`si`, `tu`,
-  `ti`, `sya`) with Hepburn (`shi`, `tsu`, `chi`, `sha`), sometimes for the same
-  word, so an empty grep is not evidence a thing does not exist.
-- **Some names are English spelled by ear** — `wether` is the weather system,
-  `dKyd_lightSchejule` is the light schedule. Never "correct" one.
-- **`export LC_ALL=C.UTF-8` before grepping the game tree for Japanese.** Nearly
-  500 of its files carry literal kana/kanji — the original team's own debug
-  labels, which settle field meanings that the romaji alone leaves ambiguous.
-  Under the default `POSIX` locale `grep -P` matches **nothing**, silently.
+- **`Fixed-Function-dev` is the working branch.** All development commits land
+  there, in every repo.
+- `Fixed-Function` is integration, advancing only at checkpoints that are both
+  CI-green and tested in game. Being behind is intended, not drift to fix.
 
-Full reference: `dusklight-ao/docs/japanese-naming.md` (in a session that has
-the game checked out, that is one directory up; it is also the canonical home
-for the glossary, which is mechanically checked against the game tree).
+**Push only your session branch** — the owner merges. If a session branch is
+about to be deleted and its work is not merged, **say so and stop** rather than
+mirroring it. Before any deletion,
+`git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be `0`; a
+non-zero count is the normal state between milestones.
+**`claude/thin-gbuffer-authored-normals-wgqupt`** is unrelated, unmerged work —
+do not delete it, do not merge it into this lineage without being asked.
 
-## Branches — ALL THREE repos use the same structure
-
-- **`Fixed-Function-dev` — the working branch. ALL development commits land
-  here, in every one of the three repos.**
-- `Fixed-Function` — integration. Advances only by merging `Fixed-Function-dev`
-  at checkpoints that are **both CI-green and tested in game by the owner**.
-  It is deliberately behind the dev branch; that is not drift to "fix".
-- Base: this lineage descends from aurora `main`; when `main` gains commits,
-  backport by merging/cherry-picking **into** `Fixed-Function-dev`.
-
-**Push only your session branch.** A remote session is usually configured to
-push to a generated `claude/<something>-<hash>` branch. Push there and stop —
-**the owner merges to `Fixed-Function-dev` themselves**, at milestones they
-choose. (An auto-mirror rule existed until 2026-07-29 and was revoked.)
-
-```
-git push -u origin <session-branch>        # yes
-git push origin HEAD:Fixed-Function-dev    # NO - the owner does this
-```
-
-If a session branch is about to be deleted and its work is not yet merged,
-**say so and stop** rather than mirroring it.
-
-**Before anyone deletes a branch, verify it is contained:**
-`git rev-list --count origin/Fixed-Function-dev..origin/<branch>` must be `0`.
-A non-zero count is the *normal* state between milestones, so this check is not
-a formality — it is the only thing between a routine cleanup and lost work.
-
-**`claude/thin-gbuffer-authored-normals-wgqupt`** is **unrelated, unmerged
-work** — in neither `main` nor `Fixed-Function-dev`. Do not delete it and do
-not merge it into this lineage without being asked.
-
-## What the D3D9 renderer is for — read this before proposing a fix
-
-**The raw fixed-function D3D9 image is never shown to a player.** It exists so
-Remix's DX9→Vulkan translation picks the scene up automatically — geometry,
-transforms, textures, most of a frame, for free. **Remix's renderer is the
-product; D3D9 is the feed.**
-
-So:
-
-- **Fixed-function limits are not the ceiling.** Where the D3D9 stream cannot
-  carry something faithfully enough to reach Remix, implement it **in Remix** —
-  Remix API or a fork change — rather than contorting D3D9 to approximate it.
-  All three repos are ours.
-- **"Raw D3D9 stays correct" is not a design goal.** It is occasionally a handy
-  safety property, never a reason to reject an approach. Documents written
-  before 2026-08-04 sometimes treat it as a requirement; they are wrong and are
-  being corrected as they are touched.
-
-**Two exceptions still have to rasterize correctly:** the **HUD** (Remix
-rasterizes UI draws rather than path-tracing them) and **alpha** (Remix reads
-the stage's alpha to build opacity and the alpha test).
-
-Full statement: `aurora-ao/docs/dx9/remix-material-interface.md` §0.
-
-## How this project works — read before proposing a fix
-
-Five rules. They exist because each was learned the expensive way, and following
-them is worth more than any individual fix.
-
-### 1. Translate, don't tag
-
-Every Remix project the world over works by hashing textures and hand-authoring
-replacements, because the game is a closed box. **All three of our repos are
-ours.** We can read the game's intent at the source and hand it to the renderer
-directly.
-
-So the default answer to "how do we make Remix understand X" is *translate the
-game state*, not *tag the asset*. Tagging gives one answer per texture; this
-game reuses textures across contexts constantly, so a tag is wrong somewhere
-almost by construction. Translation is per-draw and is right everywhere.
-
-### 2. A question we would have to ask the owner is a defect in the logging
-
-The owner should not be the diagnostic instrument. Asking them to describe a
-colour, count an artifact, or judge whether something looks "too dark" produces
-answers that are honest and unusable — and it wastes a scarce test window.
-
-**The target loop is: they play, they send a log, we know.** If a question
-cannot be answered from a log, the correct response is to add the log line, not
-to ask the question. Design instrumentation before designing the fix.
-
-Corollary: **logs must be bounded and self-describing.** One line per distinct
-thing, capped, with a truncation notice when the cap is hit, and enum names
-spelled out so a reader without the source can follow. A log nobody can read is
-the same as no log; a log that fills a disk is worse.
-
-### 3. Do not write inference as finding
-
-This project has three times recorded a plausible mechanism as a verified cause.
-One of those shipped and turned out to be a no-op, and the documents kept saying
-"FIXED" for a week.
-
-State what you read, cite where, and mark inference as inference. A document
-that says "unknown" is more valuable than one that says something confident and
-wrong, because the second one stops the next person looking.
-
-### 4. A fix that cannot be observed is a guess
-
-Before shipping a change to a system with no instrumentation, add the
-instrumentation. A change that alters behaviour *and* reports on itself is
-fine — bundling saves a test window — but a change that alters behaviour and
-stays silent cannot be evaluated except by looking at pixels, which is how this
-project lost three rounds.
-
-Say plainly what the regression signature of a change is, so it can be
-recognised rather than discovered.
-
-### 5. Say what was verified and what was not
-
-"Compiles" and "is correct" are different claims. So are "CI green" and "tested
-in game". Every doc entry and every hand-off should make clear which one it is.
-There is no penalty here for saying a thing is untested; there is a real cost to
-implying it was tested.
-
-## Submodule pairing
-
-This repo is vendored into dusklight-ao as `extern/aurora`. After pushing
-aurora commits, bump the pin from the dusklight root:
-
-```
-git -C extern/aurora fetch origin && git -C extern/aurora checkout <sha>
-git add extern/aurora
-git submodule status           # verify before committing
-```
-
-Keep the branches paired: dusklight `Fixed-Function-dev` pins aurora
-`Fixed-Function-dev` commits.
-
-**Aurora is always merged first.** Whenever a merge carries a submodule bump,
-merge aurora into the target branch before dusklight, so the pinned SHA is
-reachable from that branch rather than only from a session branch that may later
-be deleted. This applies to `Fixed-Function-dev` and `Fixed-Function` alike — a
-dusklight branch pinning a SHA that lives only on a `claude/*` branch still
-builds today and breaks the moment that branch is cleaned up.
-
-## Merges that succeed and are still wrong
-
-**A clean `git merge` is not a correct merge, and on this project that is not a
-theoretical worry.** Several features are developed on parallel branches that
-edit the same documents, and git only compares *lines*. It cannot see that two
-branches have made the same sentence false.
-
-Two instances, both real:
-
-- **The protocol double-bump.** Two branches independently took protocol 6 → 7.
-  Git *did* conflict, on the same lines — and that made it worse, not better:
-  both sides said `7`, so the obvious resolution is to keep 7 and move on,
-  shipping two features that claim one version. The conflict was flagged; the
-  resolution was the trap.
-- **The side-channel map.** A feature claimed `D3DMATERIAL9::Ambient.g` and
-  `.b` and updated three of the four places that describe the struct. The
-  canonical table in `docs/dx9/remix-material-interface.md` §2 merged cleanly
-  and went on advertising both channels as spare — so the next feature to want
-  one would have taken a channel already in use, surfacing as a material bug
-  nowhere near either change.
-
-**So, after any merge — and before pushing one:**
-
-```
-python3 scripts/check_invariants.py
-```
-
-It checks the facts this repo states in more than one place: the `matrep.sum`
-format string against `material-report.md`, the channels `set_remix_material`
-writes against the §2 field map, the `dx9.draws` reporting period against the
-four documents that quote it (two inside worked example lines a reader will take
-as literal output), and leftover conflict markers. This repo has no
-CI of its own, so **dusklight-ao's `Invariants` workflow runs it against the
-pinned submodule** — but it is fast, so run it here too rather than finding out
-after a submodule bump.
-
-**Two shared resources are nearly exhausted.** Audited 2026-08-11, current state
-in `docs/dx9/in-flight-allocation.md`:
-
-- **The `D3DMATERIAL9` side band is closed to new features, and has been a
-  non-problem since 2026-08-14.** Water took `Power` on 2026-08-11 — all three of
-  its facts packed into it, specifically so that `Ambient.a` would survive.
-  `Ambient.a` is nominally the last field, with an unmerged claim from
-  `claude/dusklight-remix-transparency-e7l766` — **but do not take it, and do not
-  tell the next feature to pack.** The transport for a new per-draw fact is now a
-  flag word: `dusklightSetDrawMeta`, a versioned export on the fork's `d3d9.dll`,
-  fed by this repo's `GX_AURORA_SET_DUSKLIGHT_DRAW_META` (`0x0058`). **A new
-  per-draw fact is a new bit, not a new channel.** The scarcity was never a real
-  constraint — `D3DMATERIAL9` is fixed by the D3D9 API, but that boundary is not,
-  because this repo is the D3D9 caller and the fork is the D3D9 implementation and
-  both are ours. This bullet asserted the opposite until 2026-08-16.
-- **GX FIFO subcommand `0x0053` is water's**, and `0x0054`–`0x0057` are reserved
-  in the registry comment at the top of `include/dolphin/gx/GXAurora.h` for the
-  three branches that had also taken `0x0053`. Take a number by adding it to that
-  registry in the same commit.
-
-**These are now checked mechanically** (`check_invariants.py`, 7 checks): the
-side-channel map runs **both** directions and includes `Power`, duplicate
-subcommand numbers fail, an unregistered subcommand fails, the water packing
-in `GXAurora.h` is checked against the formula the documentation states, and
-every `Log.*` format string must be a literal (see the fmt `consteval` note
-under "Verifying a change without a Windows machine").
-
-**What it still cannot check, and therefore what a human has to:**
-
-- whether a "tested in game" claim is still true after the code under it changed
-- whether a document's *prose* still describes reality, as opposed to its
-  tables agreeing with the code
-- whether an unmerged branch is about to take the same channel or number —
-  nothing can see a branch that has not merged yet
-- a channel that keeps being written with a **different meaning**. Both
-  directions of the side-channel check pass and the field map reads as true.
-  This is what the water branch would have done to `Ambient.g`/`.b`; the only
-  defence is that a channel must be claimed in §2 in the same commit that writes
-  it, so the two changes are visible together
+**Submodule pairing.** After pushing aurora commits, bump the pin from the
+dusklight root (`git -C extern/aurora checkout <sha>` → `git add extern/aurora` →
+`git submodule status`). **Aurora is always merged first**, so the pinned SHA is
+reachable from the target branch rather than only from a session branch that may
+later be deleted.
 
 ## Verifying a change without a Windows machine
 
 ```
-scripts/check_syntax.sh        # needs: apt-get install g++-mingw-w64-x86-64 libfmt-dev libabsl-dev
-scripts/check_invariants.py
+scripts/check_syntax.sh      # needs g++-mingw-w64-x86-64, libfmt-dev, libabsl-dev
+scripts/check_invariants.py  # after any merge, before any push
 ```
 
-`check_syntax.sh` type-checks 7 translation units against **real** MinGW
-`<d3d9.h>`/`<windows.h>` and real repo headers, in **three** configs — d3d9-on,
-d3d9-off, and d3d9-on with `NDEBUG`. The second matters because every entry point
-has a no-op stub behind `#else` in `dx9.hpp`, and a signature change that misses
-the stub fails only there. The third was added on 2026-08-16 because
-`AURORA_GFX_DEBUG_GROUPS` is defined by `include/aurora/gfx.h` **only when
-`NDEBUG` is unset**, so code behind it was never checked in the configuration CI
-actually ships. Dawn, SDL3, Tracy and xxHash are shimmed in `scripts/syntax-harness/`.
+`check_syntax.sh` type-checks against **real** MinGW `<d3d9.h>`/`<windows.h>` and
+real repo headers, in **three** configs, each of which exists for a reason:
+
+- **d3d9-on** — the shipping path.
+- **d3d9-off** — every entry point has a no-op stub behind `#else` in `dx9.hpp`,
+  and a signature change that misses the stub fails only here.
+- **d3d9-on + NDEBUG** — `AURORA_GFX_DEBUG_GROUPS` is defined by
+  `include/aurora/gfx.h` **only when `NDEBUG` is unset**, so code behind it was
+  never checked in the configuration CI actually ships.
 
 **It is not a build.** It does not link, does not run, and does not validate
-format strings (the container's fmt is 9.x against aurora's 11.x — the shim says
-so). `lib/gx/gx.cpp` and `lib/gfx/common.cpp` reach Dawn proper and are not
-covered. "Syntax-checked" is the honest claim; "compiles" is dusklight's CI and
-"works" is the owner.
+format strings — the container's fmt is 9.x against aurora's 11.x.
+"Syntax-checked" is the honest claim; "compiles" is dusklight's CI and "works" is
+the owner. `lib/gx/gx.cpp` and `lib/gfx/common.cpp` reach Dawn proper and are not
+covered.
 
-**One consequence of that fmt gap has already cost a CI round, so it is now
-checked separately.** From fmt 10 the `format_string` constructor is
-`consteval`, so a `Log.*` format argument must be a constant expression — and
-the natural way to write a two-outcome notice, `Log.info(cond ? "a" : "b")`, is
-not one. MSVC rejects it as `error C7595: call to immediate function is not a
-constant expression`, naming the fmt header rather than the ternary. The harness
-cannot see it (its fmt predates the change) and this repo has no CI, so the
-first report came from dusklight's Windows job six minutes into a build, on
-2026-08-14, in `set_dusklight_draw_meta`'s resolution notice.
-`check_invariants.py` now requires every `Log.*` format string to be a literal
-and names the file and line. Macro bodies are exempt — in `ASSERT`/`FATAL` the
-literal is supplied at the expansion site, which is where `consteval` evaluates
-it. **The fix is always two calls, each with its own literal.**
+**One consequence of that fmt gap is checked separately.** From fmt 10 the
+`format_string` constructor is `consteval`, so a `Log.*` format argument must be
+a constant expression — and `Log.info(cond ? "a" : "b")` is not one. MSVC rejects
+it as `error C7595`, naming the fmt header rather than the ternary. **The fix is
+always two calls, each with its own literal.** `check_invariants.py` requires
+every `Log.*` format string to be a literal; macro bodies are exempt, since
+`ASSERT`/`FATAL` receive their literal at the expansion site.
 
-**When auditing documentation after a merge, re-derive the file list from the
-diff.** Auditing from memory is how the §2 table was missed twice: every gap
-found on the third pass was in a document that had not been edited, which is
-exactly the set memory does not surface.
+`check_invariants.py` checks the facts this repo states in more than one place —
+the `matrep.sum` fields against `material-report.md`, the channels
+`set_remix_material` writes against §2's field map (**both** directions), the
+`dx9.draws` period, the GX subcommand registry, conflict markers. This repo has
+no CI, so dusklight's `Invariants` workflow runs it against the pinned submodule;
+it is fast, so run it here rather than finding out after a submodule bump.
 
-## Verification
+**A clean `git merge` is not a correct merge.** No script can see whether a
+"tested in game" claim survived the change under it, whether prose still
+describes reality, whether an unmerged branch is about to take the same number,
+or — the hole neither direction of the side-channel check closes — a channel
+written with a **different meaning**. Two allocation registries, each argued at
+its own site rather than here: a new per-draw fact is a new **bit**, not a new
+`D3DMATERIAL9` channel
+(`dxvk-remix/src/dxvk/rtx_render/rtx_dusklight_drawmeta.h:27-50`; `0x0058` is
+that export's subcommand), and GX FIFO subcommand numbers come from the registry
+comment at `include/dolphin/gx/GXAurora.h:210-232`.
 
-Verify D3D9 code with the MinGW syntax harness (see `docs/dx9/progress.md`
-§"How to resume") in **both** the d3d9-on and d3d9-off configs. Full builds
-happen on the owner's Windows machine and in dusklight-ao's GitHub Actions —
-this repo has no CI of its own, so a change here is only really checked once
-dusklight's workflow builds with the bumped submodule pin.
+## Where the backend stands
 
-## Where the backend actually stands
+The backend is **effectively complete** for its stated priorities; the reasoning
+behind its shape is `docs/dx9/design-decisions.md`, and what it still cannot
+express is `docs/dx9/unsupported-effects.md`.
 
-`docs/dx9/progress.md` is authoritative; the short version is that the backend
-is **effectively complete** for its stated priorities. Working under Remix:
-world/actor geometry, textures, terrain, alpha-tested foliage, UI/HUD, skinned
-characters on both paths, EFB colour copies, stable texture hashing, real
-camera, working input across resizes, and **HD texture replacement packs**
-(2026-08-06 — the pack goes to Remix through the API rather than through D3D9,
-so texture tagging is untouched; `docs/dx9/texture-replacements.md`).
-
-**One `GXBegin` block is one D3D9 draw call**, and Remix charges per draw rather
-than per pixel — a draw too small for its own BLAS still contributes its own
+**One `GXBegin` block is one D3D9 draw call, and Remix charges per draw rather
+than per pixel** — a draw too small for its own BLAS still contributes its own
 geometry entry and surface to a bucket that rebuilds every frame. A game-side
-loop that wraps each quad in its own `GXBegin`/`GXEnd` is therefore affordable
-in raster and ruinous here; the kankyo weather effects spent ~1000 draws a frame
-that way until 2026-08-08. `dx9.draws` in the log reports draws per frame (mean
-and peak over 600 frames) so this is measurable rather than guessed at.
-`docs/dx9/progress.md` §3.32.
+loop wrapping each quad in its own `GXBegin`/`GXEnd` is affordable in raster and
+ruinous here; the kankyo weather effects spent ~1000 draws a frame that way until
+2026-08-08. `dx9.draws` in the log reports mean and peak draws per frame, so this
+is measurable rather than guessed at.
 
-Remaining gaps are **catalogued rather than open** — 17 open GX features of 18
-catalogued (#17, texture packs, closed 2026-08-05) and 11 Remix runtime
-limitations, all in
-`docs/dx9/unsupported-effects.md`. That list says *where the work would go*,
-not what has been given up: the fork is ours, so a "Remix limitation" is a work
-item until someone reads the fork and finds a real wall. The two-colour ramp
-sat on that list until 2026-08-04.
-
-Live defects:
-
-1. **Materials.** Colour reaches Remix as of 2026-08-04 (tested). Two-colour
-   ramps are now reproduced exactly rather than approximated, and vertex colour
-   is forwarded only where GX says it is material rather than baked lighting —
-   both **untested**. Read `docs/dx9/remix-material-interface.md` before
-   touching any of it.
-2. ~~Ground textures render white in raw D3D9~~ — **not a defect.** Remix is
-   correct, and the raw image is never shown. Kept only because the same
-   compare-mode approximation is a suspect for the torch-flame white circle,
-   which *does* reach Remix.
-3. **World-space UI billboards reach Remix intermittently.** Not an aurora
-   defect — it is Remix's RTX injection boundary. Full analysis in
-   `dusklight-ao/docs/remix-open-issues.md` open issue 6.
-
-**Self-illumination is a rule, not a score.** Three revisions cut on a weighted
-evidence score and all three missed the Goron Mines lava, which scores **0.00**
-on every signal that score is built from. Rev 4 drops it from the decision:
-
-> **self-lit** (no TEV colour stage reads the rasterized channel — *not* the
-> channel's lighting flag, which is a different thing and was the bug)
-> **AND has a colour of its own** (authored in TEV constants, not mixed from the
-> vertex stream and not a bare `black → white` texture pass-through)
-> **AND that colour reads as a glow** (saturated **or** near-white-hot)
-
-The middle clause is what keeps EFB copies out — 9 of the 20 self-lit materials
-in the measured scene were screen blits. Replayed over that log the rule accepts
-**6 of 77 materials**, every lava and fire surface, no false positives, nothing
-to tune. `docs/dx9/remix-material-interface.md` §9.
-
-**`grp=` carries the material's authored name — since 2026-08-11, and only when
-switched on.** It is not what the field was originally for, and the distinction
-matters: the *actor* that issued a draw is still unidentifiable, and the earlier
-hook that tried to name one printed `-` for every material in every session
-because `fpcDw_Execute` schedules a draw and does not issue one. What is built
-pushes from `J3DMatPacket::draw`, where the FIFO writes are, so `grp=` reads
-`Mat:MA00_Gake` — the name the original artists gave the surface, and the same
-name the game's own environment code dispatches on (`dKy_bg_MAxx_proc`).
-**Off by default**, because each push costs a `std::string` in the command
-processor per material per frame; `DUSK_MAT_LABELS=1` in the environment turns it
-on without a rebuild. A `grp=` ending in `~` is a name truncated at 48 chars, not
-a different material. Logged shape — texture size and format, `tfactor`, ramp
-endpoints — is still the identification that is always present. §9
-"Identification", which keeps material identity and actor identity apart.
-**No name reaches Remix; that transport is deliberately still open.**
-
-**Two-colour ramps are now reproduced exactly** rather than approximated — the
-fork evaluates the GX colour combiner (`a*(1-c) + b*c`) from both endpoints
-instead of squeezing it into one D3D9 texture op. `docs/dx9/remix-material-interface.md`
-§10. Untested. The framing that delayed this is worth remembering: "Remix cannot
-express X" is a statement about *stock* Remix, and **this fork is ours** — check
-whether the constraint is real before designing around it.
+Two live defects worth knowing before you start reading: colour reaches Remix
+(tested 2026-08-04) but the exact two-colour ramp and the vertex-colour
+forwarding rule beside it are **untested** — read
+`docs/dx9/remix-material-interface.md` before touching either; and world-space UI
+billboards reach Remix intermittently, which is Remix's injection boundary rather
+than an aurora defect. The ledger is
+`dusklight-ao/docs/remix-open-issues.md`.

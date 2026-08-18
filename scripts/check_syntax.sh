@@ -10,7 +10,7 @@
 # WHAT IT IS NOT. It does not link, does not run, and shims Dawn/WebGPU and xxHash
 # (see scripts/syntax-harness/). Passing it means the code parses and type-checks
 # against the target's headers - signatures agree, overloads resolve, members exist.
-# It is not "builds" and it is certainly not "works". docs/dx9/progress.md
+# It is not "builds" and it is certainly not "works". docs/dx9/README.md
 # §"Verification vocabulary" is the authority on which word to use.
 #
 # Three configurations are checked; see CONFIGS below for what each one is for. The
@@ -88,7 +88,7 @@ missing=0
 #                      is defined by include/aurora/gfx.h only when NDEBUG is NOT set, so
 #                      without this pass every #if defined(AURORA_GFX_DEBUG_GROUPS) body
 #                      is checked and none of its #else is - which is the half a release
-#                      build compiles. Added 2026-08-16, after an entry in progress.md
+#                      build compiles. Added 2026-08-16, after a document
 #                      claimed harness coverage the harness did not have.
 #
 # Only the first config reports a missing unit, so a listed-but-absent file is named once.
