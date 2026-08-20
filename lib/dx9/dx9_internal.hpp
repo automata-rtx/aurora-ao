@@ -122,9 +122,17 @@ struct StateCache {
   bool projValid = false;
   D3DMATRIX view{};
   bool viewValid = false;
-  // World palette mirror: slot 0 doubles as the plain WORLD matrix.
-  std::array<D3DMATRIX, 16> world{};
-  std::array<bool, 16> worldValid{};
+  // World palette mirror: slot 0 doubles as the plain WORLD matrix. Sized to
+  // MaxWorldPalette rather than 16 because set_world_matrix only filters a
+  // redundant SetTransform for slots the mirror covers, and the skinned path
+  // writes up to MaxWorldPalette of them (dx9_draw.cpp clamps jointCount there),
+  // so every slot above 15 re-uploaded unfiltered. 16 KB of static storage.
+  // NOTE: nothing counts redundant vs issued SetTransform calls today - dx9.draws
+  // counts draws, not state sets - so this cannot be observed either before or
+  // after. It removes an inconsistency between MaxWorldPalette and the mirror;
+  // it is not a measured win. 2026-08-16.
+  std::array<D3DMATRIX, MaxWorldPalette> world{};
+  std::array<bool, MaxWorldPalette> worldValid{};
   std::array<D3DMATRIX, MaxStages> texMtx{};
   std::array<bool, MaxStages> texMtxValid{};
   // Material intent for Remix, carried in the otherwise unused D3DMATERIAL9.

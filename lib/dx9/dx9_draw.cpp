@@ -179,7 +179,7 @@ void apply_alpha_compare() noexcept {
 // while TP sets fog per object - so which draw is submitted first decides the whole frame.
 // The fork instead drives fog, sky and sky-light from one medium built from the game's
 // kankyo state (rtx.dusklight.env.*); see dxvk-remix documentation/DusklightAtmosphere.md
-// §2.5 and §5. What is emitted here stays because it is cheap and correct per draw.
+// §8.3 and §5. What is emitted here stays because it is cheap and correct per draw.
 //
 // GX range adjust (GXSetFogRangeAdj) is not forwarded: the composite already fogs by
 // radial distance, which is what range adjust approximates. Backwards (REVEXP) fog is not
@@ -286,6 +286,17 @@ bool apply_pixel_state() noexcept {
   return true;
 }
 
+// The camera gate. Shared with draw_palette_split, which re-writes the world
+// matrices apply_transforms already set and so has to agree on when the camera
+// is folded out of them; it tested g_camera.valid alone, which for an
+// orthographic draw would have folded the camera out of WORLD while VIEW stayed
+// identity. No repro was found for such a draw (it needs an orthographic draw
+// carrying PNMTXIDX with more than MaxVertexBlendMatrixIndex+1 distinct
+// matrices), so this removes a divergence rather than fixing a seen artifact.
+// Why orthographic is excluded at all: the comment inside apply_transforms.
+// 2026-08-16.
+inline bool have_camera() noexcept { return g_camera.valid && g_gxState.projType != GX_ORTHOGRAPHIC; }
+
 void apply_transforms(const DecodedDraw& draw) noexcept {
   set_proj_matrix(to_d3d_proj(g_gxState.proj));
 
@@ -306,7 +317,7 @@ void apply_transforms(const DecodedDraw& draw) noexcept {
   // stretched under Remix at any non-launch window size. 2D draws therefore
   // keep the fused form (VIEW = identity).
   // docs/dx9/unsupported-effects.md R9.
-  const bool haveCam = g_camera.valid && g_gxState.projType != GX_ORTHOGRAPHIC;
+  const bool haveCam = have_camera();
   const D3DMATRIX& view = haveCam ? g_camera.view : identity;
   if (draw.skinned) {
     // Fixed-function indexed vertex blending against the bone palette; the
@@ -511,7 +522,7 @@ void draw_palette_split(const DecodedDraw& draw, const uint16_t* indices, uint32
     }
     for (uint32_t i = 0; i < used; ++i) {
       const D3DMATRIX m = to_d3d(g_gxState.pnMtx[groupSlots[i]].pos);
-      set_world_matrix(i, g_camera.valid ? mtx_multiply(m, g_camera.viewInv) : m);
+      set_world_matrix(i, have_camera() ? mtx_multiply(m, g_camera.viewInv) : m);
     }
     ++g_drawStats.frameDraws;
     g_dx9.dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(s_verts.size() / draw.stride),

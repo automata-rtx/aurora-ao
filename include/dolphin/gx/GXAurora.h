@@ -220,20 +220,47 @@ extern "C" {
  * That is not hypothetical. On 2026-08-11 four unmerged branches had each taken 0x0053.
  *
  * Allocated:  0x0001-0x0003, 0x0010, 0x0020-0x0022, 0x0030-0x003A,
- *             0x0040-0x0041, 0x0050-0x0053, 0x1000
+ *             0x0040-0x0041, 0x0050-0x0053, 0x0058, 0x1000
  *
  * Reserved for work in flight - do not take these, and do not assume a branch still wants
- * one without looking. Each branch takes its assigned number when it rebases:
+ * one without looking. Each branch takes its assigned number when it rebases - and when it
+ * does, MOVE the number out of this Reserved block and into the Allocated list above.
+ * scripts/check_invariants.py counts only the Allocated list, deliberately: a number that
+ * is merely reserved is not yet taken, so leaving it here after the define lands fails the
+ * check. That is the intended failure, and this sentence is the instruction it needs.
  *
  *     0x0054  GX_AURORA_SET_MODEL_IDENTITY    claude/remix-texture-geometry-issues-occh2f
  *     0x0055  GX_AURORA_CLEAR_MODEL_IDENTITY  (same branch - it needs two)
  *     0x0056  GX_AURORA_SET_POS_MTX_REST      claude/lss-hair-rtx-remix-j6uo4t
  *     0x0057  GX_AURORA_SET_DRAW_CLASS        claude/dusklight-remix-transparency-e7l766
  *
- * Next free: 0x0058. Add it to this list in the same commit that defines it -
+ * Next free: 0x0059. 0x0058 was taken on 2026-08-14 by GX_AURORA_SET_DUSKLIGHT_DRAW_META, and it
+ * is the one that should stop this list growing: its payload is a flags word on a versioned export
+ * to the fork, so a new per-draw fact is a new bit rather than a new subcommand and a new channel. Add it to this list in the same commit that defines it -
  * scripts/check_invariants.py fails if a GX_AURORA_* define is missing from the registry,
  * or if two of them share a value.
  */
+
+#define GX_AURORA_SET_DUSKLIGHT_DRAW_META 0x0058
+
+/*
+ * Per-draw metadata for the Dusklight Remix fork, on a channel that is NOT D3DMATERIAL9.
+ *
+ * Every earlier mark - the emissive facts, HD texture packs, all three water facts - was squeezed
+ * into a spare field of D3DMATERIAL9, because that struct survives Remix's D3D9 capture path
+ * unchanged. It has one field left and an unmerged branch already claims it.
+ *
+ * The scarcity was never the real constraint. D3DMATERIAL9 is fixed by the D3D9 API; this boundary
+ * is not, because aurora is the D3D9 caller and the fork is the D3D9 implementation and both are
+ * ours. docs/dx9/remix-material-interface.md section 9 has specified the alternative all along:
+ * "a small versioned export from the fork's d3d9.dll, called per draw". This subcommand feeds it.
+ *
+ * The payload is deliberately a flags word rather than a value with a meaning, so the next feature
+ * adds a bit instead of negotiating for a channel. Send 0 to clear, exactly as the water mark does.
+ */
+
+/** A dropped pickup - rupee, heart, arrow bundle. Self-lit in GX, but not a light source. */
+#define GX_AURORA_DUSKLIGHT_DRAW_PICKUP 0x00000001
 
 #define GX2_SET_POLYGON_OFFSET 0x1000
 
@@ -342,6 +369,15 @@ void GXSetSkinningDebugView(bool enable);
  * translucent, and cleared per material no water arrived at all.
  */
 void GXSetDusklightWater(u32 role, u32 tag, u32 layer);
+
+/*
+ * Mark the draws that follow with per-draw metadata for the Remix fork.
+ *
+ * Call with the GX_AURORA_DUSKLIGHT_DRAW_* bits before the draws it describes and with 0 after,
+ * the same bracketing GXSetDusklightWater uses. It is written into the FIFO rather than acted on
+ * immediately, so it lands in the stream at the point the game meant rather than at drain time.
+ */
+void GXSetDusklightDrawMeta(u32 flags);
 
 #define GX_AURORA_MAX_SKIN_INFLUENCES 4
 

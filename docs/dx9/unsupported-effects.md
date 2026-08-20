@@ -19,23 +19,23 @@ configuration.
 
 | # | Effect / GX feature | Where TP uses it | v1 behavior | Remix-side compensation |
 |---|---------------------|------------------|-------------|-------------------------|
-| 1 | **Indirect texturing** (`GXSetTevIndirect`, ind stages/matrices) | Heat shimmer, water surface warp, some magic/distortion | Ignored: base stages still draw, no warp | Re-authored in Remix — water and heat become PT materials. **Water is now done this way** (`remix-material-interface.md` §11): the game marks its own water per draw and Remix builds a translucent material, so the warp is replaced rather than reproduced. The indirect pass itself still arrives as its own draw and is classified `layer=indirect`. The torch's kagerou heat haze is simply absent; expected, and **not** the torch-flame bug below |
-| 2 | **Compare-mode TEV ops** (`GX_TEV_COMP_*`) | Occasional masking tricks | Approximated as always-true (`d + c`) — keeps mask-style consumers visible; logged (4 distinct stages in a play session) | **Open, and not safely "cosmetic".** It is the prime suspect for the torch-flame white circle, which *does* reach Remix (below) — additive saturation is the only approximation here that explains white. The answer is to evaluate the compare where its operands are known, not to hand-replace a texture |
-| 3 | **TEV output registers REG0-2 as true accumulators** (multi-register programs) | Complex characters/effects (e.g. layered eyes, some sky) | Collapsed to the PREV chain, logged per config (2 distinct stages seen) | Open. Where the program is still *evaluable*, the ramp precedent applies ([`remix-material-interface.md`](remix-material-interface.md) §10): evaluate it in aurora and carry the result to the fork on a side channel, rather than hand-authoring a replacement. These report `unevaluable` today |
+| 1 | **Indirect texturing** (`GXSetTevIndirect`) | Heat shimmer, water surface warp, magic | Ignored: base stages still draw, no warp | Re-authored in Remix. **Water is now done this way** (`remix-material-interface.md` §11) — the game marks its own water per draw and Remix builds a translucent material, so the warp is replaced rather than reproduced. The torch's kagerou heat haze is simply absent; expected, and **not** the torch-flame bug below |
+| 2 | **Compare-mode TEV ops** (`GX_TEV_COMP_*`) | Occasional masking tricks | Approximated as always-true; logged (4 distinct stages in a session) | **Open, and not safely "cosmetic"** — the prime suspect for the torch-flame white circle, which *does* reach Remix. The answer is to evaluate the compare where its operands are known, not to hand-replace a texture |
+| 3 | **TEV output registers REG0-2 as true accumulators** | Layered eyes, some sky | Collapsed to the PREV chain, logged (2 distinct stages seen) | Open. Where the program is still *evaluable*, the ramp precedent applies (`remix-material-interface.md` §10): evaluate it in aurora and carry the result on a side channel. These report `unevaluable` today |
 | 4 | **>8 effective TEV stages** | Rare (J3D TevBlock16 materials) | Truncated at 8, logged | Same as #3 |
 | 5 | **Arbitrary TEV swap tables** (non-identity, non-alpha-replicate) | Rare channel shuffles | Ignored unless expressible as ALPHAREPLICATE | Texture-level fix in Remix if ever visible |
-| 6 | **Three or more distinct constants in ONE stage** | Terrain, UI blends, many materials — **by far the most frequent unsupported case (28 distinct stages in one play session)** | Two per stage are exact (TFACTOR, which is per-draw, plus the per-stage `D3DTSS_CONSTANT`; the reference device does expose `PERSTAGECONSTANT`). A third falls back to TFACTOR and silently takes the wrong value; logged | **Understated until 2026-08-04.** A third constant does not have to fit a D3D9 stage slot at all — the fork already reads colours straight out of `D3DMATERIAL9` ([`remix-material-interface.md`](remix-material-interface.md) §2, §10), so this ceiling is a transport choice, not a hard limit. Neither route attempted |
+| 6 | **Three or more distinct constants in ONE stage** | Terrain, UI blends — **by far the most frequent unsupported case, 28 distinct stages in one session** | Two per stage are exact (per-draw TFACTOR plus `D3DTSS_CONSTANT`); a third falls back to TFACTOR and silently takes the wrong value; logged | **Understated until 2026-08-04.** A third constant does not have to fit a D3D9 stage slot at all — the fork already reads colours straight out of `D3DMATERIAL9` (§2, §10 there), so this ceiling is a transport choice, not a hard limit. Neither route attempted |
 | 7 | **EFB copies** — color copies + offscreen passes are now REAL (StretchRect / SetRenderTarget). Remaining gaps: depth copies (`GX_TF_Z*`) and palette-format copy reinterpretation (shadow silhouette RGB5A3 channel packing is sampled as plain color) | Z-copies; shadowReal channel selection | Depth copies: neutral white/alpha-0 placeholder; palette copies: raw color sampled (approximate shadows) | Path-traced shadows replace `shadowReal` entirely (rtx shadows) |
 | 8 | **`GX_TG_SRTG` texgen** (vertex color → texcoord) & **emboss bump** (`GX_TG_BUMP*`) | Emboss-style highlights on a few materials | Texcoord = 0,0; logged | Normal-mapped PBR replacements in Remix |
 | 9 | **Fog range adjustment** (`GXSetFogRangeAdj`) + backwards/exp fog exactness | Distance fog tweaks | Plain linear/exp approximation | Done in Remix: the fork drives fog, sky and sky-light from the game's kankyo state (`dxvk-remix documentation/DusklightAtmosphere.md`), so the D3D9 fog is not the output |
 | 10 | **Logic-op blending** beyond CLEAR/SET/COPY/NOOP | Very rare on GC titles | Draw falls back to opaque, logged | N/A |
 | 11 | **Destination-alpha blend factors** when backbuffer lacks alpha | Some layered effects | Factor swapped to ONE/ZERO approximation, logged | Remix runtime provides A8R8G8B8 — exact there |
-| 12 | **Dual alpha-compare** irreducible to one D3D9 test (e.g. band tests `A>lo AND A<hi`) | Rare particle fades | comp0 only, logged | **Not automatically cosmetic:** alpha is one of the two things that must still be right, because Remix builds opacity and the alpha test from it (§0). No instance has been identified in a session; if one appears, carry the second bound to the fork rather than dropping it |
+| 12 | **Dual alpha-compare** irreducible to one D3D9 test | Rare particle fades | comp0 only, logged | **Not automatically cosmetic:** alpha is one of the two things that must still be right (§0). No instance has been seen; if one appears, carry the second bound to the fork rather than dropping it |
 | 13 | **Line width / point size in pixels** (`GXSetLineWidth`) | Debug draws, a few effects | 1px lines; point size best-effort | Negligible |
 | 14 | **Z textures / depth-format texture reads** (`GX_TF_Z*`) | Depth-of-field-ish effects | Not bound (black) | Post effects dropped by design |
 | 15 | **Per-vertex texture-matrix selection** (`GX_VA_TEXnMTXIDX`) | Env-mapped skinned parts | Stream consumed, effect ignored (uses per-draw matrix) | Minor; material replacement |
-| 16 | **GX lighting fidelity** (per-vertex GC light model incl. attnFn/diffFn specifics) | World/actor lighting where not vertex-baked | v1 unlit (material color × vertex color); a D3DLIGHT9 approximation was never wanted | Remix relights everything, so the GC light model is not the thing to reproduce. What matters is not double-counting: vertex colour is forwarded only where GX says the stream is authored material colour rather than baked light, per draw ([`remix-material-interface.md`](remix-material-interface.md) §7c) |
-| 17 | ~~**Texture replacement packs (Dolphin-format)** on d3d9~~ | HD pack users | **Implemented 2026-08-05, tested good 2026-08-06** | The pack reaches Remix without its bytes entering D3D9: the game loads it through `remixapi_CreateMaterial` and aurora tags each draw with an index, so the game's own textures stay what Remix hashes and tagging is unaffected. Substituted at two sites because Remix splits the frame — the material for path-traced draws, the texture bind for the rasterized HUD. [`texture-replacements.md`](texture-replacements.md) |
+| 16 | **GX lighting fidelity** (the per-vertex GC light model) | World/actor lighting where not vertex-baked | Unlit; a `D3DLIGHT9` approximation was never wanted | Remix relights everything, so the GC light model is not the thing to reproduce. What matters is not double-counting: vertex colour is forwarded only where GX says the stream is authored material colour, per draw (§7c there) |
+| 17 | ~~**Texture replacement packs (Dolphin-format)** on d3d9~~ | HD pack users | **Implemented 2026-08-05, tested good 2026-08-06** | The pack reaches Remix without its bytes entering D3D9, substituted at two sites because Remix splits the frame. [`texture-replacements.md`](texture-replacements.md) |
 | 18 | **Bloom / post-processing chain** | dusk sky glow etc. | Skipped by design (project rule) | Remix bloom/tonemap |
 
 ## RTX Remix runtime limitations (not fixed-function limits)
@@ -53,32 +53,18 @@ until 2026-08-04, when it stopped being one.
 
 | # | Remix behavior | Consequence | What we do |
 |---|----------------|-------------|------------|
-| R1 | **One albedo texture per draw.** Remix reconstructs a material from a single texture stage (the first bound to the lowest `D3DTSS_TEXCOORDINDEX`) and only `colorTextures[0]` is the albedo — `ColorTexture2` is RayPortal-only | Any GX material compositing several textures in one draw shows **only one layer** under Remix. Character eyes composite an eyeball (CMPR) with I8/I4 highlight and shadow masks | We advertise the **colour** texture (`preferred_albedo_stage`), so the eyeball wins over the masks. Showing all layers would need multi-pass splitting (base pass + overlay stages re-emitted as blended decal draws) — designed but not built. A second route exists now: carry the extra layer to the fork on a side channel, the way §10 carries the ramp endpoints |
-| R2 | **That one stage's op/args become the whole albedo *and* opacity** | A partial first stage (e.g. `texture x dark konst`) renders the surface black; a first stage whose alpha is a blend weight destroys alpha-test cutouts (foliage as full quads, grass invisible) | A hint stage (`MODULATE(TEXTURE, DIFFUSE)` / `SELECTARG1(TEXTURE)`) is prepended, writing TEMP so the real chain is untouched — it was written when the rasterized image had to stay correct, so raster-neutrality is now a side effect rather than a requirement (§0, and [`remix-material-interface.md`](remix-material-interface.md) §5). **Conditional since 2026-08-03** — emitting it over a material Remix already reads correctly replaces a good albedo with a worse one, which is what bleached rupees, hearts and lava. See [`remix-material-interface.md`](remix-material-interface.md) §5 |
+| R1 | **One albedo texture per draw.** Only `colorTextures[0]` is the albedo; `ColorTexture2` is RayPortal-only | A GX material compositing several textures in one draw shows **only one layer**. Character eyes composite a CMPR eyeball with I8/I4 masks | We advertise the **colour** texture (`preferred_albedo_stage`), so the eyeball wins. Multi-pass splitting is designed and not built; a second route is to carry the extra layer on a side channel, the way §10 carries the ramp endpoints |
+| R2 | **That one stage's op/args become the whole albedo *and* opacity** | A partial first stage renders the surface black; one whose alpha is a blend weight destroys alpha-test cutouts (foliage as full quads) | A hint stage is prepended, writing TEMP. **Conditional since 2026-08-03** — emitting it over a material Remix already reads correctly replaces a good albedo with a worse one, which is what bleached rupees, hearts and lava. `remix-material-interface.md` §5 |
 | R3 | Undecodable args (`D3DTA_TEMP`, `D3DTA_CONSTANT`, `COMPLEMENT`, `ALPHAREPLICATE`) resolve to `RtTextureArgSource::None` = **identity**, not zero | Harmless on their own — worth recording because an earlier revision of these docs claimed they rendered black, and that wrong premise cost a full test round | Nothing needed |
 | R4 | **UI overlay is not re-derived from a mid-run device `Reset`** | HUD keeps the scale/placement it had at device-creation size after any resize; raw D3D9 follows the Reset correctly | Resizes **recreate** the device instead (`recreate_device`), debounced one frame. Costs a black screen for the rebuild |
 | R5 | **`MaxVertexBlendMatrixIndex` is not enforced** — Remix reads the transform state directly and skins on the GPU | Masked a real raw-D3D9 bug for weeks: GX's 10-deep matrix palette overran the device's 9-index cap and scattered vertices, while Remix looked perfect | Palette is compacted per draw, and overflow draws are split into per-palette groups |
 | R6 | **Texture transform element counts > 2 are clamped; projected texture transforms unsupported** (`Use of projected texture transform detected…`) | Projected camera-space texgen (`GX_TG_MTX3x4`) cannot survive into Remix — projected shadows / env maps are wrong there | **Open, not attempted.** Raw D3D9 being correct here buys nothing, since that image is never shown (§0). Two routes: teach the fork the projected transform, or evaluate the texgen per vertex in aurora so what crosses is already projected |
-| R7 | **Billboard detection expects fan-order quad indices** (`unsupported quad index layout for billboard creation`) | Particle quads miss Remix's billboard path | Quads emit `(0,1,2)(0,2,3)`, which is the `A,B,C,A,C,D` layout `createBillboards` checks for. **Two further gates, read in the fork 2026-08-07 and untested:** generation runs only for instances already in the *unordered* TLAS — i.e. only for textures categorised as Particle (`refreshBillboardsForCurrentFrame` guards on `m_isUnordered`) — and `rtx.useIntersectionBillboardsOnPrimaryRays` is **false** by default, so billboards act as intersection primitives on indirect rays only. Batching the weather emitters (2026-08-08) is what makes this reachable at all: the path walks the quads of one instance, so it had nothing to work with while each quad was its own draw |
+| R7 | **Billboard detection expects fan-order quad indices** | Particle quads miss Remix's billboard path | Quads emit `(0,1,2)(0,2,3)`, the layout `createBillboards` checks for. **Two further gates, read in the fork 2026-08-07 and untested:** generation runs only for instances already in the *unordered* TLAS (i.e. textures categorised as Particle), and `rtx.useIntersectionBillboardsOnPrimaryRays` is **false** by default. Batching the weather emitters (2026-08-08) is what makes this reachable at all — the path walks one instance's quads, and had nothing to work with while each quad was its own draw |
 | R8 | **New GUI input method registers raw keyboard with `RIDEV_NOLEGACY`**, killing `WM_KEY*` process-wide | Game input dead under Remix while Remix hotkeys work | `rtx.useNewGuiInputMethod = False` in `rtx.conf` (documented game-side) |
 | R9 | Remix **auto-detects orthographic draws as UI** and rasterizes them as a screen overlay | Handing that path a 3D view matrix (the camera split) mis-shapes the HUD | The camera split is skipped for `GX_ORTHOGRAPHIC` draws |
-| R10 | **Emissive colour is a constant *or* a texture, never both**, and whichever it is then gets run through the **albedo's** texture op with the emissive substituted for the texture sample | A glow set to a colour arrives as `op(colour, tFactor)`. Separately, a *constant* glow at any useful intensity swamps the albedo: the Goron Mines lava read as one flat hot colour with no crust (tested 2026-08-04) | **Fixed in the fork, and the choice exposed.** `RtSurface::emissiveSource` selects out of the texture op entirely — the constant path is now verbatim, so no pre-image inversion is needed — and `rtx.dusklight.emissive.colorSource` lets the owner pick the reconstructed albedo, the albedo texture through its op, or the flat colour. GX records no emissive term, so there is no correct answer to hard-code; 2026-08-05 established that hard-coding one anyway removes a control that was in use. See [`remix-material-interface.md`](remix-material-interface.md) §9 |
-| R11 | **No lerp between two constants** in stock Remix. The one stage it reads offers `TEXTURE`, `DIFFUSE`, `TFACTOR`, `CURRENT` and ops reducing to `t·C` or `t + C` | This game's dominant material shape is `lerp(colourA, colourB, texture)` (§7), so every two-colour ramp was an approximation — Goron Mines lava reproduced as red-to-white | **Fixed in the fork 2026-08-04 — CI-green, untested in game.** Both endpoints are carried to `RtSurface` and the shader evaluates the GX combiner (`albedo = mix(rampLo, rampHi, albedo)`, i.e. `a*(1-c) + b*c`) directly. No struct growth: the spare bits were already there. [`remix-material-interface.md`](remix-material-interface.md) §10 |
-
-## Watch list (decide during bring-up)
-
-- **RGBA6 dst-alpha pixel format nuances** (`GX_PF_RGBA6_Z24` dither) — likely
-  irrelevant at 8-bit; verify banding.
-- **`GXSetTexCopySrc` half-scale copies** if/when real EFB copies are
-  implemented.
-- **ImGui debug overlay** in d3d9 mode — v1 headless (context alive, nothing
-  rendered); imgui has a stock DX9 renderer if needed later (would appear in
-  Remix as UI).
-- **RmlUi menus** (Dusklight settings UI) — RESOLVED: `dusk::ui::update()`
-  guards on `aurora::rmlui::is_initialized()` and cleanly no-ops, so the
-  settings/prelaunch menus are simply unavailable in d3d9 mode (config file +
-  CLI work; the GX-drawn game HUD/menus are unaffected). Documented in
-  `dusklight-ao/docs/dx9-fixed-function.md`.
+| R10 | **Emissive colour is a constant *or* a texture, never both**, and whichever it is is then run through the **albedo's** texture op | A glow set to a colour arrives as `op(colour, tFactor)`. Separately, a constant glow at any useful intensity swamps the albedo — the lava read as one flat hot colour with no crust (tested 2026-08-04) | **Fixed in the fork, and the choice exposed.** `RtSurface::emissiveSource` selects out of the texture op, and `rtx.dusklight.emissive.colorSource` picks among three readings. GX records no emissive term, so there is no correct answer to hard-code. `remix-material-interface.md` §9 |
+| R11 | **No lerp between two constants** in stock Remix | This game's dominant material shape is `lerp(colourA, colourB, texture)`, so every two-colour ramp was an approximation | **Fixed in the fork 2026-08-04 — CI-green, untested in game.** Both endpoints are carried to `RtSurface` and the shader evaluates the GX combiner directly. No struct growth: the spare bits were already there. `remix-material-interface.md` §10 |
+| R12 | **Remix identifies textures per D3D9 *object* and holds references to them across frames**, not per content | The game builds a stack-local `GXTexObj` per draw per frame for its 2D drawlists. Keyed naively, that is one D3D9 texture created and destroyed per draw: Remix's texture list churns visibly in the categorize tab and VRAM grows past 32 GB | The store is content-addressed so an identical re-init resurrects the *same* object, and EFB copy targets are keyed by (dest, size) so the bloom chain's two sizes each keep a persistent target. `dx9_texture.cpp:34-43`, `:199-204` |
 
 ## Logging contract
 
@@ -88,118 +74,63 @@ play-through produces a to-triage list to fold back into this document.
 - **Unsupported cases** (WARN, via `warn_once`):
   `dx9: unsupported: <reason> (key=0x…)`. The key is either a fixed id per
   reason+stage or a hash of the stage configuration, so distinct materials
-  count separately — the *number of distinct keys* per reason is the useful
-  signal (it is how the 3-constant ceiling was identified as the most frequent
-  gap at 28 stages, and the compare-mode approximation as the prime suspect
-  for the raw-D3D9 white ground at 4).
+  count separately — **the number of distinct keys per reason is the useful
+  signal**. It is how the 3-constant ceiling was identified as the most frequent
+  gap at 28 stages, and compare-mode as the prime suspect for the white ground
+  at 4.
 - **Material translation** (INFO, `matrep.*`): the full GX → D3D9 → Remix chain
   for each distinct material, always on and bounded. Format and reading guide:
-  [`material-report.md`](material-report.md). This **replaces** the older
-  `multi-texture material (N textured stages)` line, which reported only
-  multi-texture draws and keyed on fields it did not print.
+  [`material-report.md`](material-report.md).
 
-**Reclassified 2026-08-04 — not a defect:** ground textures render pure white in
-raw D3D9 while Remix shows them correctly (Remix only reads the first stage, so
-it never executes the offending later stage). Remix is the output and the raw
-image is never shown (§0), so this needs no fix on its own account. It is kept
-because the same approximation is the prime suspect for the torch-flame white
-circle, which **does** reach Remix. Suspects, in order: #2 (compare-mode
-approximated as always-true — the only one that explains *white* via additive
-saturation), #6 (constant ceiling), #3 (register collapse).
+## PINNED 2026-07-29 — the torch flame, and how to confirm it later
 
-**Open, reported 2026-07-29 — world-space UI billboards reach Remix
-intermittently, and never reach its texture categorization screen.** Two draws
-behave as one group: the **targeting arrow** and the **fire billboards** in
-torch-lit areas. Observations from the owner:
-
-- They appear and disappear together, which is the strongest hint that one draw
-  path owns both.
-- The fire billboards were seen appearing during **room transitions** in the
-  Forest Temple.
-- The targeting arrow rendered correctly only while actively targeting, and not
-  reliably even then — it depended on player and camera position.
-- Under shadow the arrow goes dim, i.e. it is being **lit as ordinary world
-  geometry** when it is meant to read as unlit UI.
-- **Neither appears in Remix's texture categorization screen at all.**
-
-**Investigated 2026-07-29 — this is NOT an aurora defect.** An earlier revision
-of this entry concluded that "a draw Remix never categorises is a draw it did
-not capture the way we think it did, so this is an aurora question." That was
-wrong, and it is left recorded rather than deleted because it is the second time
-on this project that a plausible recon conclusion has pointed at the wrong repo.
-
-The mechanism is Remix's **RTX injection boundary**: the first orthographic,
-z-write-disabled draw on the primary render target ends the raytraced scene for
-that frame, and every draw after it is rasterized-only and never categorised.
-Aurora submits these draws correctly — they arrive on the wrong side of a line
-Remix draws. Full write-up in `dusklight-ao/docs/remix-open-issues.md` open issue 6.
-
-**What is still worth checking here:** nothing urgent. Aurora is where the
-ortho and z-write state for the letterbox and fade quads is applied, so if the
-eventual fix involves moving that boundary, the state vector aurora emits for
-those quads is the thing to confirm.
-
-### PINNED 2026-07-29 — the torch flame, and how to confirm it later
-
-*Parked deliberately: the owner cannot test for a while. This section is written
-so the investigation can restart cold.*
+*Parked deliberately: the owner cannot test for a while. Written so the
+investigation can restart cold.*
 
 **The correction that reframed it.** The "bright white circle" seen at a lit
-torch is **not** the animated fire. It is a separate circular sprite. So the
+torch is **not** the animated fire; it is a separate circular sprite. So the
 earlier inference — that flames were already arriving and already emissive — was
-wrong; what was arriving was something else.
+wrong. What was arriving was something else.
 
-**The torch emits three named resources at the same position**
+The torch emits three named resources at the same position
 (`dusklight-ao/src/d/actor/d_a_ep.cpp:423-431`, names from
 `d_particle_name.cpp`; the resource names are romanized Japanese, so glossing
-them as below is the convention —
-`dusklight-ao/docs/japanese-naming.md`):
-
-| ID | Resource | Role |
-| :-- | :-- | :-- |
-| `0x100` | `ZI_J_O_fire_a.jpa` | fire A |
-| `0x101` | `ZI_J_O_fire_b.jpa` | fire B |
-| `0x103` | `ZI_J_O_kagerou.jpa` | 陽炎 *kagerou*, heat haze |
-
-(`0x102` / `fire_c` exists but the torch does not use it. The Forest Temple
-candle, `d_a_obj_lv1Candle00`, swaps the fire pair for `0x83a6`/`0x83a7` and
-keeps `0x103`.)
+them is the convention — `dusklight-ao/docs/japanese-naming-remix.md`): `0x100`
+`ZI_J_O_fire_a.jpa` and `0x101` `ZI_J_O_fire_b.jpa`, the fire pair, and `0x103`
+`ZI_J_O_kagerou.jpa` — 陽炎 *kagerou*, heat haze. (`0x102`/`fire_c` exists and
+the torch does not use it; the Forest Temple candle swaps the fire pair for
+`0x83a6`/`0x83a7` and keeps `0x103`.)
 
 **Two deductions worth keeping:**
 
 1. **The heat haze is expected to be broken and is not the bug.** Kagerou is
-   indirect texturing — entry #1 above, "heat shimmer … ignored, base stages
-   still draw, no warp".
+   indirect texturing — #1 above.
 2. **This is probably not the injection boundary.** `fire_a` and `fire_b` are
    emitted back to back, same position, same frame, into the same particle
-   system. If they share a draw group they are near-adjacent draws, and an
-   injection boundary cannot stably separate two adjacent draws across a whole
-   session. So the flame's problem is a property of *that draw* — its TEV/blend
-   configuration, its texture, or its group.
+   system, so they are near-adjacent draws — and an injection boundary cannot
+   stably separate two adjacent draws across a whole session. The flame's
+   problem is a property of *that draw*: its TEV/blend configuration, its
+   texture, or its group.
 
 **The competing hypothesis, and it has evidence.** The white circle may *be* one
-of the fire sprites, saturated to white by entry **#2** — compare-mode TEV ops
-approximated as always-true (`d + c`). That entry is already the prime suspect
-for the white-ground case and is noted there as *the only approximation that
-explains white via additive saturation*. If so, "the flame is missing and a glow
-circle shows" and "the flame renders as a white blob" are one bug, and it is
-**this repo's**, not Remix's. Note the difference in stakes: the white ground is
-not shown to anyone, but this one reaches Remix.
+of the fire sprites, saturated to white by **#2** — compare-mode approximated as
+always-true, the only approximation here that explains white via additive
+saturation, and already the prime suspect for the white ground. If so, "the
+flame is missing and a glow circle shows" and "the flame renders as a white
+blob" are one bug, and it is **this repo's**. Note the difference in stakes: the
+white ground is never shown to anyone, but this one reaches Remix.
 
 **How to confirm, when testing resumes — cheapest first:**
 
-1. **Read the aurora log stood at a lit torch.** Free, no rebuild. The backend
-   emits `dx9: unsupported: <reason> (key=0x…)` (`warn_once`) and the full
-   `matrep.*` material report ([`material-report.md`](material-report.md)),
-   whose per-stage `matrep.gx` lines show the fire's TEV program directly — so
-   an unsupported shape can be read off the log rather than inferred from a
-   warning that may not have fired. This is the same class of instrumentation that
-   identified the 3-constant ceiling at 28 stages and compare-mode at 4.
+1. **Read the aurora log stood at a lit torch.** Free, no rebuild. `warn_once`
+   emits the unsupported cases and `matrep.gx` shows the fire's TEV program
+   directly, so an unsupported shape can be read off the log rather than
+   inferred from a warning that may not have fired.
 2. **A/B raw D3D9 against Remix at the same torch.** Decisive on ownership,
-   because the white-ground case has a distinctive signature — wrong in
-   raw D3D9, *correct* under Remix, since Remix only reads the first texture
-   stage and never executes the offending later one. The raw image matters here
-   as a **diagnostic instrument**, not as an output.
+   because the white-ground case has a distinctive signature — wrong in raw
+   D3D9, *correct* under Remix, since Remix only reads the first texture stage
+   and never executes the offending later one. The raw image matters here as a
+   **diagnostic instrument**, not as an output.
 
    | Raw D3D9 | Remix | Reading |
    | :-- | :-- | :-- |
@@ -207,51 +138,14 @@ not shown to anyone, but this one reaches Remix.
    | correct flame | circle | capture/categorization — the fork |
    | circle | circle | the resource itself, or a shared earlier stage |
 3. Only if both are inconclusive, fall back to the draw-call-ID work in
-   `remix-open-issues.md` open issue 6.
+   `dusklight-ao/docs/remix-open-issues.md` open issue 6.
 
-### Two more Remix-visible material defects, reported 2026-07-29
+## Grass patches shade wrongly under Remix, fine in raw D3D9
 
-**Rupees, hearts and Goron Mines lava render greyscale under Remix, correct in
-raw D3D9.**
-
-**Root-caused 2026-08-03, and the cause is not what this section said for a
-week.** The full account is in
-[`remix-material-interface.md`](remix-material-interface.md); the short version:
-
-- The colour is **not** lost in a channel Remix cannot decode. Remix reads
-  `MODULATE(TEXTURE, TFACTOR)` correctly, and `materialize()` already routes a
-  material's first constant to TFACTOR.
-- It is lost because **aurora's own Remix hint stage overwrites the material
-  Remix was reading correctly.** The hint wins the stage Remix reads, and it can
-  only say `TEXTURE × DIFFUSE` — with `DIFFUSE` substituted as opaque white when
-  the mesh carries no vertex colours. Texture × white = greyscale.
-- The 2026-07-29 fix (`389e4d5`) added a repair stage carrying the tint, but
-  gated the whole thing behind `albedo_tint()`, a predicate narrow enough that
-  it declined these materials. The commit emitted **no additional D3D9 state at
-  all** — a byte-for-byte no-op, which is exactly what testing reported.
-
-**Fixed 2026-08-03** by suppressing the hint when Remix already decodes the
-stage correctly (`remix_decodes_albedo()` in `dx9_tev.cpp`), and by the
-[material report](material-report.md), which makes the decision observable
-instead of inferred. The suppression is deliberately restricted to
-single-stage materials; the report's `hintLoose` field measures what widening it
-would catch.
-
-**Tested in game 2026-08-04: colour reaches Remix.** What remained was accuracy,
-not loss — the Goron Mines lava read red-to-white instead of red-to-yellow,
-which is the single-op approximation of a two-colour ramp rather than a dropped
-tint. R11 below carries the fix: the fork now evaluates the GX combiner from
-both endpoints. **CI-green, untested in game.**
-
-The general rule this leaves behind, and it survives the corrected diagnosis:
-**route a material's albedo tint to TFACTOR rather than the per-stage constant
-whenever there is a choice, because only one of the two survives into Remix.**
-
-**Grass patches shade wrongly under Remix, fine in raw D3D9.** Reported
-symptoms: glowing in the dark, being too dark, very delayed lighting response,
-and generally reading as a different material from the rest of the scene. The
-owner also cannot replace the billboard blades with real geometry, because the
-hashes are unstable.
+Reported symptoms: glowing in the dark, being too dark, very delayed lighting
+response, and generally reading as a different material from the rest of the
+scene. The owner also cannot replace the billboard blades with real geometry,
+because the hashes are unstable.
 
 The hash instability has a specific and fixable cause. `dGrass_packet_c::draw`
 has **two** paths:
@@ -275,8 +169,8 @@ weather particles move every vertex every frame regardless, so their hash
 churned before batching and churns after, and collapsing ~1000 draws a frame
 into one cost nothing that was not already gone (2026-08-08, tested). Texture
 *tagging* survives either way, because tags key on the texture hash rather than
-the geometry hash. The question to ask is not "does this batch?" but "is there a
-stable identity here to destroy?"
+the geometry hash. **The question is not "does this batch?" but "is there a
+stable identity here to destroy?"**
 
 *Fix direction, not implemented:* a game-side switch that forces the per-blade
 display-list path while under Remix. It costs exactly what the batching saves,
@@ -285,5 +179,24 @@ prerequisite for everything else the owner wants here — stable hashes make the
 blades taggable, replaceable with real geometry, and temporally stable.
 
 The lighting symptoms are partly separate and are catalogued in
-`dusklight-ao/docs/remix-open-issues.md` open issue 7, since they involve Remix
-options as well as this repo.
+`dusklight-ao/docs/remix-open-issues.md` open issue 7.
+
+## Two reclassifications, kept because they are still cited
+
+**Ground textures render pure white in raw D3D9 while Remix shows them
+correctly** (Remix only reads the first stage, so it never executes the
+offending later one). **Not a defect** — Remix is the output. It is kept only
+because the same compare-mode approximation is the prime suspect for the
+torch-flame circle above.
+
+**World-space UI billboards reach Remix intermittently** — the targeting arrow
+and the fire billboards, which appear and disappear together. **Not an aurora
+defect:** the mechanism is Remix's RTX injection boundary, where the first
+orthographic z-write-disabled draw on the primary render target ends the
+raytraced scene for that frame and everything after it is rasterized-only and
+never categorised. Aurora submits these draws correctly; they arrive on the
+wrong side of a line Remix draws. Full write-up in
+`dusklight-ao/docs/remix-open-issues.md` open issue 6. What is still worth
+checking *here*: aurora applies the ortho and z-write state for the letterbox
+and fade quads, so if the eventual fix moves that boundary, the state vector
+aurora emits for those quads is the thing to confirm.

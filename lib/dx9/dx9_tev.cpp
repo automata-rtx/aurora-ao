@@ -1335,6 +1335,14 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   const char* tintDecision = hasHintTint ? "detected" : "none";
   bool hintLooseWouldSuppress = false;
   IDirect3DBaseTexture9* hintTexture = nullptr;
+  // Which texmap the hint resolved, so the emitted-stage loop below can reuse the
+  // result instead of resolving the same one a second time in the same draw (it
+  // happens whenever the hint is emitted and the stage samples the albedo's own
+  // texmap, i.e. a material whose colour lead is a tint). Keyed on GXTexMapID and
+  // never on d3dStage - keying on the stage would hand a later stage the albedo,
+  // e.g. a detail map replaced by the albedo. 2026-08-16.
+  GXTexMapID hintTexMapId = GX_TEXMAP_NULL;
+  uint32_t hintTexMapRepIndex = 0;
 
   // HD replacement index for the texture the fork will treat as this material's albedo.
   // Remix keeps at most two textures per draw and assigns colorTextures[0] from the lowest
@@ -1354,9 +1362,16 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
   // once. Hashed over the GX stage configs, so two materials that differ only
   // in which texture object is bound collapse together - which is what we want,
   // since the translation decisions depend on the configuration, not the pixels.
+  // Kept per stage because the emit loop below seeds every one of its warn_once
+  // keys off the same hash of the same object with the same seed, so the two
+  // values were equal by construction. Redundancy removal, not a measured win -
+  // nothing in this function has been profiled. HashType (not uint64_t) is what
+  // xxh3_hash returns; it is XXH32 on a 32-bit build. 2026-08-16.
+  std::array<HashType, gx::MaxTevStages> stageHash{};
   uint64_t matKey = 0xD1A6;
   for (uint32_t i = 0; i < numStages; ++i) {
-    matKey = matKey * 1315423911u + xxh3_hash(g_gxState.tevStages[i], 0);
+    stageHash[i] = xxh3_hash(g_gxState.tevStages[i], 0);
+    matKey = matKey * 1315423911u + stageHash[i];
   }
 
   uint32_t d3dStage = 0;
@@ -1378,8 +1393,9 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
     const bool hasTexture = stage.texMapId != GX_TEXMAP_NULL && stage.texMapId < static_cast<int>(gx::MaxTextures) &&
                             stage.texCoordId != GX_TEXCOORD_NULL;
 
-    // Reduce both passes.
-    const uint64_t cfgHash = xxh3_hash(stage, 0);
+    // Reduce both passes. cfgHash is the same value folded into matKey above -
+    // do not restore a second xxh3_hash of `stage` here.
+    const uint64_t cfgHash = stageHash[i];
     const Operand ca = color_operand(stage.colorPass.a, stage, i, hasTexture, draw);
     const Operand cb = color_operand(stage.colorPass.b, stage, i, hasTexture, draw);
     const Operand cc = color_operand(stage.colorPass.c, stage, i, hasTexture, draw);
@@ -1477,6 +1493,8 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
         if (tex != nullptr) {
           hintDecision = "emitted";
           hintTexture = tex;
+          hintTexMapId = albedoStage.texMapId;
+          hintTexMapRepIndex = hintTexRepIndex;
           noteTexRep(d3dStage, hintTexRepIndex);
           set_texture(d3dStage, tex);
           apply_sampler(d3dStage, albedoStage.texMapId);
@@ -1590,7 +1608,22 @@ uint32_t apply_tev(const DecodedDraw& draw) noexcept {
       // second real texture.
       if (hasTexture && (op_reads(colorOp, D3DTA_TEXTURE) || op_reads(alphaOp, D3DTA_TEXTURE))) {
         uint32_t stageTexRepIndex = 0;
-        IDirect3DBaseTexture9* tex = resolve_texmap(stage.texMapId, &stageTexRepIndex);
+        IDirect3DBaseTexture9* tex = nullptr;
+        if (hintTexture != nullptr && stage.texMapId == hintTexMapId) {
+          // Already resolved for the hint in this same draw (see hintTexMapId).
+          // resolve_texmap does more than stamp lastUsedFrame - it can drop a
+          // stale s_byObjId alias, build the texture, insert into s_byContent
+          // and query the replacement registry - but every one of those was
+          // performed by that first call, and the GX state this texmap resolves
+          // from cannot change inside one draw. So the second call is a cache
+          // hit returning the same texture and the same replacement index, with
+          // lastUsedFrame restamped to the frame it already holds: a no-op, and
+          // skipping it does not change cache ageing.
+          tex = hintTexture;
+          stageTexRepIndex = hintTexMapRepIndex;
+        } else {
+          tex = resolve_texmap(stage.texMapId, &stageTexRepIndex);
+        }
         set_texture(d3dStage, tex);
         if (tex != nullptr) {
           apply_sampler(d3dStage, stage.texMapId);

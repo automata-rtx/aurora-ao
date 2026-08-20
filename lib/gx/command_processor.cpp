@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <string_view>
 
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
@@ -1715,13 +1716,19 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
   });
 }
 
-std::string read_string(const u8* data, u32& pos, u32 size, bool bigEndian) {
+// The returned view points into the FIFO buffer this handler is draining, so it
+// is valid only until handle_aurora returns to its caller. Copy out of it
+// immediately. It replaced a std::string-returning read on 2026-08-16: the only
+// consumer of the string, gfx::push_debug_group, has an empty body outside a
+// debug-group build (lib/gfx/common.cpp), while the mirror that actually feeds
+// `grp=` wants a pointer and a length.
+std::string_view read_string_view(const u8* data, u32& pos, u32 size, bool bigEndian) {
   CHECK(pos + 2 <= size, "Aurora string length read overrun");
   const u16 length = read_u16(data + pos, bigEndian);
   pos += 2;
 
   CHECK(pos + length <= size, "Aurora string read overrun");
-  std::string str(reinterpret_cast<const char*>(data) + pos, length);
+  const std::string_view str(reinterpret_cast<const char*>(data) + pos, length);
   pos += length;
   return str;
 }
@@ -1988,9 +1995,11 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, indexCount);
     }
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_PUSH) {
-    auto label = read_string(data, pos, size, bigEndian);
+    const std::string_view label = read_string_view(data, pos, size, bigEndian);
     // Mirror into the state stack so backends can name the current draw
-    // without a graphics debugger attached (GXState::currentDebugGroup).
+    // without a graphics debugger attached (GXState::currentDebugGroup). The
+    // view points into the live FIFO buffer, so this copy stays immediately
+    // adjacent to the read - it must not outlive the handler.
     if (g_gxState.debugGroupDepth < GXState::MaxDebugGroupDepth) {
       auto& slot = g_gxState.debugGroups[g_gxState.debugGroupDepth];
       const size_t n = std::min(label.size(), slot.size() - 1);
@@ -1998,15 +2007,28 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
       slot[n] = '\0';
     }
     ++g_gxState.debugGroupDepth;
-    gfx::push_debug_group(std::move(label));
+#if defined(AURORA_GFX_DEBUG_GROUPS)
+    // The std::string exists only for wgpu's debug-group stack, whose whole
+    // body is behind this same guard. Outside a debug-group build it bought an
+    // allocation per material per frame with no consumer, since `grp=` is served
+    // by the mirror above. The macro reaches here through gfx/common.hpp ->
+    // aurora/gfx.h; do not reorder that include out. 2026-08-16.
+    gfx::push_debug_group(std::string(label));
+#endif
   } else if (subCmd == GX_AURORA_DEBUG_GROUP_POP) {
     if (g_gxState.debugGroupDepth > 0) {
       --g_gxState.debugGroupDepth;
     }
     pop_debug_group();
   } else if (subCmd == GX_AURORA_DEBUG_MARKER_INSERT) {
-    auto label = read_string(data, pos, size, bigEndian);
-    gfx::insert_debug_marker(std::move(label));
+    const std::string_view label = read_string_view(data, pos, size, bigEndian);
+#if defined(AURORA_GFX_DEBUG_GROUPS)
+    // Same shape as the push above: insert_debug_marker's body is entirely
+    // behind this guard.
+    gfx::insert_debug_marker(std::string(label));
+#else
+    (void)label;
+#endif
   } else if (subCmd == GX_AURORA_SET_SKINNING) {
     CHECK(pos + 76 <= size, "GX_AURORA_SET_SKINNING read overrun");
     const u64 paletteAddr = read_u64(data + pos, bigEndian);
@@ -2068,6 +2090,16 @@ void handle_aurora(const u8* data, u32& pos, u32 size, bool bigEndian) {
     // consumes it; every other backend renders water as it always did.
     if (dx9::active()) {
       dx9::set_dusklight_water(role, tag, layer);
+    }
+  } else if (subCmd == GX_AURORA_SET_DUSKLIGHT_DRAW_META) {
+    CHECK(pos + 4 <= size, "GX_AURORA_SET_DUSKLIGHT_DRAW_META read overrun");
+    const u32 flags = read_u32(data + pos, bigEndian);
+    pos += 4;
+    // Decoded here for the same reason the water mark is: the FIFO is drained in end_frame, so a
+    // value the game writes at the moment it draws is read after every draw in the frame has gone
+    // past. This is the point in the stream the game meant.
+    if (dx9::active()) {
+      dx9::set_dusklight_draw_meta(flags);
     }
   }
 

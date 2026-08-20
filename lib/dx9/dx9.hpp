@@ -119,6 +119,19 @@ bool in_offscreen() noexcept;
 // each material, the flag was always false by drain time and no water arrived at all.
 void set_dusklight_water(uint32_t role, uint32_t tag, uint32_t layer) noexcept;
 
+// Per-draw metadata for the Remix fork, forwarded through a versioned export on its d3d9.dll
+// rather than packed into a spare D3DMATERIAL9 field. include/dolphin/gx/GXAurora.h says why the
+// channel is not another one of those; docs/dx9/remix-material-interface.md section 9 specified it.
+//
+// SAME OWNERSHIP RULE AS set_dusklight_water ABOVE, and for the same reason: called by the command
+// processor while draining the FIFO, never by the game. A value written from the game thread is
+// read after every draw in the frame has already been issued.
+//
+// Degrades in both directions with no branch anywhere. A fork without the export is not called at
+// all, and a fork that is never called sees a zeroed block, which every flag defines as "as
+// before" - so aurora and the fork can be rebuilt independently.
+void set_dusklight_draw_meta(uint32_t flags) noexcept;
+
 // Cache eviction mirrors (GX_AURORA_DESTROY_*).
 void on_evict_texture(uint32_t texObjId) noexcept;
 void on_evict_tlut(uint32_t tlutObjId) noexcept;
@@ -139,6 +152,7 @@ inline void set_skinning(const void*, uint32_t, const void*, uint32_t, uint32_t)
 inline void clear_skinning() noexcept {}
 inline void set_camera_view(const float*) noexcept {}
 inline void set_dusklight_water(uint32_t, uint32_t, uint32_t) noexcept {}
+inline void set_dusklight_draw_meta(uint32_t) noexcept {}
 inline void set_render_viewport() noexcept {}
 inline void set_render_scissor() noexcept {}
 inline void copy_tex(const void*, bool) noexcept {}
