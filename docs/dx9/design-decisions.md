@@ -50,6 +50,17 @@ statement: `remix-material-interface.md` §0.
   10-deep palette overruns the device's 8-index cap, which Remix does not
   enforce — so that bug hid for weeks behind correct-looking Remix output.
   `dx9_draw.cpp:352-366`, and `unsupported-effects.md` R5.
+- **A character still reaches Remix as one mesh per shape packet, which is why
+  per-asset character replacement does not work today.** Each J3D shape packet
+  loads its own handful of GX position matrices and draws, there is no batching
+  layer, and the palette is compacted per draw (`dx9_draw.cpp:352-366`), so every
+  packet arrives as its own geometry hash with its own bone palette — the
+  abandoned fur line saw Wolf Link as a patchwork of roughly 54 colours in
+  Remix's geometry-hash debug view, and the batcher that merges the packets into
+  one mesh exists only on `claude/lss-hair-rtx-remix-j6uo4t` (dxvk-remix
+  `b0710a6`, aurora `fa70a2d`; aurora's SHA is reachable from nowhere else, so it
+  goes when that branch does). **Read the 54 as one eyeball count of one
+  character, not a `dx9.draws` measurement.**
 
 ## Textures
 
