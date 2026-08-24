@@ -137,7 +137,7 @@ its own site rather than here: a new per-draw fact is a new **bit**, not a new
 `D3DMATERIAL9` channel
 (`dxvk-remix/src/dxvk/rtx_render/rtx_dusklight_drawmeta.h:27-50`; `0x0058` is
 that export's subcommand), and GX FIFO subcommand numbers come from the registry
-comment at `include/dolphin/gx/GXAurora.h:210-232`.
+comment at `include/dolphin/gx/GXAurora.h:210-250`.
 
 ## Where the backend stands
 

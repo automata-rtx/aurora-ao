@@ -229,12 +229,20 @@ extern "C" {
  * is merely reserved is not yet taken, so leaving it here after the define lands fails the
  * check. That is the intended failure, and this sentence is the instruction it needs.
  *
- *     0x0054  GX_AURORA_SET_MODEL_IDENTITY    claude/remix-texture-geometry-issues-occh2f
- *     0x0055  GX_AURORA_CLEAR_MODEL_IDENTITY  (same branch - it needs two)
- *     0x0056  GX_AURORA_SET_POS_MTX_REST      claude/lss-hair-rtx-remix-j6uo4t
- *     0x0057  GX_AURORA_SET_DRAW_CLASS        claude/dusklight-remix-transparency-e7l766
+ *     (none)
  *
- * Next free: 0x0059. 0x0058 was taken on 2026-08-14 by GX_AURORA_SET_DUSKLIGHT_DRAW_META, and it
+ * Released 2026-08-21: 0x0054-0x0057 were held for claude/remix-texture-geometry-issues-occh2f
+ * (SET_MODEL_IDENTITY and CLEAR_MODEL_IDENTITY), claude/lss-hair-rtx-remix-j6uo4t
+ * (SET_POS_MTX_REST) and claude/dusklight-remix-transparency-e7l766 (SET_DRAW_CLASS). Those
+ * branches were deleted without landing, and none of the four ever reached this tree - no
+ * #define, no handle_aurora() arm, and no reference from dusklight-ao or dxvk-remix. (Each of
+ * those branches did dispatch its symbols, but numbered from the colliding 0x0053 the
+ * reservations existed to move it off, so a resurrected one renumbers rather than reclaiming
+ * what is released here.) They are free again, which is why the Allocated list steps from
+ * 0x0053 straight to 0x0058: that gap is this release, not an oversight, and the next feature
+ * should fill it rather than skip it.
+ *
+ * Next free: 0x0054, then 0x0059. 0x0058 was taken on 2026-08-14 by GX_AURORA_SET_DUSKLIGHT_DRAW_META, and it
  * is the one that should stop this list growing: its payload is a flags word on a versioned export
  * to the fork, so a new per-draw fact is a new bit rather than a new subcommand and a new channel. Add it to this list in the same commit that defines it -
  * scripts/check_invariants.py fails if a GX_AURORA_* define is missing from the registry,
